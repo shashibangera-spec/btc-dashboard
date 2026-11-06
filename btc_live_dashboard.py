@@ -42,7 +42,10 @@ if 'prev_max_pain' not in st.session_state: st.session_state.prev_max_pain = 0.0
 if 'prev_call_wall' not in st.session_state: st.session_state.prev_call_wall = 0.0
 if 'prev_put_wall' not in st.session_state: st.session_state.prev_put_wall = 0.0
 
-# Initialize to NaN as a safety guard (Fix 3C)
+# VALIDATE ORDER: VAH >= POC >= VAL
+manual_values_valid = (input_vah > 0 and input_val > 0 and input_poc > 0 and input_vah >= input_poc >= input_val)
+
+# Initialize to NaN
 final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 
 # ==========================================
@@ -73,7 +76,6 @@ def fetch_amt_data():
             for col in ['open', 'high', 'low', 'close']:
                 df[col] = df[col].astype(float)
             
-            # Shift the date so the AMT cycle starts exactly at 05:30 IST
             df['ShiftedDate'] = df['Date'] - pd.Timedelta(hours=5, minutes=30)
             df = df.sort_values('Date').reset_index(drop=True)
             return df
@@ -126,13 +128,12 @@ def calculate_tpo(session_df):
 def calculate_session_journey(df):
     if df.empty: return pd.DataFrame()
     
-    # FIX 1: Exact timestamp boundaries using original IST 'Date' column
     cycle_date = df['ShiftedDate'].iloc[-1].date()
     cycle_start = pd.Timestamp(cycle_date).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
     
-    asia_end = cycle_start + pd.Timedelta(hours=8)     # 13:30 IST
-    europe_end = cycle_start + pd.Timedelta(hours=12)  # 17:30 IST
-    cycle_end = cycle_start + pd.Timedelta(hours=24)   # Next day 05:30 IST
+    asia_end = cycle_start + pd.Timedelta(hours=8)
+    europe_end = cycle_start + pd.Timedelta(hours=12)
+    cycle_end = cycle_start + pd.Timedelta(hours=24)
     
     asia_df = df[(df['Date'] >= cycle_start) & (df['Date'] < asia_end)]
     eu_df = df[(df['Date'] >= asia_end) & (df['Date'] < europe_end)]
@@ -162,11 +163,8 @@ def calculate_session_journey(df):
 # ==========================================
 # SECTION 2: PROJECT ECHO STATE ENGINE
 # ==========================================
-def generate_state_journal(df, manual_vah, manual_val, manual_poc):
-    # FIX 2: Initialize use_manual BEFORE any early exits
-    use_manual = (manual_vah > 0 and manual_val > 0 and manual_poc > 0)
-    
-    if df.empty: return pd.DataFrame(), use_manual
+def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc):
+    if df.empty: return pd.DataFrame(), manual_valid
     
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
@@ -179,17 +177,17 @@ def generate_state_journal(df, manual_vah, manual_val, manual_poc):
     today_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str].copy()
     yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str].copy()
     
-    if yesterday_df.empty or today_df.empty: return pd.DataFrame(), use_manual
+    if yesterday_df.empty or today_df.empty: return pd.DataFrame(), manual_valid
 
     last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
     
-    if use_manual:
+    if manual_valid:
         prevVAH, prevVAL, prevPOC = manual_vah, manual_val, manual_poc
     else:
         prevVAH, prevVAL, prevPOC = calculate_tpo(prev_day_df)
     
-    if pd.isna(prevVAH) or pd.isna(prevVAL) or pd.isna(prevPOC): return pd.DataFrame(), use_manual
+    if pd.isna(prevVAH) or pd.isna(prevVAL) or pd.isna(prevPOC): return pd.DataFrame(), manual_valid
 
     journal = []
     auctionState = 0
@@ -256,6 +254,7 @@ def generate_state_journal(df, manual_vah, manual_val, manual_poc):
         valueMigrationDown = vaShiftDown and pocShiftDown
         newValueDevelopingDown = pocBelowBars >= 2 and cycleBars >= 3
 
+        # State Machine (Experimental)
         if auctionState == 0:
             if close > prevVAH: auctionState = 2; discoveryStartBar = i
             elif close < prevVAL: auctionState = 3; discoveryStartBar = i
@@ -314,7 +313,7 @@ def generate_state_journal(df, manual_vah, manual_val, manual_poc):
                 "Dev VAL": currVAL,
             })
             
-    return pd.DataFrame(journal), use_manual
+    return pd.DataFrame(journal), manual_valid
 
 # ==========================================
 # SECTION 3: DELTA OPTIONS DATA
@@ -323,9 +322,14 @@ def generate_state_journal(df, manual_vah, manual_val, manual_poc):
 def fetch_delta_options():
     BASE_URL = "https://api.india.delta.exchange/v2"
     
+    # FIX 4: Pagination Guard (Seen Cursors & Max Pages)
     def fetch_paginated_data(url):
         results = []
-        while url:
+        seen_cursors = set()
+        page_count = 0
+        max_pages = 20
+        
+        while url and page_count < max_pages:
             try:
                 response = requests.get(url, timeout=10)
                 response.raise_for_status()
@@ -333,14 +337,17 @@ def fetch_delta_options():
                 results.extend(data.get("result", []))
                 meta = data.get("meta", {})
                 after = meta.get("after")
-                if after:
-                    base_url = url.split("?")[0]
-                    query_params = url.split("?")[1]
-                    params = [p for p in query_params.split("&") if not p.startswith("after=")]
-                    params.append(f"after={after}")
-                    url = f"{base_url}?{'&'.join(params)}"
-                else:
-                    url = None
+                
+                if not after or after in seen_cursors:
+                    break
+                    
+                seen_cursors.add(after)
+                base_url = url.split("?")[0]
+                query_params = url.split("?")[1]
+                params = [p for p in query_params.split("&") if not p.startswith("after=")]
+                params.append(f"after={after}")
+                url = f"{base_url}?{'&'.join(params)}"
+                page_count += 1
             except Exception:
                 break
         return results
@@ -387,23 +394,25 @@ def fetch_delta_options():
             ticker = ticker_map.get(sym)
             if not ticker: continue
 
-            strike = opt.get("strike_price")
-            if strike is None:
-                parts = sym.split("-")
-                if len(parts) >= 3:
-                    raw_strike = parts[2].replace(",", "").strip().upper()
-                    strike = float(raw_strike.replace("K", "")) * 1000 if "K" in raw_strike else float(raw_strike)
-            
-            opt_type = "Call" if opt.get("contract_type") == "call_options" else "Put"
-            oi_usd = ticker.get("oi_value_usd") or 0.0
-            oi_contracts = ticker.get("oi_contracts") or ticker.get("oi") or 0.0
-            
-            quotes = ticker.get("quotes", {})
-            bid = quotes.get("best_bid") or ticker.get("best_bid", 0)
-            ask = quotes.get("best_ask") or ticker.get("best_ask", 0)
-            mark = ticker.get("mark_price") or 0
+            # FIX 3: Strike parsing moved INSIDE the try block
+            try:
+                strike = opt.get("strike_price")
+                if strike is None:
+                    parts = sym.split("-")
+                    if len(parts) >= 3:
+                        raw_strike = parts[2].replace(",", "").strip().upper()
+                        strike = float(raw_strike.replace("K", "")) * 1000 if "K" in raw_strike else float(raw_strike)
+                
+                strike = float(strike)
+                opt_type = "Call" if opt.get("contract_type") == "call_options" else "Put"
+                oi_usd = float(ticker.get("oi_value_usd") or 0.0)
+                oi_contracts = float(ticker.get("oi_contracts") or ticker.get("oi") or 0.0)
+                
+                quotes = ticker.get("quotes", {})
+                bid = float(quotes.get("best_bid") or ticker.get("best_bid", 0) or 0.0)
+                ask = float(quotes.get("best_ask") or ticker.get("best_ask", 0) or 0.0)
+                mark = float(ticker.get("mark_price") or 0.0)
 
-            try: # FIX 6A: Moved typecasting inside the try block
                 greeks = ticker.get("greeks") or {}
                 gamma_str = greeks.get("gamma") or "0"
                 gamma = float(gamma_str)
@@ -412,13 +421,13 @@ def fetch_delta_options():
                 iv = float(iv_str) * 100
                 
                 chain.append({
-                    "Strike": float(strike),
+                    "Strike": strike,
                     "Type": opt_type,
-                    "Bid": float(bid) if bid else 0.0,
-                    "Ask": float(ask) if ask else 0.0,
-                    "Mark": float(mark) if mark else 0.0,
-                    "OI_USD": float(oi_usd),
-                    "OI_Contracts": float(oi_contracts),
+                    "Bid": bid,
+                    "Ask": ask,
+                    "Mark": mark,
+                    "OI_USD": oi_usd,
+                    "OI_Contracts": oi_contracts,
                     "Gamma": gamma,
                     "IV": iv
                 })
@@ -438,7 +447,6 @@ def fetch_delta_options():
                 new_cols.append(str(col))
         df_pivot.columns = new_cols
 
-        # FIX 4B: Ensure missing columns exist to prevent KeyErrors
         expected_columns = ['Bid_Call', 'Ask_Call', 'Mark_Call', 'OI_USD_Call', 'OI_Contracts_Call', 'Gamma_Call', 'IV_Call', 'Bid_Put', 'Ask_Put', 'Mark_Put', 'OI_USD_Put', 'OI_Contracts_Put', 'Gamma_Put', 'IV_Put']
         for col in expected_columns:
             if col not in df_pivot.columns:
@@ -459,28 +467,31 @@ if not df.empty:
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
     
-    # FIX 3: Guard against empty history
     if not yesterday_df.empty:
         last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
         prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
         
-        # FIX 2: Initialize manual overrides before checking
-        use_manual = (input_vah > 0 and input_val > 0 and input_poc > 0)
-        if use_manual:
+        if manual_values_valid:
             final_vah, final_val, final_poc = input_vah, input_val, input_poc
         else:
             final_vah, final_val, final_poc = calculate_tpo(prev_day_df)
     else:
         st.warning("⚠️ Waiting for enough Binance history to calculate prior AMT profile.")
-        use_manual = False
+        if manual_values_valid:
+            final_vah, final_val, final_poc = input_vah, input_val, input_poc
+        else:
+            final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 
     latest_price = df['close'].iloc[-1]
     
     st.subheader("📊 Live AMT Data (24-Hour Prior)")
-    if use_manual: 
+    
+    if manual_values_valid: 
         st.info("🟢 Reference Source: TRADINGVIEW MANUAL")
-    else:
+    elif not pd.isna(final_vah):
         st.info("🔵 Reference Source: PYTHON CALCULATED")
+    else:
+        st.warning("🔴 Reference Source: UNAVAILABLE (Waiting for Binance history)")
         
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Current Price", f"${latest_price:,.2f}")
@@ -497,9 +508,9 @@ if not df.empty:
     st.markdown("---")
 
     st.subheader("📖 PROJECT ECHO - State Journal")
-    st.caption("Bar-by-bar replay of the AMT State Engine. Shows exactly when the auction shifted.")
+    st.caption("⚠️ Experimental State Journal. Shows when the auction shifted. Do not use for live execution until validated.")
     
-    journal_res = generate_state_journal(df, input_vah, input_val, input_poc)
+    journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
     
     if journal_res is not None:
         journal_df, echo_used_manual = journal_res
@@ -593,7 +604,6 @@ if not options_df.empty:
     else:
         filtered_options = options_df.copy()
 
-    # FIX 4A: Empty chain guard
     if filtered_options.empty:
         st.warning("⚠️ No option strikes available inside the selected spot range (90%-110%).")
         st.stop()
@@ -612,7 +622,6 @@ if not options_df.empty:
     alert_message = ""
     if pcr > 1.20 or pcr < 0.30:
         alert_triggered = True
-        # FIX 6E: Renamed to PCR EXTREME
         alert_message += f"⚠️ PCR EXTREME: OI PCR is {pcr:.2f}<br>"
     if st.session_state.prev_max_pain != 0 and abs(true_max_pain - st.session_state.prev_max_pain) >= 500:
         alert_triggered = True
