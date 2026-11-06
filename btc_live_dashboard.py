@@ -146,19 +146,24 @@ def calculate_session_journey(df, prev_vah, prev_val):
     if df.empty: return pd.DataFrame()
     cycle_date = df['ShiftedDate'].iloc[-1].date()
     cycle_start = pd.Timestamp(cycle_date).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
-    asia_end = cycle_start + pd.Timedelta(hours=8)
-    europe_end = cycle_start + pd.Timedelta(hours=12)
-    cycle_end = cycle_start + pd.Timedelta(hours=24)
+    
+    # 🆕 FOUR SESSION SPLITS
+    asia_end = cycle_start + pd.Timedelta(hours=8)        # 13:30 IST
+    europe_end = cycle_start + pd.Timedelta(hours=12)     # 17:30 IST
+    us_cash_end = cycle_start + pd.Timedelta(hours=20)    # 01:30 IST
+    cycle_end = cycle_start + pd.Timedelta(hours=24)      # 05:30 IST
     
     asia_df = df[(df['Date'] >= cycle_start) & (df['Date'] < asia_end)]
     eu_df = df[(df['Date'] >= asia_end) & (df['Date'] < europe_end)]
-    us_df = df[(df['Date'] >= europe_end) & (df['Date'] < cycle_end)]
+    us_cash_df = df[(df['Date'] >= europe_end) & (df['Date'] < us_cash_end)]
+    us_overnight_df = df[(df['Date'] >= us_cash_end) & (df['Date'] < cycle_end)]
     
     sessions = []
     for name, session_data in [
         ("Asia (05:30-13:30)", asia_df),
         ("Europe (13:30-17:30)", eu_df),
-        ("US (17:30-05:30)", us_df)
+        ("US Cash (17:30-01:30)", us_cash_df),
+        ("US Overnight (01:30-05:30)", us_overnight_df)
     ]:
         if session_data.empty: continue
         vah, val, poc = calculate_tpo(session_data)
@@ -167,7 +172,6 @@ def calculate_session_journey(df, prev_vah, prev_val):
         high = session_data['high'].max()
         low = session_data['low'].min()
         
-        # AMT BIAS CALCULATION
         bias = "⚪ Balanced"
         if not pd.isna(prev_vah) and not pd.isna(prev_val):
             if close > prev_vah:
@@ -701,7 +705,7 @@ else:
     st.error("Could not load Options Chain data from Delta API.")
 
 # ==========================================
-# FIRE ALERTS (Pulled outside the options block so AMT alerts can fire even if options fail)
+# FIRE ALERTS
 # ==========================================
 if alert_triggered:
     clean_telegram_msg = alert_message.replace("<br>", "\n")
