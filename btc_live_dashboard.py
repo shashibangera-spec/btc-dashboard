@@ -11,6 +11,23 @@ from urllib3.util.retry import Retry
 st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 
 # ==========================================
+# TELEGRAM ALERT FUNCTION
+# ==========================================
+def send_telegram_message(message):
+    try:
+        token = st.secrets["TELEGRAM_TOKEN"]
+        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
+    except KeyError:
+        return
+    
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except Exception:
+        pass
+
+# ==========================================
 # SIDEBAR: MANUAL AMT OVERRIDES
 # ==========================================
 qp = st.query_params
@@ -19,8 +36,6 @@ default_val = float(qp.get("val", 0.0))
 default_poc = float(qp.get("poc", 0.0))
 
 st.sidebar.header("🛠️ Manual AMT Overrides")
-st.sidebar.caption("Type exact values from TradingView to override Python's math.")
-
 input_vah = st.sidebar.number_input("Prior VAH", value=default_vah, step=50.0, format="%.2f")
 input_val = st.sidebar.number_input("Prior VAL", value=default_val, step=50.0, format="%.2f")
 input_poc = st.sidebar.number_input("Prior POC", value=default_poc, step=50.0, format="%.2f")
@@ -37,15 +52,14 @@ if st.sidebar.button("Clear Overrides"):
 
 st.title("⚡ BTC AMT & Delta Options Terminal")
 
+# Initialize Session State
 if 'prev_pcr' not in st.session_state: st.session_state.prev_pcr = 0.0
 if 'prev_max_pain' not in st.session_state: st.session_state.prev_max_pain = 0.0
 if 'prev_call_wall' not in st.session_state: st.session_state.prev_call_wall = 0.0
 if 'prev_put_wall' not in st.session_state: st.session_state.prev_put_wall = 0.0
+if 'prev_amt_state' not in st.session_state: st.session_state.prev_amt_state = -1
 
-# VALIDATE ORDER: VAH >= POC >= VAL
 manual_values_valid = (input_vah > 0 and input_val > 0 and input_poc > 0 and input_vah >= input_poc >= input_val)
-
-# Initialize to NaN
 final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 
 # ==========================================
@@ -127,10 +141,8 @@ def calculate_tpo(session_df):
 
 def calculate_session_journey(df):
     if df.empty: return pd.DataFrame()
-    
     cycle_date = df['ShiftedDate'].iloc[-1].date()
     cycle_start = pd.Timestamp(cycle_date).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
-    
     asia_end = cycle_start + pd.Timedelta(hours=8)
     europe_end = cycle_start + pd.Timedelta(hours=12)
     cycle_end = cycle_start + pd.Timedelta(hours=24)
@@ -148,16 +160,10 @@ def calculate_session_journey(df):
         if session_data.empty: continue
         vah, val, poc = calculate_tpo(session_data)
         sessions.append({
-            "Session": name,
-            "Open": session_data['open'].iloc[0],
-            "High": session_data['high'].max(),
-            "Low": session_data['low'].min(),
-            "Close": session_data['close'].iloc[-1],
-            "POC": poc,
-            "VAH": vah,
-            "VAL": val
+            "Session": name, "Open": session_data['open'].iloc[0], "High": session_data['high'].max(),
+            "Low": session_data['low'].min(), "Close": session_data['close'].iloc[-1],
+            "POC": poc, "VAH": vah, "VAL": val
         })
-        
     return pd.DataFrame(sessions)
 
 # ==========================================
@@ -219,12 +225,9 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
         currVAH, currVAL, currPOC = calculate_tpo(current_bar_df)
         close = bar['close']
         
-        if close > prevVAH:
-            aboveValueBars += 1; belowValueBars = 0; insideValueBars = 0
-        elif close < prevVAL:
-            belowValueBars += 1; aboveValueBars = 0; insideValueBars = 0
-        else:
-            aboveValueBars = 0; belowValueBars = 0; insideValueBars += 1
+        if close > prevVAH: aboveValueBars += 1; belowValueBars = 0; insideValueBars = 0
+        elif close < prevVAL: belowValueBars += 1; aboveValueBars = 0; insideValueBars = 0
+        else: aboveValueBars = 0; belowValueBars = 0; insideValueBars += 1
 
         if not pd.isna(currPOC):
             if currPOC > prevVAH: pocAboveBars += 1; pocBelowBars = 0
@@ -254,7 +257,6 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
         valueMigrationDown = vaShiftDown and pocShiftDown
         newValueDevelopingDown = pocBelowBars >= 2 and cycleBars >= 3
 
-        # State Machine (Experimental)
         if auctionState == 0:
             if close > prevVAH: auctionState = 2; discoveryStartBar = i
             elif close < prevVAL: auctionState = 3; discoveryStartBar = i
@@ -312,7 +314,6 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
                 "Dev POC": currPOC,
                 "Dev VAL": currVAL,
             })
-            
     return pd.DataFrame(journal), manual_valid
 
 # ==========================================
@@ -322,7 +323,6 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
 def fetch_delta_options():
     BASE_URL = "https://api.india.delta.exchange/v2"
     
-    # FIX 4: Pagination Guard (Seen Cursors & Max Pages)
     def fetch_paginated_data(url):
         results = []
         seen_cursors = set()
@@ -340,8 +340,8 @@ def fetch_delta_options():
                 
                 if not after or after in seen_cursors:
                     break
-                    
                 seen_cursors.add(after)
+                
                 base_url = url.split("?")[0]
                 query_params = url.split("?")[1]
                 params = [p for p in query_params.split("&") if not p.startswith("after=")]
@@ -394,7 +394,6 @@ def fetch_delta_options():
             ticker = ticker_map.get(sym)
             if not ticker: continue
 
-            # FIX 3: Strike parsing moved INSIDE the try block
             try:
                 strike = opt.get("strike_price")
                 if strike is None:
@@ -421,15 +420,8 @@ def fetch_delta_options():
                 iv = float(iv_str) * 100
                 
                 chain.append({
-                    "Strike": strike,
-                    "Type": opt_type,
-                    "Bid": bid,
-                    "Ask": ask,
-                    "Mark": mark,
-                    "OI_USD": oi_usd,
-                    "OI_Contracts": oi_contracts,
-                    "Gamma": gamma,
-                    "IV": iv
+                    "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark,
+                    "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv
                 })
             except (ValueError, TypeError):
                 continue
@@ -463,6 +455,9 @@ def fetch_delta_options():
 df = fetch_amt_data()
 binance_status = "🟢 Connected"
 
+alert_triggered = False
+alert_message = ""
+
 if not df.empty:
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
@@ -479,19 +474,14 @@ if not df.empty:
         st.warning("⚠️ Waiting for enough Binance history to calculate prior AMT profile.")
         if manual_values_valid:
             final_vah, final_val, final_poc = input_vah, input_val, input_poc
-        else:
-            final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 
     latest_price = df['close'].iloc[-1]
     
     st.subheader("📊 Live AMT Data (24-Hour Prior)")
     
-    if manual_values_valid: 
-        st.info("🟢 Reference Source: TRADINGVIEW MANUAL")
-    elif not pd.isna(final_vah):
-        st.info("🔵 Reference Source: PYTHON CALCULATED")
-    else:
-        st.warning("🔴 Reference Source: UNAVAILABLE (Waiting for Binance history)")
+    if manual_values_valid: st.info("🟢 Reference Source: TRADINGVIEW MANUAL")
+    elif not pd.isna(final_vah): st.info("🔵 Reference Source: PYTHON CALCULATED")
+    else: st.warning("🔴 Reference Source: UNAVAILABLE")
         
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Current Price", f"${latest_price:,.2f}")
@@ -508,17 +498,15 @@ if not df.empty:
     st.markdown("---")
 
     st.subheader("📖 PROJECT ECHO - State Journal")
-    st.caption("⚠️ Experimental State Journal. Shows when the auction shifted. Do not use for live execution until validated.")
+    st.caption("⚠️ Experimental State Journal. Shows when the auction shifted.")
     
     journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
     
     if journal_res is not None:
         journal_df, echo_used_manual = journal_res
         if not journal_df.empty:
-            if echo_used_manual:
-                st.caption("Echo Reference: 🟢 TRADINGVIEW MANUAL")
-            else:
-                st.caption("Echo Reference: 🔵 PYTHON CALCULATED")
+            if echo_used_manual: st.caption("Echo Reference: 🟢 TRADINGVIEW MANUAL")
+            else: st.caption("Echo Reference: 🔵 PYTHON CALCULATED")
                 
             st.dataframe(
                 journal_df, use_container_width=True, hide_index=True,
@@ -532,6 +520,21 @@ if not df.empty:
                     "Dev VAL": st.column_config.NumberColumn("Dev VAL", format="$%.0f"),
                 }
             )
+            
+            # ==========================================
+            # 🚨 AMT STATE ALERT LOGIC
+            # ==========================================
+            current_amt_state = journal_df.iloc[-1]['Code']
+            current_amt_name = journal_df.iloc[-1]['State Name']
+            
+            if st.session_state.prev_amt_state != -1 and current_amt_state != st.session_state.prev_amt_state:
+                # Only alert on major structural changes to prevent spam
+                if current_amt_state in [2, 3, 10, 11, 14]: 
+                    alert_triggered = True
+                    alert_message += f"📖 AMT STATE SHIFT: {current_amt_name}<br>"
+            
+            st.session_state.prev_amt_state = current_amt_state
+            
         else:
             st.info("Building State Journal...")
     st.markdown("---")
@@ -570,15 +573,11 @@ if not options_df.empty:
         e1.metric("ATM Straddle Price", f"${straddle_price:,.2f}", "Breakeven Distance")
         e2.metric("ATM Implied Volatility", f"{atm_iv:.2f}%", "Expected Volatility")
         
-        if dist_to_vah > 0:
-            e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Distance")
-        else:
-            e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Above VAH")
+        if dist_to_vah > 0: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Distance")
+        else: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Above VAH")
 
-        if dist_to_val > 0:
-            e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Distance")
-        else:
-            e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Below VAL")
+        if dist_to_val > 0: e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Distance")
+        else: e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Below VAL")
             
         e5.metric("ATM Call Premium", f"${call_premium:,.2f}")
         st.markdown("---")
@@ -617,9 +616,7 @@ if not options_df.empty:
     total_puts_usd = filtered_options['OI_USD_Put'].sum()
     pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
 
-    # ALERTS
-    alert_triggered = False
-    alert_message = ""
+    # OPTIONS ALERTS
     if pcr > 1.20 or pcr < 0.30:
         alert_triggered = True
         alert_message += f"⚠️ PCR EXTREME: OI PCR is {pcr:.2f}<br>"
@@ -633,7 +630,11 @@ if not options_df.empty:
         alert_triggered = True
         alert_message += f"🚧 PUT OI WALL SHIFT: Moved to ${put_oi_wall['Strike']:,.0f}!<br>"
 
+    # FIRE ALERTS
     if alert_triggered:
+        clean_telegram_msg = alert_message.replace("<br>", "\n")
+        send_telegram_message(f"🚨 BTC TERMINAL ALERT 🚨\n\n{clean_telegram_msg}")
+        
         st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
         components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
 
