@@ -590,7 +590,20 @@ if not options_df.empty:
         if dist_to_val > 0: e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Distance")
         else: e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Below VAL")
             
-        e5.metric("ATM Call Premium", f"${call_premium:,.2f}")
+        # 🆕 SKEW INDICATOR
+        if call_premium > put_premium:
+            skew_label = f"Call Skew +${call_premium - put_premium:,.0f}"
+            skew_color = "inverse" # Red
+        else:
+            skew_label = f"Put Skew +${put_premium - call_premium:,.0f}"
+            skew_color = "normal" # Green
+            
+        e5.metric(
+            label="ATM Premium (Call / Put)", 
+            value=f"${call_premium:,.0f} / ${put_premium:,.0f}", 
+            delta=skew_label, 
+            delta_color=skew_color
+        )
         st.markdown("---")
 
     all_strikes = options_df['Strike'].tolist()
