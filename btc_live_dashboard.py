@@ -62,6 +62,9 @@ if 'prev_amt_state' not in st.session_state: st.session_state.prev_amt_state = -
 manual_values_valid = (input_vah > 0 and input_val > 0 and input_poc > 0 and input_vah >= input_poc >= input_val)
 final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 
+alert_triggered = False
+alert_message = ""
+
 # ==========================================
 # SECTION 1: BINANCE DATA & AMT MATH
 # ==========================================
@@ -164,7 +167,7 @@ def calculate_session_journey(df, prev_vah, prev_val):
         high = session_data['high'].max()
         low = session_data['low'].min()
         
-        # 🆕 CALCULATE AMT BIAS
+        # AMT BIAS CALCULATION
         bias = "⚪ Balanced"
         if not pd.isna(prev_vah) and not pd.isna(prev_val):
             if close > prev_vah:
@@ -195,7 +198,6 @@ def calculate_session_journey(df, prev_vah, prev_val):
 # SECTION 2: PROJECT ECHO STATE ENGINE
 # ==========================================
 def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc):
-    # (Same as before, kept intact)
     if df.empty: return pd.DataFrame(), manual_valid
     
     df['prev_close'] = df['close'].shift(1)
@@ -461,8 +463,6 @@ def fetch_delta_options():
 # ==========================================
 df = fetch_amt_data()
 binance_status = "🟢 Connected"
-alert_triggered = False
-alert_message = ""
 
 if not df.empty:
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
@@ -496,7 +496,6 @@ if not df.empty:
     st.markdown("---")
 
     st.subheader("🗺️ Session Journey (05:30 AM to 05:30 AM)")
-    # CALLING THE UPDATED FUNCTION WITH PRIOR VAH/VAL
     session_df = calculate_session_journey(df, final_vah, final_val)
     
     if not session_df.empty:
@@ -645,12 +644,6 @@ if not options_df.empty:
         alert_triggered = True
         alert_message += f"🚧 PUT OI WALL SHIFT: Moved to ${put_oi_wall['Strike']:,.0f}!<br>"
 
-    if alert_triggered:
-        clean_telegram_msg = alert_message.replace("<br>", "\n")
-        send_telegram_message(f"🚨 BTC TERMINAL ALERT 🚨\n\n{clean_telegram_msg}")
-        st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
-        components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
-
     st.session_state.prev_pcr = pcr
     st.session_state.prev_max_pain = true_max_pain
     st.session_state.prev_call_wall = call_oi_wall['Strike']
@@ -706,6 +699,15 @@ if not options_df.empty:
 else:
     delta_status = "🔴 Failed"
     st.error("Could not load Options Chain data from Delta API.")
+
+# ==========================================
+# FIRE ALERTS (Pulled outside the options block so AMT alerts can fire even if options fail)
+# ==========================================
+if alert_triggered:
+    clean_telegram_msg = alert_message.replace("<br>", "\n")
+    send_telegram_message(f"🚨 BTC TERMINAL ALERT 🚨\n\n{clean_telegram_msg}")
+    st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
+    components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
 
 if st.button("🔄 Refresh All Data"):
     st.cache_data.clear()
