@@ -394,8 +394,7 @@ def fetch_delta_options():
         
         filtered_options = [opt for opt in btc_options if len(opt.get("symbol", "").split("-")) >= 4 and opt.get("symbol", "").split("-")[3] == nearest_expiry]
 
-        # 🆕 DYNAMIC CONTRACT MULTIPLIER
-        contract_size = 0.001 # Default fallback
+        contract_size = 0.001
         if filtered_options:
             try: contract_size = float(filtered_options[0].get("contract_value", 0.001))
             except: pass
@@ -429,8 +428,6 @@ def fetch_delta_options():
 
                 greeks = ticker.get("greeks") or {}
                 gamma = float(greeks.get("gamma") or "0")
-                
-                # 🆕 EXTRACT BOTH CALL AND PUT IV
                 iv = float(quotes.get("mark_iv") or quotes.get("ask_iv") or "0") * 100
                 
                 chain.append({"Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv})
@@ -564,7 +561,6 @@ delta_status = "🟢 Connected"
 if not options_df.empty:
     st.subheader(f"📉 Delta Options Chain (Expiry: {loaded_expiry})")
     
-    # 🆕 USING DYNAMIC CONTRACT SIZE
     options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * latest_price * dynamic_contract_size
     options_df['GEX_Put'] = options_df['Gamma_Put'] * options_df['OI_Contracts_Put'] * latest_price * dynamic_contract_size
     
@@ -577,7 +573,6 @@ if not options_df.empty:
         put_premium = atm_row['Mark_Put']
         straddle_price = call_premium + put_premium
         
-        # 🆕 SHOW BOTH CALL AND PUT IV
         call_iv = atm_row['IV_Call']
         put_iv = atm_row['IV_Put']
         
@@ -587,8 +582,6 @@ if not options_df.empty:
         st.markdown(f"#### 🧠 Market Expectations (ATM Straddle at ${atm_strike:,.0f})")
         e1, e2, e3, e4, e5 = st.columns(5)
         e1.metric("ATM Straddle Price", f"${straddle_price:,.2f}", "Breakeven Distance")
-        
-        # 🆕 SPLIT IV DISPLAY
         e2.metric("ATM Call IV", f"{call_iv:.2f}%", f"Put IV: {put_iv:.2f}%", delta_color="off")
         
         if dist_to_vah > 0: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Distance")
@@ -625,7 +618,6 @@ if not options_df.empty:
         st.warning("⚠️ No option strikes available inside the selected spot range (90%-110%).")
         st.stop()
 
-    # 🆕 LABEL HONESTY
     call_oi_wall = filtered_options.loc[filtered_options['OI_USD_Call'].idxmax()]
     put_oi_wall = filtered_options.loc[filtered_options['OI_USD_Put'].idxmax()]
     call_gamma_wall = filtered_options.loc[filtered_options['GEX_Call'].idxmax()]
@@ -635,7 +627,6 @@ if not options_df.empty:
     total_puts_usd = filtered_options['OI_USD_Put'].sum()
     pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
 
-    # 🆕 ALERT CROSSING LOGIC (No more alert spam)
     if st.session_state.prev_pcr != 0.0:
         if (st.session_state.prev_pcr >= 1.20 and pcr < 1.20) or (st.session_state.prev_pcr >= 0.30 and pcr < 0.30):
             alert_triggered = True
@@ -659,7 +650,6 @@ if not options_df.empty:
     st.subheader("📊 Options Structure")
     w1, w2, w3, w4 = st.columns(4)
     
-    # 🆕 HONEST LABELS
     w1.metric("🔴 Call OI Concentration", f"${call_oi_wall['Strike']:,.0f}", f"OI: ${call_oi_wall['OI_USD_Call']/1e6:.2f}M")
     w2.metric("🟢 Put OI Concentration", f"${put_oi_wall['Strike']:,.0f}", f"OI: ${put_oi_wall['OI_USD_Put']/1e6:.2f}M")
     w3.metric("⚖️ Theoretical Min Payout", f"${true_max_pain:,.0f}", "Max Pain (Min Payout)")
@@ -674,17 +664,37 @@ if not options_df.empty:
 
     st.subheader("🎯 Premium at AMT Levels")
     if not pd.isna(final_vah) and not pd.isna(final_val) and not pd.isna(final_poc):
-        # 🆕 SHOW DISTANCE TO AMT LEVELS
-        vah_strike = filtered_options.loc[(filtered_options['Strike'] - final_vah).abs().idxmin()]
-        val_strike = filtered_options.loc[(filtered_options['Strike'] - final_val).abs().idxmin()]
-        poc_strike = filtered_options.loc[(filtered_options['Strike'] - final_poc).abs().idxmin()]
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric(f"Prior VAH (${vah_strike['Strike']:,.0f})", f"Call: ${vah_strike['Mark_Call']:,.2f}", f"Put: ${vah_strike['Mark_Put']:,.2f}", delta=f"Dist: ${abs(vah_strike['Strike'] - final_vah):,.0f}", delta_color="off")
-        c2.metric(f"Prior POC (${poc_strike['Strike']:,.0f})", f"Call: ${poc_strike['Mark_Call']:,.2f}", f"Put: ${poc_strike['Mark_Put']:,.2f}", delta=f"Dist: ${abs(poc_strike['Strike'] - final_poc):,.0f}", delta_color="off")
-        c3.metric(f"Prior VAL (${val_strike['Strike']:,.0f})", f"Call: ${val_strike['Mark_Call']:,.2f}", f"Put: ${val_strike['Mark_Put']:,.2f}", delta=f"Dist: ${abs(val_strike['Strike'] - final_val):,.0f}", delta_color="off")
+        # 🆕 BULLETPROOF FIX FOR TYPEERROR
+        try:
+            vah_strike = filtered_options.loc[(filtered_options['Strike'] - final_vah).abs().idxmin()]
+            val_strike = filtered_options.loc[(filtered_options['Strike'] - final_val).abs().idxmin()]
+            poc_strike = filtered_options.loc[(filtered_options['Strike'] - final_poc).abs().idxmin()]
+            
+            vah_price = float(vah_strike['Strike'])
+            vah_call = float(vah_strike['Mark_Call'])
+            vah_put = float(vah_strike['Mark_Put'])
+            vah_dist = abs(vah_price - float(final_vah))
+            
+            poc_price = float(poc_strike['Strike'])
+            poc_call = float(poc_strike['Mark_Call'])
+            poc_put = float(poc_strike['Mark_Put'])
+            poc_dist = abs(poc_price - float(final_poc))
+            
+            val_price = float(val_strike['Strike'])
+            val_call = float(val_strike['Mark_Call'])
+            val_put = float(val_strike['Mark_Put'])
+            val_dist = abs(val_price - float(final_val))
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric(f"Prior VAH (${vah_price:,.0f})", f"Call: ${vah_call:,.2f}", f"Put: ${vah_put:,.2f}", delta=f"Dist: ${vah_dist:,.0f}", delta_color="off")
+            c2.metric(f"Prior POC (${poc_price:,.0f})", f"Call: ${poc_call:,.2f}", f"Put: ${poc_put:,.2f}", delta=f"Dist: ${poc_dist:,.0f}", delta_color="off")
+            c3.metric(f"Prior VAL (${val_price:,.0f})", f"Call: ${val_call:,.2f}", f"Put: ${val_put:,.2f}", delta=f"Dist: ${val_dist:,.0f}", delta_color="off")
+        except Exception:
+            st.warning("⚠️ Could not calculate exact AMT level premiums due to data formatting.")
+            
     else:
-        st.info("Manual Overrides required.")
+        st.info("Manual Overrides required to calculate Premium at AMT Levels.")
     st.markdown("---")
 
     if 'Dist_to_Spot' in filtered_options.columns:
