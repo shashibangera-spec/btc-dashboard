@@ -662,41 +662,6 @@ if not options_df.empty:
     
     st.markdown("---")
 
-    st.subheader("🎯 Premium at AMT Levels")
-    if not pd.isna(final_vah) and not pd.isna(final_val) and not pd.isna(final_poc):
-        
-        # 🆕 BULLETPROOF FIX FOR TYPEERROR
-        try:
-            vah_strike = filtered_options.loc[(filtered_options['Strike'] - final_vah).abs().idxmin()]
-            val_strike = filtered_options.loc[(filtered_options['Strike'] - final_val).abs().idxmin()]
-            poc_strike = filtered_options.loc[(filtered_options['Strike'] - final_poc).abs().idxmin()]
-            
-            vah_price = float(vah_strike['Strike'])
-            vah_call = float(vah_strike['Mark_Call'])
-            vah_put = float(vah_strike['Mark_Put'])
-            vah_dist = abs(vah_price - float(final_vah))
-            
-            poc_price = float(poc_strike['Strike'])
-            poc_call = float(poc_strike['Mark_Call'])
-            poc_put = float(poc_strike['Mark_Put'])
-            poc_dist = abs(poc_price - float(final_poc))
-            
-            val_price = float(val_strike['Strike'])
-            val_call = float(val_strike['Mark_Call'])
-            val_put = float(val_strike['Mark_Put'])
-            val_dist = abs(val_price - float(final_val))
-            
-            c1, c2, c3 = st.columns(3)
-            c1.metric(f"Prior VAH (${vah_price:,.0f})", f"Call: ${vah_call:,.2f}", f"Put: ${vah_put:,.2f}", delta=f"Dist: ${vah_dist:,.0f}", delta_color="off")
-            c2.metric(f"Prior POC (${poc_price:,.0f})", f"Call: ${poc_call:,.2f}", f"Put: ${poc_put:,.2f}", delta=f"Dist: ${poc_dist:,.0f}", delta_color="off")
-            c3.metric(f"Prior VAL (${val_price:,.0f})", f"Call: ${val_call:,.2f}", f"Put: ${val_put:,.2f}", delta=f"Dist: ${val_dist:,.0f}", delta_color="off")
-        except Exception:
-            st.warning("⚠️ Could not calculate exact AMT level premiums due to data formatting.")
-            
-    else:
-        st.info("Manual Overrides required to calculate Premium at AMT Levels.")
-    st.markdown("---")
-
     if 'Dist_to_Spot' in filtered_options.columns:
         filtered_options = filtered_options.drop(columns=['Dist_to_Spot'])
 
