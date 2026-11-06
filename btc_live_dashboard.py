@@ -121,22 +121,24 @@ def calculate_tpo(session_df):
     return (base_bucket + up) * row_size + row_size/2, (base_bucket + dn) * row_size + row_size/2, (base_bucket + poc_idx) * row_size + row_size/2
 
 def calculate_session_journey(df):
+    # Get today's cycle using ShiftedDate
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     day_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str]
     if day_df.empty: return pd.DataFrame()
     
     sessions = []
-    asia_df = day_df[(day_df['ShiftedDate'].dt.hour >= 5) & (day_df['ShiftedDate'].dt.hour < 13)]
+    # FIX: Filter using original 'Date' (IST) to match exact session hours
+    asia_df = day_df[(day_df['Date'].dt.hour >= 5) & (day_df['Date'].dt.hour < 13)]
     if not asia_df.empty:
         vah, val, poc = calculate_tpo(asia_df)
         sessions.append({"Session": "Asia (05:30-13:30)", "Open": asia_df['open'].iloc[0], "High": asia_df['high'].max(), "Low": asia_df['low'].min(), "Close": asia_df['close'].iloc[-1], "POC": poc, "VAH": vah, "VAL": val})
         
-    eu_df = day_df[(day_df['ShiftedDate'].dt.hour >= 13) & (day_df['ShiftedDate'].dt.hour < 17)]
+    eu_df = day_df[(day_df['Date'].dt.hour >= 13) & (day_df['Date'].dt.hour < 17)]
     if not eu_df.empty:
         vah, val, poc = calculate_tpo(eu_df)
         sessions.append({"Session": "Europe (13:30-17:30)", "Open": eu_df['open'].iloc[0], "High": eu_df['high'].max(), "Low": eu_df['low'].min(), "Close": eu_df['close'].iloc[-1], "POC": poc, "VAH": vah, "VAL": val})
 
-    us_df = day_df[(day_df['ShiftedDate'].dt.hour >= 17) | (day_df['ShiftedDate'].dt.hour < 5)]
+    us_df = day_df[(day_df['Date'].dt.hour >= 17) | (day_df['Date'].dt.hour < 5)]
     if not us_df.empty:
         vah, val, poc = calculate_tpo(us_df)
         sessions.append({"Session": "US (17:30-05:30)", "Open": us_df['open'].iloc[0], "High": us_df['high'].max(), "Low": us_df['low'].min(), "Close": us_df['close'].iloc[-1], "POC": poc, "VAH": vah, "VAL": val})
@@ -147,7 +149,6 @@ def calculate_session_journey(df):
 # SECTION 2: PROJECT ECHO STATE ENGINE
 # ==========================================
 def generate_state_journal(df, manual_vah, manual_val, manual_poc):
-    # CRITICAL FIX: Calculate ATR inside the function before filtering!
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['prev_close'])
@@ -164,7 +165,10 @@ def generate_state_journal(df, manual_vah, manual_val, manual_poc):
     last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
     
-    if manual_vah > 0:
+    # ATOMIC OVERRIDE CHECK: Only use manual if ALL THREE are > 0
+    use_manual = (manual_vah > 0 and manual_val > 0 and manual_poc > 0)
+    
+    if use_manual:
         prevVAH, prevVAL, prevPOC = manual_vah, manual_val, manual_poc
     else:
         prevVAH, prevVAL, prevPOC = calculate_tpo(prev_day_df)
@@ -294,7 +298,7 @@ def generate_state_journal(df, manual_vah, manual_val, manual_poc):
                 "Dev VAL": currVAL,
             })
             
-    return pd.DataFrame(journal)
+    return pd.DataFrame(journal), use_manual
 
 # ==========================================
 # SECTION 3: DELTA OPTIONS DATA
@@ -435,15 +439,22 @@ if not df.empty:
     last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
     
-    calc_vah, calc_val, calc_poc = calculate_tpo(prev_day_df)
-    final_vah = input_vah if input_vah > 0 else calc_vah
-    final_val = input_val if input_val > 0 else calc_val
-    final_poc = input_poc if input_poc > 0 else calc_poc
+    # ATOMIC OVERRIDE CHECK
+    use_manual = (input_vah > 0 and input_val > 0 and input_poc > 0)
+    
+    if use_manual:
+        final_vah, final_val, final_poc = input_vah, input_val, input_poc
+    else:
+        final_vah, final_val, final_poc = calculate_tpo(prev_day_df)
 
     latest_price = df['close'].iloc[-1]
     
     st.subheader("📊 Live AMT Data (24-Hour Prior)")
-    if input_vah > 0: st.info("Manual AMT Overrides are ACTIVE.")
+    if use_manual: 
+        st.info("🟢 Reference Source: TRADINGVIEW MANUAL")
+    else:
+        st.info("🔵 Reference Source: PYTHON CALCULATED")
+        
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Current Price", f"${latest_price:,.2f}")
     col2.metric("Prior VAH", f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A")
@@ -460,22 +471,31 @@ if not df.empty:
 
     st.subheader("📖 PROJECT ECHO - State Journal")
     st.caption("Bar-by-bar replay of the AMT State Engine. Shows exactly when the auction shifted.")
-    journal_df = generate_state_journal(df, input_vah, input_val, input_poc)
-    if not journal_df.empty:
-        st.dataframe(
-            journal_df, use_container_width=True, hide_index=True,
-            column_config={
-                "Time": st.column_config.TextColumn("Time (IST)"),
-                "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
-                "Code": st.column_config.NumberColumn("Code"),
-                "State Name": st.column_config.TextColumn("State Name"),
-                "Dev VAH": st.column_config.NumberColumn("Dev VAH", format="$%.0f"),
-                "Dev POC": st.column_config.NumberColumn("Dev POC", format="$%.0f"),
-                "Dev VAL": st.column_config.NumberColumn("Dev VAL", format="$%.0f"),
-            }
-        )
-    else:
-        st.info("Building State Journal...")
+    
+    journal_res = generate_state_journal(df, input_vah, input_val, input_poc)
+    
+    if journal_res is not None:
+        journal_df, echo_used_manual = journal_res
+        if not journal_df.empty:
+            if echo_used_manual:
+                st.caption("Echo Reference: 🟢 TRADINGVIEW MANUAL")
+            else:
+                st.caption("Echo Reference: 🔵 PYTHON CALCULATED")
+                
+            st.dataframe(
+                journal_df, use_container_width=True, hide_index=True,
+                column_config={
+                    "Time": st.column_config.TextColumn("Time (IST)"),
+                    "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
+                    "Code": st.column_config.NumberColumn("Code"),
+                    "State Name": st.column_config.TextColumn("State Name"),
+                    "Dev VAH": st.column_config.NumberColumn("Dev VAH", format="$%.0f"),
+                    "Dev POC": st.column_config.NumberColumn("Dev POC", format="$%.0f"),
+                    "Dev VAL": st.column_config.NumberColumn("Dev VAL", format="$%.0f"),
+                }
+            )
+        else:
+            st.info("Building State Journal...")
     st.markdown("---")
 
 else:
