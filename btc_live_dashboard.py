@@ -147,7 +147,6 @@ def calculate_session_journey(df, prev_vah, prev_val):
     cycle_date = df['ShiftedDate'].iloc[-1].date()
     cycle_start = pd.Timestamp(cycle_date).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
     
-    # 🆕 FOUR SESSION SPLITS
     asia_end = cycle_start + pd.Timedelta(hours=8)        # 13:30 IST
     europe_end = cycle_start + pd.Timedelta(hours=12)     # 17:30 IST
     us_cash_end = cycle_start + pd.Timedelta(hours=20)    # 01:30 IST
@@ -172,26 +171,28 @@ def calculate_session_journey(df, prev_vah, prev_val):
         high = session_data['high'].max()
         low = session_data['low'].min()
         
-        bias = "⚪ Balanced"
+        # 1. MACRO BIAS (vs Prior 24h Value)
+        macro_bias = "⚪ Inside Prior Value"
         if not pd.isna(prev_vah) and not pd.isna(prev_val):
-            if close > prev_vah:
-                bias = "🟢 Bullish (Above VAH)"
-            elif close < prev_val:
-                bias = "🔴 Bearish (Below VAL)"
-            elif high > prev_vah and close < prev_vah:
-                bias = "⚠️ Bull Trap (Rejected VAH)"
-            elif low < prev_val and close > prev_val:
-                bias = "⚠️ Bear Trap (Rejected VAL)"
-            else:
-                bias = "⚪ Inside Prior Value"
+            if close > prev_vah: macro_bias = "🟢 Bullish (Above Prior VAH)"
+            elif close < prev_val: macro_bias = "🔴 Bearish (Below Prior VAL)"
+            elif high > prev_vah and close < prev_vah: macro_bias = "⚠️ Bull Trap (Rejected Prior VAH)"
+            elif low < prev_val and close > prev_val: macro_bias = "⚠️ Bear Trap (Rejected Prior VAL)"
                 
+        # 2. MICRO BIAS (vs Session's Own Value Area)
+        micro_bias = "⚪ Balanced (Inside Value)"
+        if not pd.isna(vah) and not pd.isna(val):
+            if close > vah: micro_bias = "🟢 Strong Close (Above Session VAH)"
+            elif close < val: micro_bias = "🔴 Weak Close (Below Session VAL)"
+
         sessions.append({
             "Session": name, 
             "Open": session_data['open'].iloc[0], 
             "High": high,
             "Low": low, 
             "Close": close,
-            "Bias": bias,
+            "Macro Bias": macro_bias,
+            "Micro Bias": micro_bias,
             "POC": poc, 
             "VAH": vah, 
             "VAL": val
@@ -513,7 +514,8 @@ if not df.empty:
                 "High": st.column_config.NumberColumn("High", format="$%.0f"),
                 "Low": st.column_config.NumberColumn("Low", format="$%.0f"),
                 "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
-                "Bias": st.column_config.TextColumn("AMT Bias"),
+                "Macro Bias": st.column_config.TextColumn("Macro Bias (vs Prior)"),
+                "Micro Bias": st.column_config.TextColumn("Micro Bias (vs Session)"),
                 "POC": st.column_config.NumberColumn("POC", format="$%.0f"),
                 "VAH": st.column_config.NumberColumn("VAH", format="$%.0f"),
                 "VAL": st.column_config.NumberColumn("VAL", format="$%.0f"),
