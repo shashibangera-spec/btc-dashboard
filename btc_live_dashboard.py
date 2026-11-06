@@ -70,7 +70,7 @@ def fetch_amt_data():
             for col in ['open', 'high', 'low', 'close']:
                 df[col] = df[col].astype(float)
             
-            # CRITICAL FIX: Shift the date so the AMT cycle starts exactly at 05:30 IST
+            # Shift the date so the AMT cycle starts exactly at 05:30 IST
             df['ShiftedDate'] = df['Date'] - pd.Timedelta(hours=5, minutes=30)
             df = df.sort_values('Date').reset_index(drop=True)
             return df
@@ -121,25 +121,21 @@ def calculate_tpo(session_df):
     return (base_bucket + up) * row_size + row_size/2, (base_bucket + dn) * row_size + row_size/2, (base_bucket + poc_idx) * row_size + row_size/2
 
 def calculate_session_journey(df):
-    # CRITICAL FIX: Exact 30-minute boundaries based on ShiftedDate
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     day_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str]
     if day_df.empty: return pd.DataFrame()
     
     sessions = []
-    # Asia: 05:30 to 13:30 (8 hours)
     asia_df = day_df[(day_df['ShiftedDate'].dt.hour >= 5) & (day_df['ShiftedDate'].dt.hour < 13)]
     if not asia_df.empty:
         vah, val, poc = calculate_tpo(asia_df)
         sessions.append({"Session": "Asia (05:30-13:30)", "Open": asia_df['open'].iloc[0], "High": asia_df['high'].max(), "Low": asia_df['low'].min(), "Close": asia_df['close'].iloc[-1], "POC": poc, "VAH": vah, "VAL": val})
         
-    # Europe: 13:30 to 17:30 (4 hours)
     eu_df = day_df[(day_df['ShiftedDate'].dt.hour >= 13) & (day_df['ShiftedDate'].dt.hour < 17)]
     if not eu_df.empty:
         vah, val, poc = calculate_tpo(eu_df)
         sessions.append({"Session": "Europe (13:30-17:30)", "Open": eu_df['open'].iloc[0], "High": eu_df['high'].max(), "Low": eu_df['low'].min(), "Close": eu_df['close'].iloc[-1], "POC": poc, "VAH": vah, "VAL": val})
 
-    # US: 17:30 to 05:30 (12 hours)
     us_df = day_df[(day_df['ShiftedDate'].dt.hour >= 17) | (day_df['ShiftedDate'].dt.hour < 5)]
     if not us_df.empty:
         vah, val, poc = calculate_tpo(us_df)
@@ -151,6 +147,14 @@ def calculate_session_journey(df):
 # SECTION 2: PROJECT ECHO STATE ENGINE
 # ==========================================
 def generate_state_journal(df, manual_vah, manual_val, manual_poc):
+    # CRITICAL FIX: Calculate ATR inside the function before filtering!
+    df['prev_close'] = df['close'].shift(1)
+    df['tr0'] = abs(df['high'] - df['low'])
+    df['tr1'] = abs(df['high'] - df['prev_close'])
+    df['tr2'] = abs(df['low'] - df['prev_close'])
+    df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+    df['atr20'] = df['tr'].ewm(alpha=1/20, adjust=False).mean()
+    
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     today_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str].copy()
     yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str].copy()
@@ -160,7 +164,6 @@ def generate_state_journal(df, manual_vah, manual_val, manual_poc):
     last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
     
-    # CRITICAL FIX: Use Manual Overrides if provided for Project Echo
     if manual_vah > 0:
         prevVAH, prevVAL, prevPOC = manual_vah, manual_val, manual_poc
     else:
@@ -233,7 +236,6 @@ def generate_state_journal(df, manual_vah, manual_val, manual_poc):
         valueMigrationDown = vaShiftDown and pocShiftDown
         newValueDevelopingDown = pocBelowBars >= 2 and cycleBars >= 3
 
-        # State Machine (with the missing states fixed)
         if auctionState == 0:
             if close > prevVAH: auctionState = 2; discoveryStartBar = i
             elif close < prevVAL: auctionState = 3; discoveryStartBar = i
@@ -428,22 +430,18 @@ df = fetch_amt_data()
 binance_status = "🟢 Connected"
 
 if not df.empty:
-    # Calculate Prior Day based on the shifted 05:30 IST cycle
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
     last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
     
     calc_vah, calc_val, calc_poc = calculate_tpo(prev_day_df)
-    
-    # Use Manual Overrides if provided
     final_vah = input_vah if input_vah > 0 else calc_vah
     final_val = input_val if input_val > 0 else calc_val
     final_poc = input_poc if input_poc > 0 else calc_poc
 
     latest_price = df['close'].iloc[-1]
     
-    # --- LIVE AMT ---
     st.subheader("📊 Live AMT Data (24-Hour Prior)")
     if input_vah > 0: st.info("Manual AMT Overrides are ACTIVE.")
     col1, col2, col3, col4 = st.columns(4)
@@ -454,14 +452,12 @@ if not df.empty:
     
     st.markdown("---")
 
-    # --- SESSION JOURNEY ---
     st.subheader("🗺️ Session Journey (05:30 AM to 05:30 AM)")
     session_df = calculate_session_journey(df)
     if not session_df.empty:
         st.dataframe(session_df, use_container_width=True, hide_index=True)
     st.markdown("---")
 
-    # --- PROJECT ECHO JOURNAL ---
     st.subheader("📖 PROJECT ECHO - State Journal")
     st.caption("Bar-by-bar replay of the AMT State Engine. Shows exactly when the auction shifted.")
     journal_df = generate_state_journal(df, input_vah, input_val, input_poc)
@@ -589,7 +585,7 @@ if not options_df.empty:
     w1.metric("🔴 Highest Call OI", f"${call_oi_wall['Strike']:,.0f}", f"OI: ${call_oi_wall['OI_USD_Call']/1e6:.2f}M")
     w2.metric("🟢 Highest Put OI", f"${put_oi_wall['Strike']:,.0f}", f"OI: ${put_oi_wall['OI_USD_Put']/1e6:.2f}M")
     w3.metric("⚖️ True Max Pain", f"${true_max_pain:,.0f}", "Min Payout")
-    w4.metric("📊 OI PCR (USD)", f"{pcr:.2f}", "") # Removed directional label
+    w4.metric("📊 OI PCR (USD)", f"{pcr:.2f}", "")
 
     w5, w6, w7, w8 = st.columns(4)
     w5.metric("🔴 Call Gamma Wall", f"${call_gamma_wall['Strike']:,.0f}", f"Est. GEX: ${call_gamma_wall['GEX_Call']:,.0f}")
