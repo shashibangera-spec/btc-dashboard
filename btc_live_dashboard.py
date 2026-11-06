@@ -147,10 +147,10 @@ def calculate_session_journey(df, prev_vah, prev_val):
     cycle_date = df['ShiftedDate'].iloc[-1].date()
     cycle_start = pd.Timestamp(cycle_date).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
     
-    asia_end = cycle_start + pd.Timedelta(hours=8)        # 13:30 IST
-    europe_end = cycle_start + pd.Timedelta(hours=12)     # 17:30 IST
-    us_cash_end = cycle_start + pd.Timedelta(hours=20)    # 01:30 IST
-    cycle_end = cycle_start + pd.Timedelta(hours=24)      # 05:30 IST
+    asia_end = cycle_start + pd.Timedelta(hours=8)
+    europe_end = cycle_start + pd.Timedelta(hours=12)
+    us_cash_end = cycle_start + pd.Timedelta(hours=20)
+    cycle_end = cycle_start + pd.Timedelta(hours=24)
     
     asia_df = df[(df['Date'] >= cycle_start) & (df['Date'] < asia_end)]
     eu_df = df[(df['Date'] >= asia_end) & (df['Date'] < europe_end)]
@@ -171,7 +171,6 @@ def calculate_session_journey(df, prev_vah, prev_val):
         high = session_data['high'].max()
         low = session_data['low'].min()
         
-        # 1. MACRO BIAS (vs Prior 24h Value)
         macro_bias = "⚪ Inside Prior Value"
         if not pd.isna(prev_vah) and not pd.isna(prev_val):
             if close > prev_vah: macro_bias = "🟢 Bullish (Above Prior VAH)"
@@ -179,23 +178,14 @@ def calculate_session_journey(df, prev_vah, prev_val):
             elif high > prev_vah and close < prev_vah: macro_bias = "⚠️ Bull Trap (Rejected Prior VAH)"
             elif low < prev_val and close > prev_val: macro_bias = "⚠️ Bear Trap (Rejected Prior VAL)"
                 
-        # 2. MICRO BIAS (vs Session's Own Value Area)
         micro_bias = "⚪ Balanced (Inside Value)"
         if not pd.isna(vah) and not pd.isna(val):
             if close > vah: micro_bias = "🟢 Strong Close (Above Session VAH)"
             elif close < val: micro_bias = "🔴 Weak Close (Below Session VAL)"
 
         sessions.append({
-            "Session": name, 
-            "Open": session_data['open'].iloc[0], 
-            "High": high,
-            "Low": low, 
-            "Close": close,
-            "Macro Bias": macro_bias,
-            "Micro Bias": micro_bias,
-            "POC": poc, 
-            "VAH": vah, 
-            "VAL": val
+            "Session": name, "Open": session_data['open'].iloc[0], "High": high, "Low": low, "Close": close,
+            "Macro Bias": macro_bias, "Micro Bias": micro_bias, "POC": poc, "VAH": vah, "VAL": val
         })
     return pd.DataFrame(sessions)
 
@@ -339,13 +329,9 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
         
         if i == 0 or auctionState != journal[-1]['Code'] or i == len(today_df) - 1:
             journal.append({
-                "Time": bar['Date'].strftime('%H:%M'),
-                "Close": close,
-                "Code": auctionState,
+                "Time": bar['Date'].strftime('%H:%M'), "Close": close, "Code": auctionState,
                 "State Name": state_names.get(auctionState, "UNKNOWN"),
-                "Dev VAH": currVAH,
-                "Dev POC": currPOC,
-                "Dev VAL": currVAL,
+                "Dev VAH": currVAH, "Dev POC": currPOC, "Dev VAL": currVAL,
             })
     return pd.DataFrame(journal), manual_valid
 
@@ -388,7 +374,7 @@ def fetch_delta_options():
         products = fetch_paginated_data(f"{BASE_URL}/products?states=live&page_size=1000")
         btc_options = [p for p in products if p.get("underlying_asset", {}).get("symbol") == "BTC" and p.get("contract_type") in ("call_options", "put_options")]
 
-        if not btc_options: return pd.DataFrame(), "No Options"
+        if not btc_options: return pd.DataFrame(), "No Options", 0.001
 
         expiries = set()
         for opt in btc_options:
@@ -403,10 +389,16 @@ def fetch_delta_options():
                 if exp_date >= today: valid_expiries.append((exp_date, exp))
             except ValueError: continue
                 
-        if not valid_expiries: return pd.DataFrame(), "No Valid Expiry"
+        if not valid_expiries: return pd.DataFrame(), "No Valid Expiry", 0.001
         nearest_expiry = min(valid_expiries, key=lambda x: x[0])[1]
         
         filtered_options = [opt for opt in btc_options if len(opt.get("symbol", "").split("-")) >= 4 and opt.get("symbol", "").split("-")[3] == nearest_expiry]
+
+        # 🆕 DYNAMIC CONTRACT MULTIPLIER
+        contract_size = 0.001 # Default fallback
+        if filtered_options:
+            try: contract_size = float(filtered_options[0].get("contract_value", 0.001))
+            except: pass
 
         tickers = fetch_paginated_data(f"{BASE_URL}/tickers?contract_types=call_options,put_options&page_size=1000")
         ticker_map = {t.get("symbol"): t for t in tickers if t.get("symbol")}
@@ -437,14 +429,16 @@ def fetch_delta_options():
 
                 greeks = ticker.get("greeks") or {}
                 gamma = float(greeks.get("gamma") or "0")
-                iv = float(quotes.get("mark_iv") or "0") * 100
+                
+                # 🆕 EXTRACT BOTH CALL AND PUT IV
+                iv = float(quotes.get("mark_iv") or quotes.get("ask_iv") or "0") * 100
                 
                 chain.append({"Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv})
             except (ValueError, TypeError):
                 continue
 
         df = pd.DataFrame(chain)
-        if df.empty: return pd.DataFrame(), nearest_expiry
+        if df.empty: return pd.DataFrame(), nearest_expiry, contract_size
 
         df_pivot = df.pivot_table(index="Strike", columns="Type", values=["Bid", "Ask", "Mark", "OI_USD", "OI_Contracts", "Gamma", "IV"], aggfunc="first").reset_index().fillna(0)
 
@@ -458,10 +452,10 @@ def fetch_delta_options():
         for col in expected_columns:
             if col not in df_pivot.columns: df_pivot[col] = 0.0
 
-        return df_pivot, nearest_expiry
+        return df_pivot, nearest_expiry, contract_size
 
     except Exception as e:
-        return pd.DataFrame(), "Error"
+        return pd.DataFrame(), "Error", 0.001
 
 # ==========================================
 # SECTION 4: UI RENDERING
@@ -505,9 +499,7 @@ if not df.empty:
     
     if not session_df.empty:
         st.dataframe(
-            session_df, 
-            use_container_width=True, 
-            hide_index=True,
+            session_df, use_container_width=True, hide_index=True,
             column_config={
                 "Session": st.column_config.TextColumn("Session"),
                 "Open": st.column_config.NumberColumn("Open", format="$%.0f"),
@@ -566,15 +558,15 @@ else:
     st.warning("⚠️ Could not fetch AMT Data from Binance.")
 
 # --- OPTIONS FLOW ---
-options_df, loaded_expiry = fetch_delta_options()
+options_df, loaded_expiry, dynamic_contract_size = fetch_delta_options()
 delta_status = "🟢 Connected"
 
 if not options_df.empty:
     st.subheader(f"📉 Delta Options Chain (Expiry: {loaded_expiry})")
     
-    contract_size = 0.001
-    options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * latest_price * contract_size
-    options_df['GEX_Put'] = options_df['Gamma_Put'] * options_df['OI_Contracts_Put'] * latest_price * contract_size
+    # 🆕 USING DYNAMIC CONTRACT SIZE
+    options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * latest_price * dynamic_contract_size
+    options_df['GEX_Put'] = options_df['Gamma_Put'] * options_df['OI_Contracts_Put'] * latest_price * dynamic_contract_size
     
     if latest_price > 0:
         options_df['Dist_to_Spot'] = abs(options_df['Strike'] - latest_price)
@@ -584,7 +576,10 @@ if not options_df.empty:
         call_premium = atm_row['Mark_Call']
         put_premium = atm_row['Mark_Put']
         straddle_price = call_premium + put_premium
-        atm_iv = atm_row['IV_Call']
+        
+        # 🆕 SHOW BOTH CALL AND PUT IV
+        call_iv = atm_row['IV_Call']
+        put_iv = atm_row['IV_Put']
         
         dist_to_vah = final_vah - latest_price if not pd.isna(final_vah) else 0
         dist_to_val = latest_price - final_val if not pd.isna(final_val) else 0
@@ -592,7 +587,9 @@ if not options_df.empty:
         st.markdown(f"#### 🧠 Market Expectations (ATM Straddle at ${atm_strike:,.0f})")
         e1, e2, e3, e4, e5 = st.columns(5)
         e1.metric("ATM Straddle Price", f"${straddle_price:,.2f}", "Breakeven Distance")
-        e2.metric("ATM Implied Volatility", f"{atm_iv:.2f}%", "Expected Volatility")
+        
+        # 🆕 SPLIT IV DISPLAY
+        e2.metric("ATM Call IV", f"{call_iv:.2f}%", f"Put IV: {put_iv:.2f}%", delta_color="off")
         
         if dist_to_vah > 0: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Distance")
         else: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Above VAH")
@@ -628,6 +625,7 @@ if not options_df.empty:
         st.warning("⚠️ No option strikes available inside the selected spot range (90%-110%).")
         st.stop()
 
+    # 🆕 LABEL HONESTY
     call_oi_wall = filtered_options.loc[filtered_options['OI_USD_Call'].idxmax()]
     put_oi_wall = filtered_options.loc[filtered_options['OI_USD_Put'].idxmax()]
     call_gamma_wall = filtered_options.loc[filtered_options['GEX_Call'].idxmax()]
@@ -637,9 +635,12 @@ if not options_df.empty:
     total_puts_usd = filtered_options['OI_USD_Put'].sum()
     pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
 
-    if pcr > 1.20 or pcr < 0.30:
-        alert_triggered = True
-        alert_message += f"⚠️ PCR EXTREME: OI PCR is {pcr:.2f}<br>"
+    # 🆕 ALERT CROSSING LOGIC (No more alert spam)
+    if st.session_state.prev_pcr != 0.0:
+        if (st.session_state.prev_pcr >= 1.20 and pcr < 1.20) or (st.session_state.prev_pcr >= 0.30 and pcr < 0.30):
+            alert_triggered = True
+            alert_message += f"⚠️ PCR EXTREME CROSSED: OI PCR is now {pcr:.2f}<br>"
+    
     if st.session_state.prev_max_pain != 0 and abs(true_max_pain - st.session_state.prev_max_pain) >= 500:
         alert_triggered = True
         alert_message += f"🔄 MAX PAIN SHIFT: Moved to ${true_max_pain:,.0f}!<br>"
@@ -657,28 +658,31 @@ if not options_df.empty:
 
     st.subheader("📊 Options Structure")
     w1, w2, w3, w4 = st.columns(4)
-    w1.metric("🔴 Highest Call OI", f"${call_oi_wall['Strike']:,.0f}", f"OI: ${call_oi_wall['OI_USD_Call']/1e6:.2f}M")
-    w2.metric("🟢 Highest Put OI", f"${put_oi_wall['Strike']:,.0f}", f"OI: ${put_oi_wall['OI_USD_Put']/1e6:.2f}M")
-    w3.metric("⚖️ True Max Pain", f"${true_max_pain:,.0f}", "Min Payout")
-    w4.metric("📊 OI PCR (USD)", f"{pcr:.2f}", "")
+    
+    # 🆕 HONEST LABELS
+    w1.metric("🔴 Call OI Concentration", f"${call_oi_wall['Strike']:,.0f}", f"OI: ${call_oi_wall['OI_USD_Call']/1e6:.2f}M")
+    w2.metric("🟢 Put OI Concentration", f"${put_oi_wall['Strike']:,.0f}", f"OI: ${put_oi_wall['OI_USD_Put']/1e6:.2f}M")
+    w3.metric("⚖️ Theoretical Min Payout", f"${true_max_pain:,.0f}", "Max Pain (Min Payout)")
+    w4.metric("📊 Local OI PCR (±10%)", f"{pcr:.2f}", "Put OI / Call OI (USD)")
 
     w5, w6, w7, w8 = st.columns(4)
     w5.metric("🔴 Call Gamma Wall", f"${call_gamma_wall['Strike']:,.0f}", f"Est. GEX: ${call_gamma_wall['GEX_Call']:,.0f}")
     w6.metric("🟢 Put Gamma Wall", f"${put_gamma_wall['Strike']:,.0f}", f"Est. GEX: ${put_gamma_wall['GEX_Put']:,.0f}")
-    st.caption("⚠️ GEX is calculated within the ±10% spot band and uses a fixed 0.001 contract multiplier.")
+    st.caption(f"⚠️ GEX is calculated within the ±10% spot band using a dynamic multiplier of {dynamic_contract_size}. Treat as estimated spot-band exposure.")
     
     st.markdown("---")
 
     st.subheader("🎯 Premium at AMT Levels")
     if not pd.isna(final_vah) and not pd.isna(final_val) and not pd.isna(final_poc):
+        # 🆕 SHOW DISTANCE TO AMT LEVELS
         vah_strike = filtered_options.loc[(filtered_options['Strike'] - final_vah).abs().idxmin()]
         val_strike = filtered_options.loc[(filtered_options['Strike'] - final_val).abs().idxmin()]
         poc_strike = filtered_options.loc[(filtered_options['Strike'] - final_poc).abs().idxmin()]
         
         c1, c2, c3 = st.columns(3)
-        c1.metric(f"Prior VAH (${vah_strike['Strike']:,.0f})", f"Call: ${vah_strike['Mark_Call']:,.2f}", f"Put: ${vah_strike['Mark_Put']:,.2f}")
-        c2.metric(f"Prior POC (${poc_strike['Strike']:,.0f})", f"Call: ${poc_strike['Mark_Call']:,.2f}", f"Put: ${poc_strike['Mark_Put']:,.2f}")
-        c3.metric(f"Prior VAL (${val_strike['Strike']:,.0f})", f"Call: ${val_strike['Mark_Call']:,.2f}", f"Put: ${val_strike['Mark_Put']:,.2f}")
+        c1.metric(f"Prior VAH (${vah_strike['Strike']:,.0f})", f"Call: ${vah_strike['Mark_Call']:,.2f}", f"Put: ${vah_strike['Mark_Put']:,.2f}", delta=f"Dist: ${abs(vah_strike['Strike'] - final_vah):,.0f}", delta_color="off")
+        c2.metric(f"Prior POC (${poc_strike['Strike']:,.0f})", f"Call: ${poc_strike['Mark_Call']:,.2f}", f"Put: ${poc_strike['Mark_Put']:,.2f}", delta=f"Dist: ${abs(poc_strike['Strike'] - final_poc):,.0f}", delta_color="off")
+        c3.metric(f"Prior VAL (${val_strike['Strike']:,.0f})", f"Call: ${val_strike['Mark_Call']:,.2f}", f"Put: ${val_strike['Mark_Put']:,.2f}", delta=f"Dist: ${abs(val_strike['Strike'] - final_val):,.0f}", delta_color="off")
     else:
         st.info("Manual Overrides required.")
     st.markdown("---")
