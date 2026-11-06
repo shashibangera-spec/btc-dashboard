@@ -42,6 +42,9 @@ if 'prev_max_pain' not in st.session_state: st.session_state.prev_max_pain = 0.0
 if 'prev_call_wall' not in st.session_state: st.session_state.prev_call_wall = 0.0
 if 'prev_put_wall' not in st.session_state: st.session_state.prev_put_wall = 0.0
 
+# Initialize to NaN as a safety guard (Fix 3C)
+final_vah, final_val, final_poc = np.nan, np.nan, np.nan
+
 # ==========================================
 # SECTION 1: BINANCE DATA & AMT MATH
 # ==========================================
@@ -121,27 +124,38 @@ def calculate_tpo(session_df):
     return (base_bucket + up) * row_size + row_size/2, (base_bucket + dn) * row_size + row_size/2, (base_bucket + poc_idx) * row_size + row_size/2
 
 def calculate_session_journey(df):
-    # Get today's cycle using ShiftedDate
-    today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    day_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str]
-    if day_df.empty: return pd.DataFrame()
+    if df.empty: return pd.DataFrame()
+    
+    # FIX 1: Exact timestamp boundaries using original IST 'Date' column
+    cycle_date = df['ShiftedDate'].iloc[-1].date()
+    cycle_start = pd.Timestamp(cycle_date).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
+    
+    asia_end = cycle_start + pd.Timedelta(hours=8)     # 13:30 IST
+    europe_end = cycle_start + pd.Timedelta(hours=12)  # 17:30 IST
+    cycle_end = cycle_start + pd.Timedelta(hours=24)   # Next day 05:30 IST
+    
+    asia_df = df[(df['Date'] >= cycle_start) & (df['Date'] < asia_end)]
+    eu_df = df[(df['Date'] >= asia_end) & (df['Date'] < europe_end)]
+    us_df = df[(df['Date'] >= europe_end) & (df['Date'] < cycle_end)]
     
     sessions = []
-    # FIX: Filter using original 'Date' (IST) to match exact session hours
-    asia_df = day_df[(day_df['Date'].dt.hour >= 5) & (day_df['Date'].dt.hour < 13)]
-    if not asia_df.empty:
-        vah, val, poc = calculate_tpo(asia_df)
-        sessions.append({"Session": "Asia (05:30-13:30)", "Open": asia_df['open'].iloc[0], "High": asia_df['high'].max(), "Low": asia_df['low'].min(), "Close": asia_df['close'].iloc[-1], "POC": poc, "VAH": vah, "VAL": val})
-        
-    eu_df = day_df[(day_df['Date'].dt.hour >= 13) & (day_df['Date'].dt.hour < 17)]
-    if not eu_df.empty:
-        vah, val, poc = calculate_tpo(eu_df)
-        sessions.append({"Session": "Europe (13:30-17:30)", "Open": eu_df['open'].iloc[0], "High": eu_df['high'].max(), "Low": eu_df['low'].min(), "Close": eu_df['close'].iloc[-1], "POC": poc, "VAH": vah, "VAL": val})
-
-    us_df = day_df[(day_df['Date'].dt.hour >= 17) | (day_df['Date'].dt.hour < 5)]
-    if not us_df.empty:
-        vah, val, poc = calculate_tpo(us_df)
-        sessions.append({"Session": "US (17:30-05:30)", "Open": us_df['open'].iloc[0], "High": us_df['high'].max(), "Low": us_df['low'].min(), "Close": us_df['close'].iloc[-1], "POC": poc, "VAH": vah, "VAL": val})
+    for name, session_data in [
+        ("Asia (05:30-13:30)", asia_df),
+        ("Europe (13:30-17:30)", eu_df),
+        ("US (17:30-05:30)", us_df)
+    ]:
+        if session_data.empty: continue
+        vah, val, poc = calculate_tpo(session_data)
+        sessions.append({
+            "Session": name,
+            "Open": session_data['open'].iloc[0],
+            "High": session_data['high'].max(),
+            "Low": session_data['low'].min(),
+            "Close": session_data['close'].iloc[-1],
+            "POC": poc,
+            "VAH": vah,
+            "VAL": val
+        })
         
     return pd.DataFrame(sessions)
 
@@ -149,6 +163,11 @@ def calculate_session_journey(df):
 # SECTION 2: PROJECT ECHO STATE ENGINE
 # ==========================================
 def generate_state_journal(df, manual_vah, manual_val, manual_poc):
+    # FIX 2: Initialize use_manual BEFORE any early exits
+    use_manual = (manual_vah > 0 and manual_val > 0 and manual_poc > 0)
+    
+    if df.empty: return pd.DataFrame(), use_manual
+    
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['prev_close'])
@@ -160,20 +179,17 @@ def generate_state_journal(df, manual_vah, manual_val, manual_poc):
     today_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str].copy()
     yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str].copy()
     
-    if yesterday_df.empty or today_df.empty: return pd.DataFrame()
+    if yesterday_df.empty or today_df.empty: return pd.DataFrame(), use_manual
 
     last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
-    
-    # ATOMIC OVERRIDE CHECK: Only use manual if ALL THREE are > 0
-    use_manual = (manual_vah > 0 and manual_val > 0 and manual_poc > 0)
     
     if use_manual:
         prevVAH, prevVAL, prevPOC = manual_vah, manual_val, manual_poc
     else:
         prevVAH, prevVAL, prevPOC = calculate_tpo(prev_day_df)
     
-    if pd.isna(prevVAH): return pd.DataFrame()
+    if pd.isna(prevVAH) or pd.isna(prevVAL) or pd.isna(prevPOC): return pd.DataFrame(), use_manual
 
     journal = []
     auctionState = 0
@@ -387,14 +403,14 @@ def fetch_delta_options():
             ask = quotes.get("best_ask") or ticker.get("best_ask", 0)
             mark = ticker.get("mark_price") or 0
 
-            greeks = ticker.get("greeks") or {}
-            gamma_str = greeks.get("gamma") or "0"
-            gamma = float(gamma_str)
-            
-            iv_str = quotes.get("mark_iv") or "0"
-            iv = float(iv_str) * 100
-
-            try:
+            try: # FIX 6A: Moved typecasting inside the try block
+                greeks = ticker.get("greeks") or {}
+                gamma_str = greeks.get("gamma") or "0"
+                gamma = float(gamma_str)
+                
+                iv_str = quotes.get("mark_iv") or "0"
+                iv = float(iv_str) * 100
+                
                 chain.append({
                     "Strike": float(strike),
                     "Type": opt_type,
@@ -422,6 +438,12 @@ def fetch_delta_options():
                 new_cols.append(str(col))
         df_pivot.columns = new_cols
 
+        # FIX 4B: Ensure missing columns exist to prevent KeyErrors
+        expected_columns = ['Bid_Call', 'Ask_Call', 'Mark_Call', 'OI_USD_Call', 'OI_Contracts_Call', 'Gamma_Call', 'IV_Call', 'Bid_Put', 'Ask_Put', 'Mark_Put', 'OI_USD_Put', 'OI_Contracts_Put', 'Gamma_Put', 'IV_Put']
+        for col in expected_columns:
+            if col not in df_pivot.columns:
+                df_pivot[col] = 0.0
+
         return df_pivot, nearest_expiry
 
     except Exception as e:
@@ -436,16 +458,21 @@ binance_status = "🟢 Connected"
 if not df.empty:
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
-    last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
     
-    # ATOMIC OVERRIDE CHECK
-    use_manual = (input_vah > 0 and input_val > 0 and input_poc > 0)
-    
-    if use_manual:
-        final_vah, final_val, final_poc = input_vah, input_val, input_poc
+    # FIX 3: Guard against empty history
+    if not yesterday_df.empty:
+        last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
+        prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
+        
+        # FIX 2: Initialize manual overrides before checking
+        use_manual = (input_vah > 0 and input_val > 0 and input_poc > 0)
+        if use_manual:
+            final_vah, final_val, final_poc = input_vah, input_val, input_poc
+        else:
+            final_vah, final_val, final_poc = calculate_tpo(prev_day_df)
     else:
-        final_vah, final_val, final_poc = calculate_tpo(prev_day_df)
+        st.warning("⚠️ Waiting for enough Binance history to calculate prior AMT profile.")
+        use_manual = False
 
     latest_price = df['close'].iloc[-1]
     
@@ -566,6 +593,11 @@ if not options_df.empty:
     else:
         filtered_options = options_df.copy()
 
+    # FIX 4A: Empty chain guard
+    if filtered_options.empty:
+        st.warning("⚠️ No option strikes available inside the selected spot range (90%-110%).")
+        st.stop()
+
     call_oi_wall = filtered_options.loc[filtered_options['OI_USD_Call'].idxmax()]
     put_oi_wall = filtered_options.loc[filtered_options['OI_USD_Put'].idxmax()]
     call_gamma_wall = filtered_options.loc[filtered_options['GEX_Call'].idxmax()]
@@ -580,7 +612,8 @@ if not options_df.empty:
     alert_message = ""
     if pcr > 1.20 or pcr < 0.30:
         alert_triggered = True
-        alert_message += f"⚠️ PCR SHIFT: OI PCR is {pcr:.2f}<br>"
+        # FIX 6E: Renamed to PCR EXTREME
+        alert_message += f"⚠️ PCR EXTREME: OI PCR is {pcr:.2f}<br>"
     if st.session_state.prev_max_pain != 0 and abs(true_max_pain - st.session_state.prev_max_pain) >= 500:
         alert_triggered = True
         alert_message += f"🔄 MAX PAIN SHIFT: Moved to ${true_max_pain:,.0f}!<br>"
@@ -610,6 +643,7 @@ if not options_df.empty:
     w5, w6, w7, w8 = st.columns(4)
     w5.metric("🔴 Call Gamma Wall", f"${call_gamma_wall['Strike']:,.0f}", f"Est. GEX: ${call_gamma_wall['GEX_Call']:,.0f}")
     w6.metric("🟢 Put Gamma Wall", f"${put_gamma_wall['Strike']:,.0f}", f"Est. GEX: ${put_gamma_wall['GEX_Put']:,.0f}")
+    st.caption("⚠️ GEX is calculated within the ±10% spot band and uses a fixed 0.001 contract multiplier. Treat as estimated spot-band exposure.")
     
     st.markdown("---")
 
