@@ -668,6 +668,16 @@ if not df.empty:
 
     latest_price = df['close'].iloc[-1]
 
+# MOVED UP: Calculate Journal before Options so current_amt_state is available for confluence alerts
+journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
+current_amt_state = 0
+current_amt_name = "UNKNOWN"
+if journal_res is not None:
+    journal_df_check, _ = journal_res
+    if not journal_df_check.empty:
+        current_amt_state = journal_df_check.iloc[-1]['Code']
+        current_amt_name = journal_df_check.iloc[-1]['State Name']
+
 options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, strike_ladder, is_chain_complete = fetch_delta_options()
 
 if not options_df.empty and latest_price > 0:
@@ -772,7 +782,7 @@ if not options_df.empty and latest_price > 0:
             near_put, mid_put, far_put = [], [], []
 
         # ----------------------------------------------------
-        # SMART CONFLUENCE ALERTS (NEW)
+        # SMART CONFLUENCE ALERTS
         # ----------------------------------------------------
         # 1. Trap Door (Bearish Breakdown)
         if straddle_valid and near_put and current_amt_state in [3, 11, 14]:
@@ -825,37 +835,32 @@ if not options_df.empty and latest_price > 0:
         p_state["prev_put_wall"] = put_oi_wall['Strike']
         p_state["prev_price"] = latest_price
 
-journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
-if journal_res is not None:
-    journal_df_check, _ = journal_res
-    if not journal_df_check.empty:
-        current_amt_state = journal_df_check.iloc[-1]['Code']
-        current_amt_name = journal_df_check.iloc[-1]['State Name']
+# AMT State Alerts (Moved below options so they still work)
+if journal_res is not None and not journal_df_check.empty:
+    if p_state["prev_amt_state"] != -1 and current_amt_state != p_state["prev_amt_state"]:
+        is_extreme_neg = (funding_rate is not None and funding_rate < -0.05)
+        is_extreme_pos = (funding_rate is not None and funding_rate > 0.05)
         
-        if p_state["prev_amt_state"] != -1 and current_amt_state != p_state["prev_amt_state"]:
-            is_extreme_neg = (funding_rate is not None and funding_rate < -0.05)
-            is_extreme_pos = (funding_rate is not None and funding_rate > 0.05)
-            
-            if current_amt_state in [2, 3, 10, 11, 14]:
-                if current_amt_state in [2, 10]:
-                    if is_extreme_neg:
-                        alert_triggered = True
-                        alert_message += f"🚨 POTENTIAL SHORT SQUEEZE: Breakout confirmed ({current_amt_name}) with EXTREME NEGATIVE Funding ({funding_rate:.3f}%)!<br>"
-                    else:
-                        alert_triggered = True
-                        alert_message += f"📖 AMT STATE SHIFT: {current_amt_name} (Upside breakout)<br>"
-                elif current_amt_state in [3, 11]:
-                    if is_extreme_pos:
-                        alert_triggered = True
-                        alert_message += f"🚨 POTENTIAL LONG LIQUIDATION: Breakdown confirmed ({current_amt_name}) with EXTREME POSITIVE Funding ({funding_rate:.3f}%)!<br>"
-                    else:
-                        alert_triggered = True
-                        alert_message += f"📖 AMT STATE SHIFT: {current_amt_name} (Downside breakdown)<br>"
+        if current_amt_state in [2, 3, 10, 11, 14]:
+            if current_amt_state in [2, 10]:
+                if is_extreme_neg:
+                    alert_triggered = True
+                    alert_message += f"🚨 POTENTIAL SHORT SQUEEZE: Breakout confirmed ({current_amt_name}) with EXTREME NEGATIVE Funding ({funding_rate:.3f}%)!<br>"
                 else:
                     alert_triggered = True
-                    alert_message += f"📖 AMT STATE SHIFT: {current_amt_name}<br>"
-        
-        p_state["prev_amt_state"] = current_amt_state
+                    alert_message += f"📖 AMT STATE SHIFT: {current_amt_name} (Upside breakout)<br>"
+            elif current_amt_state in [3, 11]:
+                if is_extreme_pos:
+                    alert_triggered = True
+                    alert_message += f"🚨 POTENTIAL LONG LIQUIDATION: Breakdown confirmed ({current_amt_name}) with EXTREME POSITIVE Funding ({funding_rate:.3f}%)!<br>"
+                else:
+                    alert_triggered = True
+                    alert_message += f"📖 AMT STATE SHIFT: {current_amt_name} (Downside breakdown)<br>"
+            else:
+                alert_triggered = True
+                alert_message += f"📖 AMT STATE SHIFT: {current_amt_name}<br>"
+    
+    p_state["prev_amt_state"] = current_amt_state
 
 if alert_triggered:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
