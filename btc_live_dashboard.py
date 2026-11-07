@@ -925,44 +925,6 @@ with tab_dashboard:
             
         st.markdown("---")
 
-        # --- ONE-CLICK SNAPSHOT GENERATION ---
-        snapshot_text = f"""
-=== BTC TERMINAL SNAPSHOT ===
-Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} IST
-
-[VITAL SIGNS]
-Price: ${latest_price:,.2f}
-AMT State: {current_amt_name} (Code {current_amt_state})
-Options Bias: {b_text} (Score: {options_bias_score:+d})
-Funding Rate: {f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"}
-
-[AMT MAP]
-Prior VAH: ${final_vah:,.2f} | Prior POC: ${final_poc:,.2f} | Prior VAL: ${final_val:,.2f}
-Source: {"TradingView Manual" if manual_values_valid else "Python Calculated"}
-
-[OPTIONS SNAPSHOT]
-Expiry: {loaded_expiry} | Time Left: {time_str}
-ATM Straddle: {"$"+f"{straddle_price:,.2f}" if straddle_valid else "INVALID ("+straddle_reason+")"}
-Max Pain: ${true_max_pain:,.0f}
-Local PCR: {pcr:.2f}
-Gamma Walls: Call ${call_gamma_wall['Strike']:,.0f} / Put ${put_gamma_wall['Strike']:,.0f}
-
-[OI CLUSTERS]
-Near-Term (<0.5x): Call {"$"+f"{near_call[0]['VWAS']:,.0f}" if near_call else "N/A"} | Put {"$"+f"{near_put[0]['VWAS']:,.0f}" if near_put else "N/A"}
-Mid-Term (0.5-1.0x): Call {"$"+f"{mid_call[0]['VWAS']:,.0f}" if mid_call else "N/A"} | Put {"$"+f"{mid_put[0]['VWAS']:,.0f}" if mid_put else "N/A"}
-Distant (>=1.0x): Call {"$"+f"{far_call[0]['VWAS']:,.0f}" if far_call else "N/A"} | Put {"$"+f"{far_put[0]['VWAS']:,.0f}" if far_put else "N/A"}
-
-[PROJECT ECHO (Last 3 States)]
-"""
-        if journal_res is not None and not journal_df_check.empty:
-            for idx, row in journal_df_check.tail(3).iterrows():
-                snapshot_text += f"{row['Time']} | Close: ${row['Close']:,.0f} | {row['State Name']} (Code {row['Code']})\n"
-
-        with st.expander("📋 Copy Dashboard Snapshot (Click to expand)"):
-            st.code(snapshot_text, language="text")
-            
-        st.markdown("---")
-
         # --- SECTION 1: AMT MAP ---
         st.subheader("🗺️ AMT Map & Context")
         if manual_values_valid: st.info("🟢 Reference Source: TRADINGVIEW MANUAL")
@@ -1104,6 +1066,43 @@ Distant (>=1.0x): Call {"$"+f"{far_call[0]['VWAS']:,.0f}" if far_call else "N/A"
     else:
         binance_status = "🔴 Failed"
         st.warning("⚠️ Could not fetch AMT Data from Binance.")
+
+    # --- MOVED TO BOTTOM: ONE-CLICK SNAPSHOT GENERATION ---
+    st.markdown("---")
+    snapshot_text = f"""
+=== BTC TERMINAL SNAPSHOT ===
+Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} IST
+
+[VITAL SIGNS]
+Price: ${latest_price:,.2f}
+AMT State: {current_amt_name} (Code {current_amt_state})
+Options Bias: {b_text} (Score: {options_bias_score:+d})
+Funding Rate: {f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"}
+
+[AMT MAP]
+Prior VAH: ${final_vah:,.2f} | Prior POC: ${final_poc:,.2f} | Prior VAL: ${final_val:,.2f}
+Source: {"TradingView Manual" if manual_values_valid else "Python Calculated"}
+
+[OPTIONS SNAPSHOT]
+Expiry: {loaded_expiry} | Time Left: {time_str}
+ATM Straddle: {"$"+f"{straddle_price:,.2f}" if straddle_valid else "INVALID ("+straddle_reason+")"}
+Max Pain: ${true_max_pain:,.0f}
+Local PCR: {pcr:.2f}
+Gamma Walls: Call ${call_gamma_wall['Strike']:,.0f} / Put ${put_gamma_wall['Strike']:,.0f}
+
+[OI CLUSTERS]
+Near-Term (<0.5x): Call {"$"+f"{near_call[0]['VWAS']:,.0f}" if near_call else "N/A"} | Put {"$"+f"{near_put[0]['VWAS']:,.0f}" if near_put else "N/A"}
+Mid-Term (0.5-1.0x): Call {"$"+f"{mid_call[0]['VWAS']:,.0f}" if mid_call else "N/A"} | Put {"$"+f"{mid_put[0]['VWAS']:,.0f}" if mid_put else "N/A"}
+Distant (>=1.0x): Call {"$"+f"{far_call[0]['VWAS']:,.0f}" if far_call else "N/A"} | Put {"$"+f"{far_put[0]['VWAS']:,.0f}" if far_put else "N/A"}
+
+[PROJECT ECHO (Last 3 States)]
+"""
+    if journal_res is not None and not journal_df_check.empty:
+        for idx, row in journal_df_check.tail(3).iterrows():
+            snapshot_text += f"{row['Time']} | Close: ${row['Close']:,.0f} | {row['State Name']} (Code {row['Code']})\n"
+
+    with st.expander("📋 Copy Dashboard Snapshot (Click to expand)"):
+        st.code(snapshot_text, language="text")
 
     if st.button("🔄 Refresh All Data"):
         st.cache_data.clear()
