@@ -39,6 +39,7 @@ def get_persistent_state():
 
         # Gamma Break State Machine
         "last_closed_candle_time": 0,
+        "previous_candle_time": 0,
         "put_gamma_break_state": "SAFE",
         "active_broken_put_wall": 0.0
     }
@@ -47,25 +48,33 @@ p_state = get_persistent_state()
 
 # Backward compatibility with an existing cached state
 p_state.setdefault("last_closed_candle_time", 0)
+p_state.setdefault("previous_candle_time", 0)
 p_state.setdefault("put_gamma_break_state", "SAFE")
 p_state.setdefault("active_broken_put_wall", 0.0)
 
 # ==========================================
-# TELEGRAM ALERT FUNCTION
+# TELEGRAM ALERT FUNCTION (UPDATED FOR RETRY)
 # ==========================================
 def send_telegram_message(message):
     try:
         token = st.secrets["TELEGRAM_TOKEN"]
         chat_id = st.secrets["TELEGRAM_CHAT_ID"]
     except KeyError:
-        return
+        st.error("Telegram secrets not found.")
+        return False
     
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
     try:
-        requests.post(url, json=payload, timeout=5)
-    except Exception:
-        pass
+        response = requests.post(url, json=payload, timeout=5)
+        if response.status_code == 200:
+            return True
+        else:
+            st.error(f"Telegram API error: {response.status_code}")
+            return False
+    except Exception as e:
+        st.error(f"Telegram connection error: {e}")
+        return False
 
 # ==========================================
 # SIDEBAR: MANUAL AMT OVERRIDES & JOURNAL
@@ -573,7 +582,7 @@ def fetch_delta_options():
         products, prod_complete = fetch_paginated_data(f"{BASE_URL}/products?states=live&page_size=1000")
         btc_options = [p for p in products if p.get("underlying_asset", {}).get("symbol") == "BTC" and p.get("contract_type") in ("call_options", "put_options")]
 
-        if not btc_options: return pd.DataFrame(), None, None, None, None, None, None, None, False
+        if not btc_options: return pd.DataFrame(), None, None, None, None, None, None, False
 
         now_utc = datetime.datetime.now(timezone.utc)
         valid_expiries = []
@@ -598,7 +607,7 @@ def fetch_delta_options():
                 except Exception:
                     pass
                     
-        if not valid_expiries: return pd.DataFrame(), None, None, None, None, None, None, None, False
+        if not valid_expiries: return pd.DataFrame(), None, None, None, None, None, None, False
         
         nearest = min(valid_expiries, key=lambda x: x["dt_utc"])
         nearest_expiry = nearest["expiry_str"]
@@ -658,7 +667,7 @@ def fetch_delta_options():
                 continue
 
         df = pd.DataFrame(chain)
-        if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, None, None, is_chain_complete
+        if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, None, False
 
         df_pivot = df.pivot_table(index="Strike", columns="Type", values=["Bid", "Ask", "Mark", "OI_USD", "OI_Contracts", "Gamma", "IV"], aggfunc="first").reset_index()
 
@@ -701,6 +710,10 @@ settlement_ist = "Unknown"
 options_bias_score = 0
 nearest_call_dist = None
 nearest_put_dist = None
+
+# Pending flags for state machine
+pending_gamma_breach = False
+pending_broken_wall = 0.0
 
 funding_rate, funding_mark_price = fetch_global_funding()
 
@@ -849,26 +862,12 @@ if not options_df.empty and latest_price > 0:
         # NOTIFICATION ONLY — DOES NOT MODIFY TRADING ENGINE
         # ==========================================================
 
-        # Independently validate the Put Gamma Wall used by alerts.
-        # Missing Gamma/OI data must never be treated as zero.
         notification_put_wall = None
-
         notification_candidates = filtered_options.copy()
+        required_cols = ['Strike', 'Gamma_Put', 'OI_Contracts_Put', 'GEX_Put']
 
-        required_cols = [
-            'Strike',
-            'Gamma_Put',
-            'OI_Contracts_Put',
-            'GEX_Put'
-        ]
-
-        if all(col in notification_candidates.columns
-               for col in required_cols):
-
-            notification_candidates = notification_candidates.dropna(
-                subset=required_cols
-            )
-
+        if all(col in notification_candidates.columns for col in required_cols):
+            notification_candidates = notification_candidates.dropna(subset=required_cols)
             notification_candidates = notification_candidates[
                 np.isfinite(notification_candidates['Strike']) &
                 np.isfinite(notification_candidates['Gamma_Put']) &
@@ -878,7 +877,6 @@ if not options_df.empty and latest_price > 0:
                 (notification_candidates['OI_Contracts_Put'] > 0) &
                 (notification_candidates['GEX_Put'] > 0)
             ]
-
             if not notification_candidates.empty:
                 notification_put_wall = float(
                     notification_candidates.loc[
@@ -887,106 +885,45 @@ if not options_df.empty and latest_price > 0:
                     ]
                 )
 
-        # Find the latest candle whose actual Binance close time
-        # has passed. Do not assume iloc[-2] is always completed.
-        now_utc_ms = int(
-            datetime.datetime.now(timezone.utc).timestamp() * 1000
-        )
+        now_utc_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
+        completed_candles = df[df['CloseTimeMs'].notna() & (df['CloseTimeMs'] <= now_utc_ms)]
 
-        completed_candles = df[
-            df['CloseTimeMs'].notna() &
-            (df['CloseTimeMs'] <= now_utc_ms)
-        ]
-
-        if (
-            notification_put_wall is not None
-            and not completed_candles.empty
-        ):
-
+        if not completed_candles.empty:
             completed_candle = completed_candles.iloc[-1]
+            completed_candle_time = int(completed_candle['CloseTimeMs'])
 
-            completed_candle_time = int(
-                completed_candle['CloseTimeMs']
-            )
-
-            completed_candle_close = float(
-                completed_candle['close']
-            )
-
-            # ------------------------------------------------------
             # FIRST DEPLOYMENT / INITIALIZATION
-            # ------------------------------------------------------
             if not p_state["last_closed_candle_time"]:
-
-                # Establish the initial state silently.
-                # Never send a historical breakdown alert on startup.
-                p_state["last_closed_candle_time"] = (
-                    completed_candle_time
-                )
-
-                if completed_candle_close < notification_put_wall:
-
-                    p_state["put_gamma_break_state"] = "BREACHED"
-
-                    p_state["active_broken_put_wall"] = (
-                        notification_put_wall
-                    )
-
-                else:
-
-                    p_state["put_gamma_break_state"] = "SAFE"
-
-                    p_state["active_broken_put_wall"] = 0.0
-
-            # ------------------------------------------------------
-            # PROCESS ONLY A NEW COMPLETED CANDLE
-            # ------------------------------------------------------
-            elif completed_candle_time > p_state["last_closed_candle_time"]:
-
-                # Mark this candle as processed.
-                # Subsequent Streamlit refreshes cannot process it again.
-                p_state["last_closed_candle_time"] = (
-                    completed_candle_time
-                )
-
-                wall_strike = notification_put_wall
-
-                # --------------------------------------------------
-                # STATE: SAFE — WAITING FOR CONFIRMED BREAKDOWN
-                # --------------------------------------------------
-                if p_state["put_gamma_break_state"] == "SAFE":
-
-                    if completed_candle_close < wall_strike:
-
-                        alert_triggered = True
-
-                        alert_message += (
-                            "🚨 GAMMA WALL BREAK — "
-                            "30M CLOSE CONFIRMED: "
-                            f"Price closed at "
-                            f"${completed_candle_close:,.2f}, "
-                            f"below Put Wall "
-                            f"(${wall_strike:,.0f}).<br>"
-                        )
-
+                p_state["last_closed_candle_time"] = completed_candle_time
+                if notification_put_wall is not None:
+                    if completed_candle['close'] < notification_put_wall:
                         p_state["put_gamma_break_state"] = "BREACHED"
-
-                        p_state["active_broken_put_wall"] = (
-                            wall_strike
-                        )
-
-                # --------------------------------------------------
-                # STATE: BREACHED — WAITING FOR RE-ARM
-                # --------------------------------------------------
-                elif p_state["put_gamma_break_state"] == "BREACHED":
-
-                    # Compare against the CURRENT valid Put Gamma Wall.
-                    # Wall migration cannot create another breakdown alert.
-                    if completed_candle_close > wall_strike:
-
+                        p_state["active_broken_put_wall"] = notification_put_wall
+                    else:
                         p_state["put_gamma_break_state"] = "SAFE"
-
                         p_state["active_broken_put_wall"] = 0.0
+
+            # PROCESS ONLY A NEW COMPLETED CANDLE
+            elif completed_candle_time > p_state["last_closed_candle_time"]:
+                p_state["previous_candle_time"] = p_state["last_closed_candle_time"]
+                p_state["last_closed_candle_time"] = completed_candle_time
+                
+                # ONLY EVALUATE IF WALL IS VALID
+                if notification_put_wall is not None:
+                    completed_candle_close = float(completed_candle['close'])
+                    wall_strike = notification_put_wall
+
+                    if p_state["put_gamma_break_state"] == "SAFE":
+                        if completed_candle_close < wall_strike:
+                            alert_triggered = True
+                            alert_message += f"🚨 GAMMA WALL BREAK — 30M CLOSE CONFIRMED: Price closed at ${completed_candle_close:,.2f}, below Put Wall (${wall_strike:,.0f}).<br>"
+                            pending_gamma_breach = True
+                            pending_broken_wall = wall_strike
+                            
+                    elif p_state["put_gamma_break_state"] == "BREACHED":
+                        if completed_candle_close > wall_strike:
+                            p_state["put_gamma_break_state"] = "SAFE"
+                            p_state["active_broken_put_wall"] = 0.0
 
         # ==========================================================
         # END PUT GAMMA WALL BREAK STATE MACHINE
@@ -1113,10 +1050,21 @@ if alert_triggered:
         p_state["alert_history"] = p_state["alert_history"][:50]
     
     clean_telegram_msg = alert_message.replace("<br>", "\n")
-    send_telegram_message(f"🚨 BTC TERMINAL ALERT 🚨\n\n{clean_telegram_msg}")
+    success = send_telegram_message(f"🚨 BTC TERMINAL ALERT 🚨\n\n{clean_telegram_msg}")
     
-    st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
-    components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
+    if success:
+        if pending_gamma_breach:
+            p_state["put_gamma_break_state"] = "BREACHED"
+            p_state["active_broken_put_wall"] = pending_broken_wall
+        st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
+        components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
+    else:
+        # Revert timestamp so it retries next time
+        if "previous_candle_time" in p_state:
+            p_state["last_closed_candle_time"] = p_state["previous_candle_time"]
+        # Remove the unsent alert from history
+        p_state["alert_history"].pop(0)
+        st.error("⚠️ TELEGRAM DELIVERY FAILED. State reverted; will retry on next refresh.")
 
 # ==========================================
 # SECTION 5: RENDER UI TABS (REORGANIZED + SNAPSHOT)
