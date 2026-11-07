@@ -11,7 +11,7 @@ from urllib3.util.retry import Retry
 st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 
 # ==========================================
-# ALERT HISTORY MEMORY (Survives page refresh)
+# ALERT HISTORY MEMORY
 # ==========================================
 @st.cache_resource
 def get_alert_history():
@@ -109,15 +109,18 @@ def fetch_amt_data():
             continue
     return pd.DataFrame()
 
-# 🆕 BINANCE FUNDING RATE FUNCTION
+# 🆕 SWITCHED TO BYBIT FUNDING RATE
 @st.cache_data(ttl=180)
-def fetch_binance_funding():
+def fetch_global_funding():
     try:
-        url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
+        url = "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT"
         res = requests.get(url, timeout=10).json()
-        funding_rate = float(res.get("lastFundingRate", 0)) * 100
-        mark_price = float(res.get("markPrice", 0))
-        return funding_rate, mark_price
+        if res.get("retCode") == 0:
+            data = res.get("result", {}).get("list", [])[0]
+            funding_rate = float(data.get("fundingRate", 0)) * 100
+            mark_price = float(data.get("markPrice", 0))
+            return funding_rate, mark_price
+        return None, None
     except Exception:
         return None, None
 
@@ -513,7 +516,8 @@ true_max_pain = 0
 pcr = 0
 atm_row, atm_strike = None, 0
 
-funding_rate, funding_mark_price = fetch_binance_funding()
+# 🆕 FETCH BYBIT FUNDING
+funding_rate, funding_mark_price = fetch_global_funding()
 
 if not df.empty:
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
@@ -657,13 +661,12 @@ with tab_dashboard:
         col3.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
         col4.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
         
-        # 🆕 BINANCE FUNDING RATE SECTION
+        # 🆕 BYBIT FUNDING RATE SECTION
         st.markdown("---")
-        st.subheader("🌍 Global Market Context (Binance Futures)")
+        st.subheader("🌍 Global Market Context (Bybit Futures)")
         if funding_rate is not None:
             f1, f2 = st.columns(2)
             
-            # Funding Rate Logic
             if funding_rate > 0.01:
                 f_status = "🔴 Longs Paying (Overheated)"
                 f_color = "inverse"
@@ -675,10 +678,10 @@ with tab_dashboard:
                 f_color = "off"
                 
             f1.metric("Funding Rate (8h)", f"{funding_rate:+.4f}%", f_status, delta_color=f_color)
-            f2.metric("Binance Mark Price", f"${funding_mark_price:,.2f}")
+            f2.metric("Bybit Mark Price", f"${funding_mark_price:,.2f}")
             st.caption("💡 Positive funding = Longs paying Shorts (Crowded Long). Negative = Shorts paying Longs (Crowded Short).")
         else:
-            st.warning("⚠️ Could not fetch Binance Funding Rate.")
+            st.warning("⚠️ Could not fetch Bybit Funding Rate.")
         
         st.markdown("---")
 
