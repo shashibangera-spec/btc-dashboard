@@ -686,6 +686,11 @@ quote_freshness = "Unverified"
 atm_call_age = "N/A"
 atm_put_age = "N/A"
 
+# Directional Variables
+options_bias_score = 0
+nearest_call_dist = None
+nearest_put_dist = None
+
 funding_rate, funding_mark_price = fetch_global_funding()
 
 if not df.empty:
@@ -791,6 +796,30 @@ if not options_df.empty and latest_price > 0:
         if straddle_valid and raw_chain_df is not None and strike_ladder is not None:
             near_call, mid_call, far_call = find_oi_clusters(strike_ladder, raw_chain_df, "Call", latest_price, straddle_price)
             near_put, mid_put, far_put = find_oi_clusters(strike_ladder, raw_chain_df, "Put", latest_price, straddle_price)
+            
+            # --- DIRECTIONAL BIAS LOGIC ---
+            # 1. PCR Check
+            if pcr > 0 and pcr < 0.70: options_bias_score += 1
+            elif pcr > 1.20: options_bias_score -= 1
+            
+            # 2. IV Skew Check
+            call_iv_val = atm_row['IV_Call']
+            put_iv_val = atm_row['IV_Put']
+            if not pd.isna(call_iv_val) and not pd.isna(put_iv_val):
+                if call_iv_val > put_iv_val: options_bias_score += 1
+                elif put_iv_val > call_iv_val: options_bias_score -= 1
+                
+            # 3. Cluster Proximity Check
+            all_calls = near_call + mid_call + far_call
+            all_puts = near_put + mid_put + far_put
+            if all_calls: nearest_call_dist = all_calls[0]['Dist']
+            if all_puts: nearest_put_dist = all_puts[0]['Dist']
+            
+            if nearest_call_dist is not None and nearest_put_dist is not None:
+                if nearest_call_dist < nearest_put_dist: options_bias_score -= 1  # Resistance closer than support -> Bearish
+                elif nearest_put_dist < nearest_call_dist: options_bias_score += 1  # Support closer than resistance -> Bullish
+            # ------------------------------
+
         else:
             near_call, mid_call, far_call = [], [], []
             near_put, mid_put, far_put = [], [], []
@@ -1003,7 +1032,25 @@ with tab_dashboard:
             e5.metric("Put Ticker Age", atm_put_age)
             
             st.caption(f"Expiry Source: {expiry_source} | Quote Freshness: {quote_freshness} | To Prior VAH: ${dist_to_vah:,.2f} | To Prior VAL: ${dist_to_val:,.2f}")
+            
+            # --- DIRECTIONAL BIAS DISPLAY ---
             st.markdown("---")
+            if options_bias_score >= 2:
+                bias_color = "normal"
+                bias_text = "🟢 BULLISH (Favorable for Longs / Naked Calls)"
+            elif options_bias_score <= -2:
+                bias_color = "inverse"
+                bias_text = "🔴 BEARISH (Favorable for Shorts / Naked Puts)"
+            else:
+                bias_color = "off"
+                bias_text = "⚪ NEUTRAL (Conflicting signals)"
+                
+            db1, db2 = st.columns([1, 3])
+            db1.metric("🎯 Options Bias Score", f"{options_bias_score:+d}", delta_color=bias_color)
+            db2.metric("Directional Read", bias_text)
+            st.caption("Bias Score = PCR (<0.70 Bullish, >1.20 Bearish) + IV Skew (Call IV > Put IV = Bullish) + Nearest Cluster Proximity (Support closer = Bullish, Resistance closer = Bearish).")
+            st.markdown("---")
+            # --------------------------------
 
         if not filtered_options.empty:
             # 1. NEAR
