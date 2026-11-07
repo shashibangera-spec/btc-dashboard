@@ -1035,41 +1035,50 @@ with tab_dashboard:
         if not filtered_options.empty:
             st.subheader("🎯 OI Concentrations & Walls")
             
+            # Build the compact table data
+            cluster_rows = []
+            
             # Near
-            st.markdown("##### 📍 Near-Term (< 0.5x Straddle)")
-            nc1, nc2 = st.columns(2)
-            if straddle_valid and near_call:
-                c = near_call[0]
-                nc1.metric("Call Cluster", f"${c['VWAS']:,.0f}", f"OI: ${c['OI_USD']/1e6:.2f}M | Dist: {c['Dist']:.1f}x")
-            else: nc1.metric("Call Cluster", "N/A")
-            if straddle_valid and near_put:
-                p = near_put[0]
-                nc2.metric("Put Cluster", f"${p['VWAS']:,.0f}", f"OI: ${p['OI_USD']/1e6:.2f}M | Dist: {p['Dist']:.1f}x")
-            else: nc2.metric("Put Cluster", "N/A")
-
+            c_near = near_call[0] if near_call else None
+            p_near = near_put[0] if near_put else None
+            cluster_rows.append({
+                "Tier": "📍 Near (<0.5x)",
+                "Call Strike": f"${c_near['VWAS']:,.0f}" if c_near else "N/A",
+                "Call OI": f"${c_near['OI_USD']/1e6:.2f}M" if c_near else "N/A",
+                "Call Dist": f"{c_near['Dist']:.1f}x" if c_near else "N/A",
+                "Put Strike": f"${p_near['VWAS']:,.0f}" if p_near else "N/A",
+                "Put OI": f"${p_near['OI_USD']/1e6:.2f}M" if p_near else "N/A",
+                "Put Dist": f"{p_near['Dist']:.1f}x" if p_near else "N/A",
+            })
+            
             # Mid
-            st.markdown("##### 📍 Mid-Term (0.5x - 1.0x Straddle)")
-            mc1, mc2 = st.columns(2)
-            if straddle_valid and mid_call:
-                c = mid_call[0]
-                mc1.metric("Call Cluster", f"${c['VWAS']:,.0f}", f"OI: ${c['OI_USD']/1e6:.2f}M | Dist: {c['Dist']:.1f}x")
-            else: mc1.metric("Call Cluster", "N/A")
-            if straddle_valid and mid_put:
-                p = mid_put[0]
-                mc2.metric("Put Cluster", f"${p['VWAS']:,.0f}", f"OI: ${p['OI_USD']/1e6:.2f}M | Dist: {p['Dist']:.1f}x")
-            else: mc2.metric("Put Cluster", "N/A")
-
+            c_mid = mid_call[0] if mid_call else None
+            p_mid = mid_put[0] if mid_put else None
+            cluster_rows.append({
+                "Tier": "📍 Mid (0.5 - 1.0x)",
+                "Call Strike": f"${c_mid['VWAS']:,.0f}" if c_mid else "N/A",
+                "Call OI": f"${c_mid['OI_USD']/1e6:.2f}M" if c_mid else "N/A",
+                "Call Dist": f"{c_mid['Dist']:.1f}x" if c_mid else "N/A",
+                "Put Strike": f"${p_mid['VWAS']:,.0f}" if p_mid else "N/A",
+                "Put OI": f"${p_mid['OI_USD']/1e6:.2f}M" if p_mid else "N/A",
+                "Put Dist": f"{p_mid['Dist']:.1f}x" if p_mid else "N/A",
+            })
+            
             # Far
-            st.markdown("##### 🌍 Distant (>= 1.0x Straddle)")
-            dc1, dc2 = st.columns(2)
-            if straddle_valid and far_call:
-                c = far_call[0]
-                dc1.metric("Call Cluster", f"${c['VWAS']:,.0f}", f"OI: ${c['OI_USD']/1e6:.2f}M | Dist: {c['Dist']:.1f}x")
-            else: dc1.metric("Call Cluster", "N/A")
-            if straddle_valid and far_put:
-                p = far_put[0]
-                dc2.metric("Put Cluster", f"${p['VWAS']:,.0f}", f"OI: ${p['OI_USD']/1e6:.2f}M | Dist: {p['Dist']:.1f}x")
-            else: dc2.metric("Put Cluster", "N/A")
+            c_far = far_call[0] if far_call else None
+            p_far = far_put[0] if far_put else None
+            cluster_rows.append({
+                "Tier": "🌍 Distant (>1.0x)",
+                "Call Strike": f"${c_far['VWAS']:,.0f}" if c_far else "N/A",
+                "Call OI": f"${c_far['OI_USD']/1e6:.2f}M" if c_far else "N/A",
+                "Call Dist": f"{c_far['Dist']:.1f}x" if c_far else "N/A",
+                "Put Strike": f"${p_far['VWAS']:,.0f}" if p_far else "N/A",
+                "Put OI": f"${p_far['OI_USD']/1e6:.2f}M" if p_far else "N/A",
+                "Put Dist": f"{p_far['Dist']:.1f}x" if p_far else "N/A",
+            })
+
+            st.dataframe(pd.DataFrame(cluster_rows), use_container_width=True, hide_index=True)
+            st.caption("Context only — not support, resistance or price targets. Normalized distance based on ATM Straddle.")
 
             st.markdown("##### 📊 Context Metrics")
             w1, w2, w3 = st.columns(3)
