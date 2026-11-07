@@ -7,7 +7,7 @@ import math
 import streamlit.components.v1 as components
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from datetime import timezone
+from datetime import timezone, timedelta
 
 st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 
@@ -599,8 +599,6 @@ def fetch_delta_options():
         is_chain_complete = prod_complete and tick_complete
 
         chain = []
-        atm_call_ts = None
-        atm_put_ts = None
         
         for opt in filtered_options:
             sym = opt.get("symbol")
