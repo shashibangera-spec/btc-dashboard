@@ -249,7 +249,7 @@ def calculate_session_journey(df, prev_vah, prev_val):
     return pd.DataFrame(sessions)
 
 # ==========================================
-# SECTION 2: PROJECT ECHO STATE ENGINE (UNTOUCHED)
+# SECTION 2: PROJECT ECHO STATE ENGINE (FIXED)
 # ==========================================
 def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc):
     if df.empty: return pd.DataFrame(), manual_valid
@@ -288,6 +288,7 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
     acceptanceConfirmedDown = False
     pocAboveBars = 0
     pocBelowBars = 0
+    reentryInsideBars = 0
     prev_currVAH, prev_currVAL, prev_currPOC = np.nan, np.nan, np.nan
     
     state_names = {
@@ -380,9 +381,17 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
         elif auctionState == 14:
             if close > prevVAH: auctionState = 2; discoveryStartBar = i
             elif close < prevVAL: auctionState = 3; discoveryStartBar = i
+            else:
+                reentryInsideBars += 1
+                if reentryInsideBars >= 3 and cycleBars >= 3:
+                    auctionState = 1
+                    reentryInsideBars = 0
         elif auctionState == 16:
             if close > prevVAH: auctionState = 2; discoveryStartBar = i
             elif close >= prevVAL and close <= prevVAH: auctionState = 11
+            
+        if auctionState != 14:
+            reentryInsideBars = 0
             
         prev_currVAH, prev_currVAL, prev_currPOC = currVAH, currVAL, currPOC
         
