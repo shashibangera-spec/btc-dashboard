@@ -668,7 +668,6 @@ if not df.empty:
 
     latest_price = df['close'].iloc[-1]
 
-# MOVED UP: Calculate Journal before Options so current_amt_state is available for confluence alerts
 journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
 current_amt_state = 0
 current_amt_name = "UNKNOWN"
@@ -781,29 +780,24 @@ if not options_df.empty and latest_price > 0:
             near_call, mid_call, far_call = [], [], []
             near_put, mid_put, far_put = [], [], []
 
-        # ----------------------------------------------------
         # SMART CONFLUENCE ALERTS
-        # ----------------------------------------------------
-        # 1. Trap Door (Bearish Breakdown)
         if straddle_valid and near_put and current_amt_state in [3, 11, 14]:
             p_cluster = near_put[0]['VWAS'] if near_put else (mid_put[0]['VWAS'] if mid_put else 0)
             if p_cluster > 0 and latest_price <= p_cluster and options_bias_score <= -1:
                 alert_triggered = True
                 alert_message += f"🚨 TRAP DOOR: Price breaking below Put Cluster (${p_cluster:,.0f}) with Bearish Bias!<br>"
                 
-        # 2. Squeeze (Bullish Breakout)
         if straddle_valid and near_call and current_amt_state in [2, 10]:
             c_cluster = near_call[0]['VWAS'] if near_call else (mid_call[0]['VWAS'] if mid_call else 0)
             if c_cluster > 0 and latest_price >= c_cluster and funding_rate is not None and funding_rate < -0.05:
                 alert_triggered = True
                 alert_message += f"🚨 SQUEEZE: Price breaking above Call Cluster (${c_cluster:,.0f}) with Negative Funding!<br>"
 
-        # 3. Gamma Pin (Do Nothing)
         if straddle_valid and pcr > 0.8 and pcr < 1.1 and abs(latest_price - true_max_pain) < 100:
             alert_triggered = True
             alert_message += f"⚠️ GAMMA PIN: Price trapped near Max Pain (${true_max_pain:,.0f}). Avoid chopping.<br>"
-        # ----------------------------------------------------
 
+        # STANDARD ALERTS
         if p_state["prev_pcr"] != 0.0:
             if (p_state["prev_pcr"] >= 1.20 and pcr < 1.20) or (p_state["prev_pcr"] >= 0.30 and pcr < 0.30):
                 alert_triggered = True
@@ -835,7 +829,6 @@ if not options_df.empty and latest_price > 0:
         p_state["prev_put_wall"] = put_oi_wall['Strike']
         p_state["prev_price"] = latest_price
 
-# AMT State Alerts (Moved below options so they still work)
 if journal_res is not None and not journal_df_check.empty:
     if p_state["prev_amt_state"] != -1 and current_amt_state != p_state["prev_amt_state"]:
         is_extreme_neg = (funding_rate is not None and funding_rate < -0.05)
@@ -876,7 +869,7 @@ if alert_triggered:
 
 
 # ==========================================
-# SECTION 5: RENDER UI TABS
+# SECTION 5: RENDER UI TABS (REORGANIZED)
 # ==========================================
 tab_dashboard, tab_history = st.tabs(["📊 Live Dashboard", "📜 Alert History"])
 
@@ -891,38 +884,40 @@ with tab_history:
 
 with tab_dashboard:
     if not df.empty:
-        st.subheader("📊 Live AMT Data (24-Hour Prior)")
+        # --- TOP VITAL SIGNS ---
+        st.subheader("🚦 Vital Signs")
+        v1, v2, v3, v4 = st.columns(4)
+        v1.metric("Current Price", f"${latest_price:,.2f}")
+        v2.metric("AMT State", f"{current_amt_name}", f"Code {current_amt_state}")
+        
+        if options_bias_score >= 2:
+            b_color, b_text = "normal", "🟢 BULLISH"
+        elif options_bias_score <= -2:
+            b_color, b_text = "inverse", "🔴 BEARISH"
+        else:
+            b_color, b_text = "off", "⚪ NEUTRAL"
+        v3.metric("Options Bias", b_text, f"Score: {options_bias_score:+d}", delta_color=b_color)
+        
+        if funding_rate is not None:
+            f_color = "inverse" if funding_rate > 0.01 else "normal" if funding_rate < -0.01 else "off"
+            v4.metric("Funding Rate (8h)", f"{funding_rate:+.4f}%", "Ext Neg" if funding_rate < -0.05 else "Ext Pos" if funding_rate > 0.05 else "Neutral", delta_color=f_color)
+        else:
+            v4.metric("Funding Rate", "N/A")
+        
+        st.markdown("---")
+
+        # --- SECTION 1: AMT MAP ---
+        st.subheader("🗺️ AMT Map & Context")
         if manual_values_valid: st.info("🟢 Reference Source: TRADINGVIEW MANUAL")
         elif not pd.isna(final_vah): st.info("🔵 Reference Source: PYTHON CALCULATED")
         else: st.warning("🔴 Reference Source: UNAVAILABLE")
             
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Current Price", f"${latest_price:,.2f}")
-        col2.metric("Prior VAH", f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A")
-        col3.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
-        col4.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Prior VAH", f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A")
+        c2.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
+        c3.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
         
-        st.markdown("---")
-        st.subheader("🌍 Global Market Context (Delta Futures)")
-        if funding_rate is not None:
-            f1, f2 = st.columns(2)
-            if funding_rate > 0.05: f_status = "🔴 EXTREME POSITIVE"; f_color = "inverse"
-            elif funding_rate > 0.01: f_status = "🟠 HIGH POSITIVE"; f_color = "inverse"
-            elif funding_rate < -0.05: f_status = "🟢 EXTREME NEGATIVE"; f_color = "normal"
-            elif funding_rate < -0.01: f_status = "🟡 HIGH NEGATIVE"; f_color = "normal"
-            else: f_status = "⚪ NEUTRAL"; f_color = "off"
-                
-            f1.metric("Funding Rate (8h)", f"{funding_rate:+.4f}%", f_status, delta_color=f_color)
-            f2.metric("Delta Mark Price", f"${funding_mark_price:,.2f}")
-            st.caption("💡 Extreme Positive = Longs paying Shorts (Longs Vulnerable). Extreme Negative = Shorts paying Longs (Shorts Vulnerable).")
-        else:
-            st.warning("⚠️ Could not fetch Delta Funding Rate.")
-        
-        st.markdown("---")
-
-        st.subheader("🗺️ Session Journey (05:30 AM to 05:30 AM)")
         session_df = calculate_session_journey(df, final_vah, final_val)
-        
         if not session_df.empty:
             st.dataframe(
                 session_df, use_container_width=True, hide_index=True,
@@ -941,15 +936,87 @@ with tab_dashboard:
             )
         st.markdown("---")
 
+        # --- SECTION 2: OPTIONS SNAPSHOT ---
+        if not options_df.empty and atm_row is not None:
+            st.subheader(f"📉 Options Snapshot (Expiry: {loaded_expiry})")
+            
+            time_remaining = expiry_dt - datetime.datetime.now(timezone.utc) if expiry_dt else None
+            time_str = str(time_remaining).split('.')[0] if time_remaining else "Unknown"
+            if expiry_dt:
+                ist_tz = timezone(timedelta(hours=5, minutes=30))
+                settlement_ist = expiry_dt.astimezone(ist_tz).strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                settlement_ist = "Unknown"
+
+            o1, o2, o3, o4 = st.columns(4)
+            if straddle_valid:
+                straddle_delta = straddle_price - p_state["session_start_straddle"] if p_state["session_start_straddle"] else 0
+                straddle_delta_str = f"{straddle_delta:+,.0f}" if straddle_delta != 0 else "Unchanged"
+                o1.metric("ATM Straddle", f"${straddle_price:,.2f}", straddle_delta_str)
+            else:
+                o1.metric("ATM Straddle", "⚠️ INVALID", straddle_reason)
+
+            o2.metric("Max Pain (Expiry Ref)", f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else "N/A")
+            o3.metric("Settlement Time", settlement_ist)
+            o4.metric("Remaining Time", time_str)
+            
+            st.caption(f"Expiry Source: {expiry_source} | Quote Freshness: {quote_freshness} | Call Ticker Age: {atm_call_age} | Put Ticker Age: {atm_put_age}")
+            st.markdown("---")
+
+        if not filtered_options.empty:
+            st.subheader("🎯 OI Concentrations & Walls")
+            
+            # Near
+            st.markdown("##### 📍 Near-Term (< 0.5x Straddle)")
+            nc1, nc2 = st.columns(2)
+            if straddle_valid and near_call:
+                c = near_call[0]
+                nc1.metric("Call Cluster", f"${c['VWAS']:,.0f}", f"OI: ${c['OI_USD']/1e6:.2f}M | Dist: {c['Dist']:.1f}x")
+            else: nc1.metric("Call Cluster", "N/A")
+            if straddle_valid and near_put:
+                p = near_put[0]
+                nc2.metric("Put Cluster", f"${p['VWAS']:,.0f}", f"OI: ${p['OI_USD']/1e6:.2f}M | Dist: {p['Dist']:.1f}x")
+            else: nc2.metric("Put Cluster", "N/A")
+
+            # Mid
+            st.markdown("##### 📍 Mid-Term (0.5x - 1.0x Straddle)")
+            mc1, mc2 = st.columns(2)
+            if straddle_valid and mid_call:
+                c = mid_call[0]
+                mc1.metric("Call Cluster", f"${c['VWAS']:,.0f}", f"OI: ${c['OI_USD']/1e6:.2f}M | Dist: {c['Dist']:.1f}x")
+            else: mc1.metric("Call Cluster", "N/A")
+            if straddle_valid and mid_put:
+                p = mid_put[0]
+                mc2.metric("Put Cluster", f"${p['VWAS']:,.0f}", f"OI: ${p['OI_USD']/1e6:.2f}M | Dist: {p['Dist']:.1f}x")
+            else: mc2.metric("Put Cluster", "N/A")
+
+            # Far
+            st.markdown("##### 🌍 Distant (>= 1.0x Straddle)")
+            dc1, dc2 = st.columns(2)
+            if straddle_valid and far_call:
+                c = far_call[0]
+                dc1.metric("Call Cluster", f"${c['VWAS']:,.0f}", f"OI: ${c['OI_USD']/1e6:.2f}M | Dist: {c['Dist']:.1f}x")
+            else: dc1.metric("Call Cluster", "N/A")
+            if straddle_valid and far_put:
+                p = far_put[0]
+                dc2.metric("Put Cluster", f"${p['VWAS']:,.0f}", f"OI: ${p['OI_USD']/1e6:.2f}M | Dist: {p['Dist']:.1f}x")
+            else: dc2.metric("Put Cluster", "N/A")
+
+            st.markdown("##### 📊 Context Metrics")
+            w1, w2, w3 = st.columns(3)
+            w1.metric("Local OI PCR (±10%)", f"{pcr:.2f}", "Put OI / Call OI (USD)")
+            w2.metric("Gross Gamma Concentration", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}", "Unsigned OI Estimation")
+            w3.metric("Structural Extreme (OI)", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}")
+            st.caption("ℹ️ Context only — not support, resistance or price targets. Gross Gamma estimated using unsigned OI.")
+            st.markdown("---")
+
+        # --- SECTION 3: PROJECT ECHO ---
         st.subheader("📖 PROJECT ECHO - State Journal")
-        st.caption("⚠️ Experimental State Journal. Shows when the auction shifted.")
-        
         if journal_res is not None:
             journal_df, echo_used_manual = journal_res
             if not journal_df.empty:
                 if echo_used_manual: st.caption("Echo Reference: 🟢 TRADINGVIEW MANUAL")
                 else: st.caption("Echo Reference: 🔵 PYTHON CALCULATED")
-                    
                 st.dataframe(
                     journal_df, use_container_width=True, hide_index=True,
                     column_config={
@@ -962,123 +1029,13 @@ with tab_dashboard:
                         "Dev VAL": st.column_config.NumberColumn("Dev VAL", format="$%.0f"),
                     }
                 )
-            else:
-                st.info("Building State Journal...")
         st.markdown("---")
 
-    else:
-        binance_status = "🔴 Failed"
-        st.warning("⚠️ Could not fetch AMT Data from Binance.")
-
-    delta_status = "🟢 Connected"
-
-    if not options_df.empty:
-        st.subheader(f"📉 Delta Options Chain (Expiry: {loaded_expiry})")
-        
-        if latest_price > 0 and atm_row is not None:
-            call_iv = atm_row['IV_Call']
-            put_iv = atm_row['IV_Put']
-            
-            dist_to_vah = final_vah - latest_price if not pd.isna(final_vah) else 0
-            dist_to_val = latest_price - final_val if not pd.isna(final_val) else 0
-            
-            time_remaining = expiry_dt - datetime.datetime.now(timezone.utc) if expiry_dt else None
-            time_str = str(time_remaining).split('.')[0] if time_remaining else "Unknown"
-            if expiry_dt:
-                ist_tz = timezone(timedelta(hours=5, minutes=30))
-                settlement_ist = expiry_dt.astimezone(ist_tz).strftime('%Y-%m-%d %H:%M:%S')
-            else:
-                settlement_ist = "Unknown"
-
-            st.markdown(f"#### 🧠 Market Expectations (Expiry: {loaded_expiry} | Settlement: {settlement_ist} IST)")
-            e1, e2, e3, e4, e5 = st.columns(5)
-            
-            if straddle_valid:
-                straddle_delta = straddle_price - p_state["session_start_straddle"] if p_state["session_start_straddle"] else 0
-                straddle_delta_str = f"{straddle_delta:+,.0f}" if straddle_delta != 0 else "Unchanged"
-                e1.metric("ATM Straddle Price", f"${straddle_price:,.2f}", straddle_delta_str)
-            else:
-                e1.metric("ATM Straddle Price", "⚠️ INVALID", straddle_reason)
-
-            e2.metric("Expiry Reference (Max Pain)", f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else "N/A (Incomplete Chain)")
-            e3.metric("Remaining Time", time_str)
-            e4.metric("Call Ticker Age", atm_call_age)
-            e5.metric("Put Ticker Age", atm_put_age)
-            
-            st.caption(f"Expiry Source: {expiry_source} | Quote Freshness: {quote_freshness} | To Prior VAH: ${dist_to_vah:,.2f} | To Prior VAL: ${dist_to_val:,.2f}")
-            
-            st.markdown("---")
-            if options_bias_score >= 2:
-                bias_color = "normal"
-                bias_text = "🟢 BULLISH (Favorable for Longs / Naked Calls)"
-            elif options_bias_score <= -2:
-                bias_color = "inverse"
-                bias_text = "🔴 BEARISH (Favorable for Shorts / Naked Puts)"
-            else:
-                bias_color = "off"
-                bias_text = "⚪ NEUTRAL (Conflicting signals)"
-                
-            db1, db2 = st.columns([1, 3])
-            db1.metric("🎯 Options Bias Score", f"{options_bias_score:+d}", delta_color=bias_color)
-            db2.metric("Directional Read", bias_text)
-            st.caption("Bias Score = PCR (<0.70 Bullish, >1.20 Bearish) + IV Skew (Call IV > Put IV = Bullish) + Nearest Cluster Proximity (Support closer = Bullish, Resistance closer = Bearish).")
-            st.markdown("---")
-
+        # --- SECTION 4: RAW DATA ---
+        st.subheader("📋 Raw Options Data")
         if not filtered_options.empty:
-            st.markdown("#### 📍 Near-Term OI Concentrations (< 0.5x Straddle)")
-            st.caption("Context only — not support, resistance or price targets.")
-            nc1, nc2 = st.columns(2)
-            if straddle_valid and near_call:
-                c = near_call[0]
-                nc1.metric("Call Cluster", f"${c['VWAS']:,.0f}", f"OI: ${c['OI_USD']/1e6:.2f}M | Dist: {c['Dist']:.1f}x")
-            else:
-                nc1.metric("Call Cluster", "N/A")
-            if straddle_valid and near_put:
-                p = near_put[0]
-                nc2.metric("Put Cluster", f"${p['VWAS']:,.0f}", f"OI: ${p['OI_USD']/1e6:.2f}M | Dist: {p['Dist']:.1f}x")
-            else:
-                nc2.metric("Put Cluster", "N/A")
-
-            st.markdown("#### 📍 Mid-Term OI Concentrations (0.5x - 1.0x Straddle)")
-            st.caption("Context only — not support, resistance or price targets.")
-            mc1, mc2 = st.columns(2)
-            if straddle_valid and mid_call:
-                c = mid_call[0]
-                mc1.metric("Call Cluster", f"${c['VWAS']:,.0f}", f"OI: ${c['OI_USD']/1e6:.2f}M | Dist: {c['Dist']:.1f}x")
-            else:
-                mc1.metric("Call Cluster", "N/A")
-            if straddle_valid and mid_put:
-                p = mid_put[0]
-                mc2.metric("Put Cluster", f"${p['VWAS']:,.0f}", f"OI: ${p['OI_USD']/1e6:.2f}M | Dist: {p['Dist']:.1f}x")
-            else:
-                mc2.metric("Put Cluster", "N/A")
-
-            st.markdown("#### 🌍 Distant OI Concentrations (>= 1.0x Straddle)")
-            st.caption("Context only — not support, resistance or price targets.")
-            dc1, dc2 = st.columns(2)
-            if straddle_valid and far_call:
-                c = far_call[0]
-                dc1.metric("Call Cluster", f"${c['VWAS']:,.0f}", f"OI: ${c['OI_USD']/1e6:.2f}M | Dist: {c['Dist']:.1f}x")
-            else:
-                dc1.metric("Call Cluster", "N/A")
-            if straddle_valid and far_put:
-                p = far_put[0]
-                dc2.metric("Put Cluster", f"${p['VWAS']:,.0f}", f"OI: ${p['OI_USD']/1e6:.2f}M | Dist: {p['Dist']:.1f}x")
-            else:
-                dc2.metric("Put Cluster", "N/A")
-
-            st.markdown("#### 📊 Context Metrics")
-            w1, w2, w3 = st.columns(3)
-            w1.metric("Local OI PCR (±10%)", f"{pcr:.2f}", "Put OI / Call OI (USD)")
-            w2.metric("Gross Gamma Concentration", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}", "Unsigned OI Estimation")
-            w3.metric("Structural Extreme (OI)", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}")
-            
-            st.caption("ℹ️ Gross Gamma Concentration: Estimated using unsigned OI. Does not identify dealer positioning, net gamma exposure or directional hedging requirements.")
-            st.markdown("---")
-
             if 'Dist_to_Spot' in filtered_options.columns:
                 filtered_options = filtered_options.drop(columns=['Dist_to_Spot'])
-
             display_df = filtered_options[['Bid_Call', 'Ask_Call', 'OI_USD_Call', 'Gamma_Call', 'IV_Call', 'Strike', 'IV_Put', 'Gamma_Put', 'OI_USD_Put', 'Bid_Put', 'Ask_Put']].copy()
             st.dataframe(display_df, use_container_width=True, hide_index=True, column_config={
                 "Bid_Call": st.column_config.NumberColumn("Call Bid", format="$%.2f"),
@@ -1096,8 +1053,8 @@ with tab_dashboard:
             csv = display_df.to_csv(index=False).encode('utf-8')
             st.download_button("📥 Download Options Data as CSV", data=csv, file_name=f"delta_options_{loaded_expiry}.csv", mime="text/csv")
     else:
-        delta_status = "🔴 Failed"
-        st.error("Could not load Options Chain data from Delta API.")
+        binance_status = "🔴 Failed"
+        st.warning("⚠️ Could not fetch AMT Data from Binance.")
 
     if st.button("🔄 Refresh All Data"):
         st.cache_data.clear()
