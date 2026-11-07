@@ -109,6 +109,18 @@ def fetch_amt_data():
             continue
     return pd.DataFrame()
 
+# 🆕 BINANCE FUNDING RATE FUNCTION
+@st.cache_data(ttl=180)
+def fetch_binance_funding():
+    try:
+        url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
+        res = requests.get(url, timeout=10).json()
+        funding_rate = float(res.get("lastFundingRate", 0)) * 100
+        mark_price = float(res.get("markPrice", 0))
+        return funding_rate, mark_price
+    except Exception:
+        return None, None
+
 def calculate_tpo(session_df):
     if session_df.empty: return np.nan, np.nan, np.nan
     row_size = 50.0
@@ -489,7 +501,7 @@ def fetch_delta_options():
         return pd.DataFrame(), "Error", 0.001
 
 # ==========================================
-# SECTION 4: PRE-CALCULATE DATA & ALERTS (Fixes NameError)
+# SECTION 4: PRE-CALCULATE DATA & ALERTS
 # ==========================================
 df = fetch_amt_data()
 binance_status = "🟢 Connected"
@@ -500,6 +512,8 @@ call_oi_wall, put_oi_wall, call_gamma_wall, put_gamma_wall = None, None, None, N
 true_max_pain = 0
 pcr = 0
 atm_row, atm_strike = None, 0
+
+funding_rate, funding_mark_price = fetch_binance_funding()
 
 if not df.empty:
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
@@ -519,7 +533,6 @@ if not df.empty:
 
     latest_price = df['close'].iloc[-1]
 
-# Fetch Options Data
 options_df, loaded_expiry, dynamic_contract_size = fetch_delta_options()
 
 if not options_df.empty and latest_price > 0:
@@ -548,7 +561,6 @@ if not options_df.empty and latest_price > 0:
         total_puts_usd = filtered_options['OI_USD_Put'].sum()
         pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
 
-        # Max Pain Calculation
         all_strikes = options_df['Strike'].tolist()
         all_call_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Call']))
         all_put_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Put']))
@@ -561,7 +573,6 @@ if not options_df.empty and latest_price > 0:
             pain_dict[settle] = total_pain
         true_max_pain = min(pain_dict, key=pain_dict.get)
 
-        # CHECK ALERTS
         if st.session_state.prev_pcr != 0.0:
             if (st.session_state.prev_pcr >= 1.20 and pcr < 1.20) or (st.session_state.prev_pcr >= 0.30 and pcr < 0.30):
                 alert_triggered = True
@@ -587,14 +598,12 @@ if not options_df.empty and latest_price > 0:
                 alert_triggered = True
                 alert_message += f"🔥 GAMMA BREAKDOWN: Price crossed below Put Wall (${put_gamma_wall['Strike']:,.0f})!<br>"
 
-        # Update state
         st.session_state.prev_pcr = pcr
         st.session_state.prev_max_pain = true_max_pain
         st.session_state.prev_call_wall = call_oi_wall['Strike']
         st.session_state.prev_put_wall = put_oi_wall['Strike']
         st.session_state.prev_price = latest_price
 
-# Check AMT Alerts
 journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
 if journal_res is not None:
     journal_df_check, _ = journal_res
@@ -609,7 +618,6 @@ if journal_res is not None:
         
         st.session_state.prev_amt_state = current_amt_state
 
-# IF ALERT FIRED: Save to history, send Telegram, show warning
 if alert_triggered:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     alert_history = get_alert_history()
@@ -648,6 +656,29 @@ with tab_dashboard:
         col2.metric("Prior VAH", f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A")
         col3.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
         col4.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
+        
+        # 🆕 BINANCE FUNDING RATE SECTION
+        st.markdown("---")
+        st.subheader("🌍 Global Market Context (Binance Futures)")
+        if funding_rate is not None:
+            f1, f2 = st.columns(2)
+            
+            # Funding Rate Logic
+            if funding_rate > 0.01:
+                f_status = "🔴 Longs Paying (Overheated)"
+                f_color = "inverse"
+            elif funding_rate < -0.01:
+                f_status = "🟢 Shorts Paying (Squeeze Risk)"
+                f_color = "normal"
+            else:
+                f_status = "⚪ Neutral"
+                f_color = "off"
+                
+            f1.metric("Funding Rate (8h)", f"{funding_rate:+.4f}%", f_status, delta_color=f_color)
+            f2.metric("Binance Mark Price", f"${funding_mark_price:,.2f}")
+            st.caption("💡 Positive funding = Longs paying Shorts (Crowded Long). Negative = Shorts paying Longs (Crowded Short).")
+        else:
+            st.warning("⚠️ Could not fetch Binance Funding Rate.")
         
         st.markdown("---")
 
@@ -701,7 +732,6 @@ with tab_dashboard:
         binance_status = "🔴 Failed"
         st.warning("⚠️ Could not fetch AMT Data from Binance.")
 
-    # --- OPTIONS FLOW ---
     delta_status = "🟢 Connected"
 
     if not options_df.empty:
