@@ -59,6 +59,10 @@ if 'prev_call_wall' not in st.session_state: st.session_state.prev_call_wall = 0
 if 'prev_put_wall' not in st.session_state: st.session_state.prev_put_wall = 0.0
 if 'prev_amt_state' not in st.session_state: st.session_state.prev_amt_state = -1
 
+# 🆕 SESSION OPEN MEMORY (So you don't have to remember)
+if 'session_start_straddle' not in st.session_state: st.session_state.session_start_straddle = None
+if 'session_start_pcr' not in st.session_state: st.session_state.session_start_pcr = None
+
 manual_values_valid = (input_vah > 0 and input_val > 0 and input_poc > 0 and input_vah >= input_poc >= input_val)
 final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 
@@ -148,19 +152,17 @@ def calculate_session_journey(df, prev_vah, prev_val):
     cycle_date = df['ShiftedDate'].iloc[-1].date()
     cycle_start = pd.Timestamp(cycle_date).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
     
-    # Current Cycle Boundaries
     asia_end = cycle_start + pd.Timedelta(hours=8)
     europe_end = cycle_start + pd.Timedelta(hours=12)
     us_cash_end = cycle_start + pd.Timedelta(hours=20)
     cycle_end = cycle_start + pd.Timedelta(hours=24)
 
-    # 🆕 Previous US Overnight (4 hours before current cycle start)
     prev_us_over_start = cycle_start - pd.Timedelta(hours=4)
     prev_us_over_end = cycle_start
     
     sessions = []
     
-    # 1. Previous US Overnight
+    # Previous US Overnight
     prev_us_df = df[(df['Date'] >= prev_us_over_start) & (df['Date'] < prev_us_over_end)]
     if not prev_us_df.empty:
         vah, val, poc = calculate_tpo(prev_us_df)
@@ -168,7 +170,6 @@ def calculate_session_journey(df, prev_vah, prev_val):
         high = prev_us_df['high'].max()
         low = prev_us_df['low'].min()
         
-        # Macro Bias
         macro_bias = "⚪ Inside Prior Value"
         if not pd.isna(prev_vah) and not pd.isna(prev_val):
             if close > prev_vah: macro_bias = "🟢 Bullish (Above Prior VAH)"
@@ -186,7 +187,7 @@ def calculate_session_journey(df, prev_vah, prev_val):
             "Macro Bias": macro_bias, "Micro Bias": micro_bias, "POC": poc, "VAH": vah, "VAL": val
         })
 
-    # 2. Current Day Sessions
+    # Current Day Sessions
     for name, session_data in [
         ("Asia (05:30-13:30)", df[(df['Date'] >= cycle_start) & (df['Date'] < asia_end)]),
         ("Europe (13:30-17:30)", df[(df['Date'] >= asia_end) & (df['Date'] < europe_end)]),
@@ -609,9 +610,18 @@ if not options_df.empty:
         dist_to_vah = final_vah - latest_price if not pd.isna(final_vah) else 0
         dist_to_val = latest_price - final_val if not pd.isna(final_val) else 0
         
+        # 🆕 MEMORY & DELTA CALCULATION
+        if st.session_state.session_start_straddle is None:
+            st.session_state.session_start_straddle = straddle_price
+            
+        straddle_delta = straddle_price - st.session_state.session_start_straddle
+        straddle_delta_str = f"{straddle_delta:+,.0f}" if straddle_delta != 0 else "Unchanged"
+        straddle_color = "normal" if straddle_delta >= 0 else "inverse" # Red if vol is crushing
+        
         st.markdown(f"#### 🧠 Market Expectations (ATM Straddle at ${atm_strike:,.0f})")
         e1, e2, e3, e4, e5 = st.columns(5)
-        e1.metric("ATM Straddle Price", f"${straddle_price:,.2f}", "Breakeven Distance")
+        
+        e1.metric("ATM Straddle Price", f"${straddle_price:,.2f}", straddle_delta_str, delta_color=straddle_color)
         e2.metric("ATM Call IV", f"{call_iv:.2f}%", f"Put IV: {put_iv:.2f}%", delta_color="off")
         
         if dist_to_vah > 0: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Distance")
