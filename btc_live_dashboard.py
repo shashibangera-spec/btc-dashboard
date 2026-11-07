@@ -17,10 +17,10 @@ st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 CLUSTER_ABSORPTION_PCT = 0.30
 MAX_CLUSTER_WIDTH = 5
 OI_CLUSTER_MIN_USD = 5_000_000
-MARK_TOLERANCE_PCT = 0.02 # 2% buffer for Mark vs Bid/Ask
+MARK_TOLERANCE_PCT = 0.02 
 
 # ==========================================
-# PERSISTENT STATE (Survives Hard Page Reloads)
+# PERSISTENT STATE
 # ==========================================
 @st.cache_resource
 def get_persistent_state():
@@ -401,7 +401,7 @@ def parse_timestamp(ts):
     if ts is None: return None
     try:
         if isinstance(ts, (int, float)):
-            if ts > 1e11: ts = ts / 1000.0 # milliseconds
+            if ts > 1e11: ts = ts / 1000.0
             return datetime.datetime.fromtimestamp(ts, tz=timezone.utc)
         if isinstance(ts, str):
             if ts.isdigit():
@@ -440,41 +440,25 @@ def find_oi_clusters(strike_ladder, df_opt, opt_type, spot_price, straddle_price
         current_cluster = [peak_strike]
         claimed.add(peak_strike)
         
-        # Expand Left
         left = peak_idx - 1
         while left >= 0 and len(current_cluster) < MAX_CLUSTER_WIDTH:
             test_strike = strike_ladder[left]
             if test_strike in claimed: break
-            
             row_data = df_type[df_type['Strike'] == test_strike]
-            if row_data.empty:
-                break # Missing listed strike, cannot bridge
-            
+            if row_data.empty: break
             test_oi = row_data['OI_USD'].values[0]
-            if pd.isna(test_oi) or test_oi < (peak_oi * CLUSTER_ABSORPTION_PCT):
-                break
+            if pd.isna(test_oi) or test_oi < (peak_oi * CLUSTER_ABSORPTION_PCT): break
+            current_cluster.append(test_strike); claimed.add(test_strike); left -= 1
                 
-            current_cluster.append(test_strike)
-            claimed.add(test_strike)
-            left -= 1
-                
-        # Expand Right
         right = peak_idx + 1
         while right < len(strike_ladder) and len(current_cluster) < MAX_CLUSTER_WIDTH:
             test_strike = strike_ladder[right]
             if test_strike in claimed: break
-            
             row_data = df_type[df_type['Strike'] == test_strike]
-            if row_data.empty:
-                break # Missing listed strike, cannot bridge
-                
+            if row_data.empty: break
             test_oi = row_data['OI_USD'].values[0]
-            if pd.isna(test_oi) or test_oi < (peak_oi * CLUSTER_ABSORPTION_PCT):
-                break
-                
-            current_cluster.append(test_strike)
-            claimed.add(test_strike)
-            right += 1
+            if pd.isna(test_oi) or test_oi < (peak_oi * CLUSTER_ABSORPTION_PCT): break
+            current_cluster.append(test_strike); claimed.add(test_strike); right += 1
                 
         cluster_df = df_type[df_type['Strike'].isin(current_cluster)]
         total_oi = cluster_df['OI_USD'].sum()
@@ -482,19 +466,12 @@ def find_oi_clusters(strike_ladder, df_opt, opt_type, spot_price, straddle_price
         
         vwas = (cluster_df['Strike'] * cluster_df['OI_USD']).sum() / total_oi
         
-        # Directional Check
         if opt_type == "Call" and vwas <= spot_price: continue
         if opt_type == "Put" and vwas >= spot_price: continue
 
         dist = abs(vwas - spot_price) / straddle_price
         
-        clusters.append({
-            "Type": opt_type,
-            "VWAS": vwas,
-            "OI_USD": total_oi,
-            "Dist": dist,
-            "Strikes": current_cluster
-        })
+        clusters.append({"Type": opt_type, "VWAS": vwas, "OI_USD": total_oi, "Dist": dist, "Strikes": current_cluster})
         
     near, mid, far = [], [], []
     for c in clusters:
@@ -502,10 +479,7 @@ def find_oi_clusters(strike_ladder, df_opt, opt_type, spot_price, straddle_price
         elif c['Dist'] < 1.0: mid.append(c)
         else: far.append(c)
         
-    near.sort(key=lambda x: x['Dist'])
-    mid.sort(key=lambda x: x['Dist'])
-    far.sort(key=lambda x: x['Dist'])
-    
+    near.sort(key=lambda x: x['Dist']); mid.sort(key=lambda x: x['Dist']); far.sort(key=lambda x: x['Dist'])
     return near, mid, far
 
 @st.cache_data(ttl=180)
@@ -568,11 +542,7 @@ def fetch_delta_options():
                         source = "fallback_12utc"
                         
                     if dt_utc > now_utc:
-                        valid_expiries.append({
-                            "expiry_str": exp_str,
-                            "dt_utc": dt_utc,
-                            "source": source
-                        })
+                        valid_expiries.append({"expiry_str": exp_str, "dt_utc": dt_utc, "source": source})
                 except Exception:
                     pass
                     
@@ -585,10 +555,7 @@ def fetch_delta_options():
         
         filtered_options = [opt for opt in btc_options if len(opt.get("symbol", "").split("-")) >= 4 and opt.get("symbol", "").split("-")[3] == nearest_expiry]
 
-        # Build Full Strike Ladder
-        strike_ladder = sorted(list(set(
-            float(p.get("strike_price")) for p in filtered_options if p.get("strike_price") is not None
-        )))
+        strike_ladder = sorted(list(set(float(p.get("strike_price")) for p in filtered_options if p.get("strike_price") is not None)))
 
         contract_size = 0.001
         if filtered_options:
@@ -616,25 +583,17 @@ def fetch_delta_options():
                 
                 strike = float(strike)
                 opt_type = "Call" if opt.get("contract_type") == "call_options" else "Put"
-                oi_usd = ticker.get("oi_value_usd")
-                if oi_usd is not None:
-                    oi_usd = float(oi_usd)
-                oi_contracts = ticker.get("oi_contracts") or ticker.get("oi")
-                if oi_contracts is not None:
-                    oi_contracts = float(oi_contracts)
+                oi_usd = float(ticker.get("oi_value_usd")) if ticker.get("oi_value_usd") is not None else None
+                oi_contracts = float(ticker.get("oi_contracts") or ticker.get("oi")) if (ticker.get("oi_contracts") or ticker.get("oi")) is not None else None
                 
                 quotes = ticker.get("quotes", {})
-                bid = quotes.get("best_bid") or ticker.get("best_bid")
-                if bid is not None: bid = float(bid)
-                ask = quotes.get("best_ask") or ticker.get("best_ask")
-                if ask is not None: ask = float(ask)
-                mark = ticker.get("mark_price")
-                if mark is not None: mark = float(mark)
+                bid = float(quotes.get("best_bid") or ticker.get("best_bid")) if (quotes.get("best_bid") or ticker.get("best_bid")) is not None else None
+                ask = float(quotes.get("best_ask") or ticker.get("best_ask")) if (quotes.get("best_ask") or ticker.get("best_ask")) is not None else None
+                mark = float(ticker.get("mark_price")) if ticker.get("mark_price") is not None else None
 
                 greeks = ticker.get("greeks") or {}
                 gamma = float(greeks.get("gamma") or "0")
                 iv = float(quotes.get("mark_iv") or quotes.get("ask_iv") or "0") * 100
-                
                 ts_val = ticker.get("timestamp") or ticker.get("updated_at")
                 
                 chain.append({
@@ -649,7 +608,6 @@ def fetch_delta_options():
         df = pd.DataFrame(chain)
         if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, None, None, is_chain_complete
 
-        # NO FILLNA(0) - Preserve NaNs
         df_pivot = df.pivot_table(index="Strike", columns="Type", values=["Bid", "Ask", "Mark", "OI_USD", "OI_Contracts", "Gamma", "IV"], aggfunc="first").reset_index()
 
         new_cols = []
@@ -686,7 +644,6 @@ quote_freshness = "Unverified"
 atm_call_age = "N/A"
 atm_put_age = "N/A"
 
-# Directional Variables
 options_bias_score = 0
 nearest_call_dist = None
 nearest_put_dist = None
@@ -734,7 +691,6 @@ if not options_df.empty and latest_price > 0:
     elif pd.isna(cm) or pd.isna(pm) or not (cb * (1-MARK_TOLERANCE_PCT) <= cm <= ca * (1+MARK_TOLERANCE_PCT)) or not (pb * (1-MARK_TOLERANCE_PCT) <= pm <= pa * (1+MARK_TOLERANCE_PCT)): 
         checks_passed = False; straddle_reason = "Mark/Quote Inconsistency"
     
-    # Individual Timestamps
     call_ts = raw_chain_df[(raw_chain_df['Strike'] == atm_strike) & (raw_chain_df['Type'] == 'Call')]['Timestamp'].values
     put_ts = raw_chain_df[(raw_chain_df['Strike'] == atm_strike) & (raw_chain_df['Type'] == 'Put')]['Timestamp'].values
     
@@ -765,7 +721,6 @@ if not options_df.empty and latest_price > 0:
     filtered_options = options_df[(options_df['Strike'] >= lower_bound) & (options_df['Strike'] <= upper_bound)].copy()
 
     if not filtered_options.empty:
-        # Replace NaNs with 0 just for the basic walls/alert logic to work correctly
         temp_filt = filtered_options.fillna(0)
         call_oi_wall = temp_filt.loc[temp_filt['OI_USD_Call'].idxmax()]
         put_oi_wall = temp_filt.loc[temp_filt['OI_USD_Put'].idxmax()]
@@ -776,7 +731,6 @@ if not options_df.empty and latest_price > 0:
         total_puts_usd = temp_filt['OI_USD_Put'].sum()
         pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
 
-        # Max Pain Completeness Check
         if is_chain_complete:
             all_strikes = options_df['Strike'].tolist()
             all_call_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Call'].fillna(0)))
@@ -792,39 +746,54 @@ if not options_df.empty and latest_price > 0:
         else:
             true_max_pain = np.nan
 
-        # 4. OI Clustering
         if straddle_valid and raw_chain_df is not None and strike_ladder is not None:
             near_call, mid_call, far_call = find_oi_clusters(strike_ladder, raw_chain_df, "Call", latest_price, straddle_price)
             near_put, mid_put, far_put = find_oi_clusters(strike_ladder, raw_chain_df, "Put", latest_price, straddle_price)
             
-            # --- DIRECTIONAL BIAS LOGIC ---
-            # 1. PCR Check
             if pcr > 0 and pcr < 0.70: options_bias_score += 1
             elif pcr > 1.20: options_bias_score -= 1
             
-            # 2. IV Skew Check
             call_iv_val = atm_row['IV_Call']
             put_iv_val = atm_row['IV_Put']
             if not pd.isna(call_iv_val) and not pd.isna(put_iv_val):
                 if call_iv_val > put_iv_val: options_bias_score += 1
                 elif put_iv_val > call_iv_val: options_bias_score -= 1
                 
-            # 3. Cluster Proximity Check
             all_calls = near_call + mid_call + far_call
             all_puts = near_put + mid_put + far_put
             if all_calls: nearest_call_dist = all_calls[0]['Dist']
             if all_puts: nearest_put_dist = all_puts[0]['Dist']
             
             if nearest_call_dist is not None and nearest_put_dist is not None:
-                if nearest_call_dist < nearest_put_dist: options_bias_score -= 1  # Resistance closer than support -> Bearish
-                elif nearest_put_dist < nearest_call_dist: options_bias_score += 1  # Support closer than resistance -> Bullish
-            # ------------------------------
-
+                if nearest_call_dist < nearest_put_dist: options_bias_score -= 1
+                elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
         else:
             near_call, mid_call, far_call = [], [], []
             near_put, mid_put, far_put = [], [], []
 
-        # Alerts Logic (UNTOUCHED - Uses temp_filt so NaN doesn't break alerts)
+        # ----------------------------------------------------
+        # SMART CONFLUENCE ALERTS (NEW)
+        # ----------------------------------------------------
+        # 1. Trap Door (Bearish Breakdown)
+        if straddle_valid and near_put and current_amt_state in [3, 11, 14]:
+            p_cluster = near_put[0]['VWAS'] if near_put else (mid_put[0]['VWAS'] if mid_put else 0)
+            if p_cluster > 0 and latest_price <= p_cluster and options_bias_score <= -1:
+                alert_triggered = True
+                alert_message += f"🚨 TRAP DOOR: Price breaking below Put Cluster (${p_cluster:,.0f}) with Bearish Bias!<br>"
+                
+        # 2. Squeeze (Bullish Breakout)
+        if straddle_valid and near_call and current_amt_state in [2, 10]:
+            c_cluster = near_call[0]['VWAS'] if near_call else (mid_call[0]['VWAS'] if mid_call else 0)
+            if c_cluster > 0 and latest_price >= c_cluster and funding_rate is not None and funding_rate < -0.05:
+                alert_triggered = True
+                alert_message += f"🚨 SQUEEZE: Price breaking above Call Cluster (${c_cluster:,.0f}) with Negative Funding!<br>"
+
+        # 3. Gamma Pin (Do Nothing)
+        if straddle_valid and pcr > 0.8 and pcr < 1.1 and abs(latest_price - true_max_pain) < 100:
+            alert_triggered = True
+            alert_message += f"⚠️ GAMMA PIN: Price trapped near Max Pain (${true_max_pain:,.0f}). Avoid chopping.<br>"
+        # ----------------------------------------------------
+
         if p_state["prev_pcr"] != 0.0:
             if (p_state["prev_pcr"] >= 1.20 and pcr < 1.20) or (p_state["prev_pcr"] >= 0.30 and pcr < 0.30):
                 alert_triggered = True
@@ -1033,7 +1002,6 @@ with tab_dashboard:
             
             st.caption(f"Expiry Source: {expiry_source} | Quote Freshness: {quote_freshness} | To Prior VAH: ${dist_to_vah:,.2f} | To Prior VAL: ${dist_to_val:,.2f}")
             
-            # --- DIRECTIONAL BIAS DISPLAY ---
             st.markdown("---")
             if options_bias_score >= 2:
                 bias_color = "normal"
@@ -1050,10 +1018,8 @@ with tab_dashboard:
             db2.metric("Directional Read", bias_text)
             st.caption("Bias Score = PCR (<0.70 Bullish, >1.20 Bearish) + IV Skew (Call IV > Put IV = Bullish) + Nearest Cluster Proximity (Support closer = Bullish, Resistance closer = Bearish).")
             st.markdown("---")
-            # --------------------------------
 
         if not filtered_options.empty:
-            # 1. NEAR
             st.markdown("#### 📍 Near-Term OI Concentrations (< 0.5x Straddle)")
             st.caption("Context only — not support, resistance or price targets.")
             nc1, nc2 = st.columns(2)
@@ -1068,7 +1034,6 @@ with tab_dashboard:
             else:
                 nc2.metric("Put Cluster", "N/A")
 
-            # 2. MID
             st.markdown("#### 📍 Mid-Term OI Concentrations (0.5x - 1.0x Straddle)")
             st.caption("Context only — not support, resistance or price targets.")
             mc1, mc2 = st.columns(2)
@@ -1083,7 +1048,6 @@ with tab_dashboard:
             else:
                 mc2.metric("Put Cluster", "N/A")
 
-            # 3. FAR
             st.markdown("#### 🌍 Distant OI Concentrations (>= 1.0x Straddle)")
             st.caption("Context only — not support, resistance or price targets.")
             dc1, dc2 = st.columns(2)
@@ -1110,7 +1074,6 @@ with tab_dashboard:
             if 'Dist_to_Spot' in filtered_options.columns:
                 filtered_options = filtered_options.drop(columns=['Dist_to_Spot'])
 
-            # NaN handling for display
             display_df = filtered_options[['Bid_Call', 'Ask_Call', 'OI_USD_Call', 'Gamma_Call', 'IV_Call', 'Strike', 'IV_Put', 'Gamma_Put', 'OI_USD_Put', 'Bid_Put', 'Ask_Put']].copy()
             st.dataframe(display_df, use_container_width=True, hide_index=True, column_config={
                 "Bid_Call": st.column_config.NumberColumn("Call Bid", format="$%.2f"),
