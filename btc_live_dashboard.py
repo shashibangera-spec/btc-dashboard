@@ -144,25 +144,54 @@ def calculate_tpo(session_df):
 
 def calculate_session_journey(df, prev_vah, prev_val):
     if df.empty: return pd.DataFrame()
+    
     cycle_date = df['ShiftedDate'].iloc[-1].date()
     cycle_start = pd.Timestamp(cycle_date).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
     
+    # Current Cycle Boundaries
     asia_end = cycle_start + pd.Timedelta(hours=8)
     europe_end = cycle_start + pd.Timedelta(hours=12)
     us_cash_end = cycle_start + pd.Timedelta(hours=20)
     cycle_end = cycle_start + pd.Timedelta(hours=24)
-    
-    asia_df = df[(df['Date'] >= cycle_start) & (df['Date'] < asia_end)]
-    eu_df = df[(df['Date'] >= asia_end) & (df['Date'] < europe_end)]
-    us_cash_df = df[(df['Date'] >= europe_end) & (df['Date'] < us_cash_end)]
-    us_overnight_df = df[(df['Date'] >= us_cash_end) & (df['Date'] < cycle_end)]
+
+    # 🆕 Previous US Overnight (4 hours before current cycle start)
+    prev_us_over_start = cycle_start - pd.Timedelta(hours=4)
+    prev_us_over_end = cycle_start
     
     sessions = []
+    
+    # 1. Previous US Overnight
+    prev_us_df = df[(df['Date'] >= prev_us_over_start) & (df['Date'] < prev_us_over_end)]
+    if not prev_us_df.empty:
+        vah, val, poc = calculate_tpo(prev_us_df)
+        close = prev_us_df['close'].iloc[-1]
+        high = prev_us_df['high'].max()
+        low = prev_us_df['low'].min()
+        
+        # Macro Bias
+        macro_bias = "⚪ Inside Prior Value"
+        if not pd.isna(prev_vah) and not pd.isna(prev_val):
+            if close > prev_vah: macro_bias = "🟢 Bullish (Above Prior VAH)"
+            elif close < prev_val: macro_bias = "🔴 Bearish (Below Prior VAL)"
+            elif high > prev_vah and close < prev_vah: macro_bias = "⚠️ Bull Trap (Rejected Prior VAH)"
+            elif low < prev_val and close > prev_val: macro_bias = "⚠️ Bear Trap (Rejected Prior VAL)"
+                
+        micro_bias = "⚪ Balanced (Inside Value)"
+        if not pd.isna(vah) and not pd.isna(val):
+            if close > vah: micro_bias = "🟢 Strong Close (Above Session VAH)"
+            elif close < val: micro_bias = "🔴 Weak Close (Below Session VAL)"
+
+        sessions.append({
+            "Session": "US Overnight (Prev)", "Open": prev_us_df['open'].iloc[0], "High": high, "Low": low, "Close": close,
+            "Macro Bias": macro_bias, "Micro Bias": micro_bias, "POC": poc, "VAH": vah, "VAL": val
+        })
+
+    # 2. Current Day Sessions
     for name, session_data in [
-        ("Asia (05:30-13:30)", asia_df),
-        ("Europe (13:30-17:30)", eu_df),
-        ("US Cash (17:30-01:30)", us_cash_df),
-        ("US Overnight (01:30-05:30)", us_overnight_df)
+        ("Asia (05:30-13:30)", df[(df['Date'] >= cycle_start) & (df['Date'] < asia_end)]),
+        ("Europe (13:30-17:30)", df[(df['Date'] >= asia_end) & (df['Date'] < europe_end)]),
+        ("US Cash (17:30-01:30)", df[(df['Date'] >= europe_end) & (df['Date'] < us_cash_end)]),
+        ("US Overnight (Current)", df[(df['Date'] >= us_cash_end) & (df['Date'] < cycle_end)])
     ]:
         if session_data.empty: continue
         vah, val, poc = calculate_tpo(session_data)
@@ -187,6 +216,7 @@ def calculate_session_journey(df, prev_vah, prev_val):
             "Session": name, "Open": session_data['open'].iloc[0], "High": high, "Low": low, "Close": close,
             "Macro Bias": macro_bias, "Micro Bias": micro_bias, "POC": poc, "VAH": vah, "VAL": val
         })
+        
     return pd.DataFrame(sessions)
 
 # ==========================================
@@ -590,20 +620,14 @@ if not options_df.empty:
         if dist_to_val > 0: e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Distance")
         else: e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Below VAL")
             
-        # 🆕 SKEW INDICATOR
         if call_premium > put_premium:
             skew_label = f"Call Skew +${call_premium - put_premium:,.0f}"
-            skew_color = "inverse" # Red
+            skew_color = "inverse"
         else:
             skew_label = f"Put Skew +${put_premium - call_premium:,.0f}"
-            skew_color = "normal" # Green
+            skew_color = "normal"
             
-        e5.metric(
-            label="ATM Premium (Call / Put)", 
-            value=f"${call_premium:,.0f} / ${put_premium:,.0f}", 
-            delta=skew_label, 
-            delta_color=skew_color
-        )
+        e5.metric(label="ATM Premium (Call / Put)", value=f"${call_premium:,.0f} / ${put_premium:,.0f}", delta=skew_label, delta_color=skew_color)
         st.markdown("---")
 
     all_strikes = options_df['Strike'].tolist()
