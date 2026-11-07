@@ -683,7 +683,7 @@ options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_
 
 delta_status = "🟢 Connected" if not options_df.empty else "🔴 Failed"
 
-# Moved Time Calculations HERE so they are available everywhere
+# Time Calculations
 if expiry_dt:
     time_remaining = expiry_dt - datetime.datetime.now(timezone.utc)
     time_str = str(time_remaining).split('.')[0]
@@ -878,7 +878,6 @@ if alert_triggered:
     st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
     components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
 
-
 # ==========================================
 # SECTION 5: RENDER UI TABS (REORGANIZED + SNAPSHOT)
 # ==========================================
@@ -950,8 +949,9 @@ Distant (>=1.0x): Call {"$"+f"{far_call[0]['VWAS']:,.0f}" if far_call else "N/A"
             for idx, row in journal_df_check.tail(3).iterrows():
                 snapshot_text += f"{row['Time']} | Close: ${row['Close']:,.0f} | {row['State Name']} (Code {row['Code']})\n"
 
-        st.write("**📋 Copy Dashboard Snapshot** (Click the copy icon in the top right)")
-        st.code(snapshot_text, language="text")
+        with st.expander("📋 Copy Dashboard Snapshot (Click to expand)"):
+            st.code(snapshot_text, language="text")
+            
         st.markdown("---")
 
         # --- SECTION 1: AMT MAP ---
