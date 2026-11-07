@@ -643,6 +643,8 @@ straddle_price = np.nan
 quote_freshness = "Unverified"
 atm_call_age = "N/A"
 atm_put_age = "N/A"
+time_str = "Unknown"
+settlement_ist = "Unknown"
 
 options_bias_score = 0
 nearest_call_dist = None
@@ -680,6 +682,13 @@ if journal_res is not None:
 options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, strike_ladder, is_chain_complete = fetch_delta_options()
 
 delta_status = "🟢 Connected" if not options_df.empty else "🔴 Failed"
+
+# Moved Time Calculations HERE so they are available everywhere
+if expiry_dt:
+    time_remaining = expiry_dt - datetime.datetime.now(timezone.utc)
+    time_str = str(time_remaining).split('.')[0]
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    settlement_ist = expiry_dt.astimezone(ist_tz).strftime('%Y-%m-%d %H:%M:%S')
 
 if not options_df.empty and latest_price > 0:
     options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * latest_price * dynamic_contract_size
@@ -868,6 +877,7 @@ if alert_triggered:
     
     st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
     components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
+
 
 # ==========================================
 # SECTION 5: RENDER UI TABS (REORGANIZED + SNAPSHOT)
