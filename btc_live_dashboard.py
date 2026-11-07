@@ -17,6 +17,7 @@ st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 CLUSTER_ABSORPTION_PCT = 0.30
 MAX_CLUSTER_WIDTH = 5
 OI_CLUSTER_MIN_USD = 5_000_000
+MARK_TOLERANCE_PCT = 0.02 # 2% buffer for Mark vs Bid/Ask
 
 # ==========================================
 # PERSISTENT STATE (Survives Hard Page Reloads)
@@ -725,7 +726,7 @@ if not options_df.empty and latest_price > 0:
         checks_passed = False; straddle_reason = "Bid/Ask <= 0"
     elif cb > ca or pb > pa: 
         checks_passed = False; straddle_reason = "Crossed Market (Bid > Ask)"
-    elif pd.isna(cm) or pd.isna(pm) or not (cb <= cm <= ca) or not (pb <= pm <= pa): 
+    elif pd.isna(cm) or pd.isna(pm) or not (cb * (1-MARK_TOLERANCE_PCT) <= cm <= ca * (1+MARK_TOLERANCE_PCT)) or not (pb * (1-MARK_TOLERANCE_PCT) <= pm <= pa * (1+MARK_TOLERANCE_PCT)): 
         checks_passed = False; straddle_reason = "Mark/Quote Inconsistency"
     
     # Individual Timestamps
