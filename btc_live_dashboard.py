@@ -109,17 +109,17 @@ def fetch_amt_data():
             continue
     return pd.DataFrame()
 
-# 🆕 SWITCHED TO BYBIT FUNDING RATE
+# 🆕 SWITCHED BACK TO DELTA FOR FUNDING RATE
 @st.cache_data(ttl=180)
 def fetch_global_funding():
     try:
-        url = "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT"
+        url = "https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures"
         res = requests.get(url, timeout=10).json()
-        if res.get("retCode") == 0:
-            data = res.get("result", {}).get("list", [])[0]
-            funding_rate = float(data.get("fundingRate", 0)) * 100
-            mark_price = float(data.get("markPrice", 0))
-            return funding_rate, mark_price
+        for ticker in res.get("result", []):
+            if ticker.get("symbol") == "BTCUSD":
+                funding_rate = float(ticker.get("funding_rate", 0)) * 100
+                mark_price = float(ticker.get("mark_price", 0))
+                return funding_rate, mark_price
         return None, None
     except Exception:
         return None, None
@@ -516,7 +516,7 @@ true_max_pain = 0
 pcr = 0
 atm_row, atm_strike = None, 0
 
-# 🆕 FETCH BYBIT FUNDING
+# 🆕 FETCH DELTA FUNDING
 funding_rate, funding_mark_price = fetch_global_funding()
 
 if not df.empty:
@@ -661,9 +661,9 @@ with tab_dashboard:
         col3.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
         col4.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
         
-        # 🆕 BYBIT FUNDING RATE SECTION
+        # 🆕 DELTA FUNDING RATE SECTION
         st.markdown("---")
-        st.subheader("🌍 Global Market Context (Bybit Futures)")
+        st.subheader("🌍 Global Market Context (Delta Futures)")
         if funding_rate is not None:
             f1, f2 = st.columns(2)
             
@@ -678,10 +678,10 @@ with tab_dashboard:
                 f_color = "off"
                 
             f1.metric("Funding Rate (8h)", f"{funding_rate:+.4f}%", f_status, delta_color=f_color)
-            f2.metric("Bybit Mark Price", f"${funding_mark_price:,.2f}")
+            f2.metric("Delta Mark Price", f"${funding_mark_price:,.2f}")
             st.caption("💡 Positive funding = Longs paying Shorts (Crowded Long). Negative = Shorts paying Longs (Crowded Short).")
         else:
-            st.warning("⚠️ Could not fetch Bybit Funding Rate.")
+            st.warning("⚠️ Could not fetch Delta Funding Rate.")
         
         st.markdown("---")
 
@@ -824,4 +824,4 @@ with tab_dashboard:
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.caption(f"**System Health:** Binance {binance_status} | Delta {delta_status} | Last Fetched: {now}")
 
-components.html("<script>setTimeout(function(){ window.parent.location.reload(); }, 180000);</script>", height=0, width=0)
+components.html("<script>setTimeout(function(){ window.parent.reload(); }, 180000);</script>", height=0, width=0)
