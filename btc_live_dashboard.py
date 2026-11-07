@@ -59,7 +59,10 @@ if 'prev_call_wall' not in st.session_state: st.session_state.prev_call_wall = 0
 if 'prev_put_wall' not in st.session_state: st.session_state.prev_put_wall = 0.0
 if 'prev_amt_state' not in st.session_state: st.session_state.prev_amt_state = -1
 
-# 🆕 SESSION OPEN MEMORY (So you don't have to remember)
+# 🆕 PRICE MEMORY FOR GAMMA ALERTS
+if 'prev_price' not in st.session_state: st.session_state.prev_price = 0.0
+
+# 🆕 SESSION OPEN MEMORY 
 if 'session_start_straddle' not in st.session_state: st.session_state.session_start_straddle = None
 if 'session_start_pcr' not in st.session_state: st.session_state.session_start_pcr = None
 
@@ -68,6 +71,8 @@ final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 
 alert_triggered = False
 alert_message = ""
+current_amt_state = -1
+current_amt_name = "UNKNOWN"
 
 # ==========================================
 # SECTION 1: BINANCE DATA & AMT MATH
@@ -162,7 +167,6 @@ def calculate_session_journey(df, prev_vah, prev_val):
     
     sessions = []
     
-    # Previous US Overnight
     prev_us_df = df[(df['Date'] >= prev_us_over_start) & (df['Date'] < prev_us_over_end)]
     if not prev_us_df.empty:
         vah, val, poc = calculate_tpo(prev_us_df)
@@ -187,7 +191,6 @@ def calculate_session_journey(df, prev_vah, prev_val):
             "Macro Bias": macro_bias, "Micro Bias": micro_bias, "POC": poc, "VAH": vah, "VAL": val
         })
 
-    # Current Day Sessions
     for name, session_data in [
         ("Asia (05:30-13:30)", df[(df['Date'] >= cycle_start) & (df['Date'] < asia_end)]),
         ("Europe (13:30-17:30)", df[(df['Date'] >= asia_end) & (df['Date'] < europe_end)]),
@@ -616,13 +619,13 @@ if not options_df.empty:
             
         straddle_delta = straddle_price - st.session_state.session_start_straddle
         straddle_delta_str = f"{straddle_delta:+,.0f}" if straddle_delta != 0 else "Unchanged"
-        straddle_color = "normal" if straddle_delta >= 0 else "inverse" # Red if vol is crushing
+        straddle_color = "normal" if straddle_delta >= 0 else "inverse" 
         
         st.markdown(f"#### 🧠 Market Expectations (ATM Straddle at ${atm_strike:,.0f})")
         e1, e2, e3, e4, e5 = st.columns(5)
         
         e1.metric("ATM Straddle Price", f"${straddle_price:,.2f}", straddle_delta_str, delta_color=straddle_color)
-        e2.metric("ATM Call IV", f"{call_iv:.2f}%", f"Put IV: {put_iv:.2f}%", delta_color="off")
+        e2.metric("ATM Call IV", f"{call_iv:.2f}%", f"Put IV: {put_iv:,.2f}%", delta_color="off")
         
         if dist_to_vah > 0: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Distance")
         else: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Above VAH")
@@ -689,10 +692,21 @@ if not options_df.empty:
         alert_triggered = True
         alert_message += f"🚧 PUT OI WALL SHIFT: Moved to ${put_oi_wall['Strike']:,.0f}!<br>"
 
+    # 🆕 GAMMA BREAKOUT ALERTS
+    if st.session_state.prev_price != 0.0:
+        if st.session_state.prev_price < call_gamma_wall['Strike'] and latest_price >= call_gamma_wall['Strike']:
+            alert_triggered = True
+            alert_message += f"🔥 GAMMA BREAKOUT: Price crossed above Call Wall (${call_gamma_wall['Strike']:,.0f})!<br>"
+        
+        if st.session_state.prev_price > put_gamma_wall['Strike'] and latest_price <= put_gamma_wall['Strike']:
+            alert_triggered = True
+            alert_message += f"🔥 GAMMA BREAKDOWN: Price crossed below Put Wall (${put_gamma_wall['Strike']:,.0f})!<br>"
+
     st.session_state.prev_pcr = pcr
     st.session_state.prev_max_pain = true_max_pain
     st.session_state.prev_call_wall = call_oi_wall['Strike']
     st.session_state.prev_put_wall = put_oi_wall['Strike']
+    st.session_state.prev_price = latest_price
 
     st.subheader("📊 Options Structure")
     w1, w2, w3, w4 = st.columns(4)
