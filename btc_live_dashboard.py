@@ -109,7 +109,7 @@ def fetch_amt_data():
             continue
     return pd.DataFrame()
 
-# 🆕 SWITCHED BACK TO DELTA FOR FUNDING RATE
+# FETCH DELTA FUNDING
 @st.cache_data(ttl=180)
 def fetch_global_funding():
     try:
@@ -516,7 +516,7 @@ true_max_pain = 0
 pcr = 0
 atm_row, atm_strike = None, 0
 
-# 🆕 FETCH DELTA FUNDING
+# FETCH DELTA FUNDING
 funding_rate, funding_mark_price = fetch_global_funding()
 
 if not df.empty:
@@ -616,9 +616,35 @@ if journal_res is not None:
         current_amt_name = journal_df_check.iloc[-1]['State Name']
         
         if st.session_state.prev_amt_state != -1 and current_amt_state != st.session_state.prev_amt_state:
-            if current_amt_state in [2, 3, 10, 11, 14]: 
-                alert_triggered = True
-                alert_message += f"📖 AMT STATE SHIFT: {current_amt_name}<br>"
+            
+            # 🆕 THE NEW FUNDING CONFLUENCE LOGIC
+            is_extreme_neg = (funding_rate is not None and funding_rate < -0.05)
+            is_extreme_pos = (funding_rate is not None and funding_rate > 0.05)
+            
+            if current_amt_state in [2, 3, 10, 11, 14]:
+                
+                # Upward Breakout
+                if current_amt_state in [2, 10]:
+                    if is_extreme_neg:
+                        alert_triggered = True
+                        alert_message += f"🚨 POTENTIAL SHORT SQUEEZE: Breakout confirmed ({current_amt_name}) with EXTREME NEGATIVE Funding ({funding_rate:.3f}%)!<br>"
+                    else:
+                        alert_triggered = True
+                        alert_message += f"📖 AMT STATE SHIFT: {current_amt_name} (Upside breakout)<br>"
+                        
+                # Downward Breakout
+                elif current_amt_state in [3, 11]:
+                    if is_extreme_pos:
+                        alert_triggered = True
+                        alert_message += f"🚨 POTENTIAL LONG LIQUIDATION: Breakdown confirmed ({current_amt_name}) with EXTREME POSITIVE Funding ({funding_rate:.3f}%)!<br>"
+                    else:
+                        alert_triggered = True
+                        alert_message += f"📖 AMT STATE SHIFT: {current_amt_name} (Downside breakdown)<br>"
+                        
+                # Failed Discovery / Re-entry
+                else:
+                    alert_triggered = True
+                    alert_message += f"📖 AMT STATE SHIFT: {current_amt_name}<br>"
         
         st.session_state.prev_amt_state = current_amt_state
 
@@ -661,25 +687,31 @@ with tab_dashboard:
         col3.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
         col4.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
         
-        # 🆕 DELTA FUNDING RATE SECTION
+        # DELTA FUNDING RATE SECTION
         st.markdown("---")
         st.subheader("🌍 Global Market Context (Delta Futures)")
         if funding_rate is not None:
             f1, f2 = st.columns(2)
             
-            if funding_rate > 0.01:
-                f_status = "🔴 Longs Paying (Overheated)"
+            if funding_rate > 0.05:
+                f_status = "🔴 EXTREME POSITIVE"
                 f_color = "inverse"
+            elif funding_rate > 0.01:
+                f_status = "🟠 HIGH POSITIVE"
+                f_color = "inverse"
+            elif funding_rate < -0.05:
+                f_status = "🟢 EXTREME NEGATIVE"
+                f_color = "normal"
             elif funding_rate < -0.01:
-                f_status = "🟢 Shorts Paying (Squeeze Risk)"
+                f_status = "🟡 HIGH NEGATIVE"
                 f_color = "normal"
             else:
-                f_status = "⚪ Neutral"
+                f_status = "⚪ NEUTRAL"
                 f_color = "off"
                 
             f1.metric("Funding Rate (8h)", f"{funding_rate:+.4f}%", f_status, delta_color=f_color)
             f2.metric("Delta Mark Price", f"${funding_mark_price:,.2f}")
-            st.caption("💡 Positive funding = Longs paying Shorts (Crowded Long). Negative = Shorts paying Longs (Crowded Short).")
+            st.caption("💡 Extreme Positive = Longs paying Shorts (Longs Vulnerable). Extreme Negative = Shorts paying Longs (Shorts Vulnerable).")
         else:
             st.warning("⚠️ Could not fetch Delta Funding Rate.")
         
@@ -824,4 +856,4 @@ with tab_dashboard:
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.caption(f"**System Health:** Binance {binance_status} | Delta {delta_status} | Last Fetched: {now}")
 
-components.html("<script>setTimeout(function(){ window.parent.reload(); }, 180000);</script>", height=0, width=0)
+components.html("<script>setTimeout(function(){ window.parent.location.reload(); }, 180000);</script>", height=0, width=0)
