@@ -11,13 +11,6 @@ from urllib3.util.retry import Retry
 st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 
 # ==========================================
-# ALERT HISTORY MEMORY (Survives page refresh)
-# ==========================================
-@st.cache_resource
-def get_alert_history():
-    return []
-
-# ==========================================
 # TELEGRAM ALERT FUNCTION
 # ==========================================
 def send_telegram_message(message):
@@ -65,8 +58,13 @@ if 'prev_max_pain' not in st.session_state: st.session_state.prev_max_pain = 0.0
 if 'prev_call_wall' not in st.session_state: st.session_state.prev_call_wall = 0.0
 if 'prev_put_wall' not in st.session_state: st.session_state.prev_put_wall = 0.0
 if 'prev_amt_state' not in st.session_state: st.session_state.prev_amt_state = -1
+
+# 🆕 PRICE MEMORY FOR GAMMA ALERTS
 if 'prev_price' not in st.session_state: st.session_state.prev_price = 0.0
+
+# 🆕 SESSION OPEN MEMORY 
 if 'session_start_straddle' not in st.session_state: st.session_state.session_start_straddle = None
+if 'session_start_pcr' not in st.session_state: st.session_state.session_start_pcr = None
 
 manual_values_valid = (input_vah > 0 and input_val > 0 and input_poc > 0 and input_vah >= input_poc >= input_val)
 final_vah, final_val, final_poc = np.nan, np.nan, np.nan
@@ -491,14 +489,10 @@ def fetch_delta_options():
         return pd.DataFrame(), "Error", 0.001
 
 # ==========================================
-# SECTION 4: UI RENDERING & TABS
+# SECTION 4: UI RENDERING
 # ==========================================
-
-# Fetch Data First
 df = fetch_amt_data()
 binance_status = "🟢 Connected"
-latest_price = 0
-options_df = pd.DataFrame()
 
 if not df.empty:
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
@@ -517,12 +511,90 @@ if not df.empty:
             final_vah, final_val, final_poc = input_vah, input_val, input_poc
 
     latest_price = df['close'].iloc[-1]
+    
+    st.subheader("📊 Live AMT Data (24-Hour Prior)")
+    if manual_values_valid: st.info("🟢 Reference Source: TRADINGVIEW MANUAL")
+    elif not pd.isna(final_vah): st.info("🔵 Reference Source: PYTHON CALCULATED")
+    else: st.warning("🔴 Reference Source: UNAVAILABLE")
+        
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Current Price", f"${latest_price:,.2f}")
+    col2.metric("Prior VAH", f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A")
+    col3.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
+    col4.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
+    
+    st.markdown("---")
 
-# Fetch Options Data
+    st.subheader("🗺️ Session Journey (05:30 AM to 05:30 AM)")
+    session_df = calculate_session_journey(df, final_vah, final_val)
+    
+    if not session_df.empty:
+        st.dataframe(
+            session_df, use_container_width=True, hide_index=True,
+            column_config={
+                "Session": st.column_config.TextColumn("Session"),
+                "Open": st.column_config.NumberColumn("Open", format="$%.0f"),
+                "High": st.column_config.NumberColumn("High", format="$%.0f"),
+                "Low": st.column_config.NumberColumn("Low", format="$%.0f"),
+                "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
+                "Macro Bias": st.column_config.TextColumn("Macro Bias (vs Prior)"),
+                "Micro Bias": st.column_config.TextColumn("Micro Bias (vs Session)"),
+                "POC": st.column_config.NumberColumn("POC", format="$%.0f"),
+                "VAH": st.column_config.NumberColumn("VAH", format="$%.0f"),
+                "VAL": st.column_config.NumberColumn("VAL", format="$%.0f"),
+            }
+        )
+    st.markdown("---")
+
+    st.subheader("📖 PROJECT ECHO - State Journal")
+    st.caption("⚠️ Experimental State Journal. Shows when the auction shifted.")
+    
+    journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
+    
+    if journal_res is not None:
+        journal_df, echo_used_manual = journal_res
+        if not journal_df.empty:
+            if echo_used_manual: st.caption("Echo Reference: 🟢 TRADINGVIEW MANUAL")
+            else: st.caption("Echo Reference: 🔵 PYTHON CALCULATED")
+                
+            st.dataframe(
+                journal_df, use_container_width=True, hide_index=True,
+                column_config={
+                    "Time": st.column_config.TextColumn("Time (IST)"),
+                    "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
+                    "Code": st.column_config.NumberColumn("Code"),
+                    "State Name": st.column_config.TextColumn("State Name"),
+                    "Dev VAH": st.column_config.NumberColumn("Dev VAH", format="$%.0f"),
+                    "Dev POC": st.column_config.NumberColumn("Dev POC", format="$%.0f"),
+                    "Dev VAL": st.column_config.NumberColumn("Dev VAL", format="$%.0f"),
+                }
+            )
+            
+            current_amt_state = journal_df.iloc[-1]['Code']
+            current_amt_name = journal_df.iloc[-1]['State Name']
+            
+            if st.session_state.prev_amt_state != -1 and current_amt_state != st.session_state.prev_amt_state:
+                if current_amt_state in [2, 3, 10, 11, 14]: 
+                    alert_triggered = True
+                    alert_message += f"📖 AMT STATE SHIFT: {current_amt_name}<br>"
+            
+            st.session_state.prev_amt_state = current_amt_state
+        else:
+            st.info("Building State Journal...")
+    st.markdown("---")
+
+else:
+    latest_price = 0
+    binance_status = "🔴 Failed"
+    st.warning("⚠️ Could not fetch AMT Data from Binance.")
+
+# --- OPTIONS FLOW ---
 options_df, loaded_expiry, dynamic_contract_size = fetch_delta_options()
+delta_status = "🟢 Connected"
 
-# --- ALERT LOGIC ENGINE (Run before UI so it populates history) ---
 if not options_df.empty:
+    st.subheader(f"📉 Delta Options Chain (Expiry: {loaded_expiry})")
+    
     options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * latest_price * dynamic_contract_size
     options_df['GEX_Put'] = options_df['Gamma_Put'] * options_df['OI_Contracts_Put'] * latest_price * dynamic_contract_size
     
@@ -530,12 +602,60 @@ if not options_df.empty:
         options_df['Dist_to_Spot'] = abs(options_df['Strike'] - latest_price)
         atm_strike = options_df.loc[options_df['Dist_to_Spot'].idxmin(), 'Strike']
         atm_row = options_df[options_df['Strike'] == atm_strike].iloc[0]
+        
         call_premium = atm_row['Mark_Call']
         put_premium = atm_row['Mark_Put']
         straddle_price = call_premium + put_premium
         
+        call_iv = atm_row['IV_Call']
+        put_iv = atm_row['IV_Put']
+        
+        dist_to_vah = final_vah - latest_price if not pd.isna(final_vah) else 0
+        dist_to_val = latest_price - final_val if not pd.isna(final_val) else 0
+        
+        # 🆕 MEMORY & DELTA CALCULATION
         if st.session_state.session_start_straddle is None:
             st.session_state.session_start_straddle = straddle_price
+            
+        straddle_delta = straddle_price - st.session_state.session_start_straddle
+        straddle_delta_str = f"{straddle_delta:+,.0f}" if straddle_delta != 0 else "Unchanged"
+        straddle_color = "normal" if straddle_delta >= 0 else "inverse" 
+        
+        st.markdown(f"#### 🧠 Market Expectations (ATM Straddle at ${atm_strike:,.0f})")
+        e1, e2, e3, e4, e5 = st.columns(5)
+        
+        e1.metric("ATM Straddle Price", f"${straddle_price:,.2f}", straddle_delta_str, delta_color=straddle_color)
+        e2.metric("ATM Call IV", f"{call_iv:.2f}%", f"Put IV: {put_iv:,.2f}%", delta_color="off")
+        
+        if dist_to_vah > 0: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Distance")
+        else: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Above VAH")
+
+        if dist_to_val > 0: e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Distance")
+        else: e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Below VAL")
+            
+        if call_premium > put_premium:
+            skew_label = f"Call Skew +${call_premium - put_premium:,.0f}"
+            skew_color = "inverse"
+        else:
+            skew_label = f"Put Skew +${put_premium - call_premium:,.0f}"
+            skew_color = "normal"
+            
+        e5.metric(label="ATM Premium (Call / Put)", value=f"${call_premium:,.0f} / ${put_premium:,.0f}", delta=skew_label, delta_color=skew_color)
+        st.markdown("---")
+
+    all_strikes = options_df['Strike'].tolist()
+    all_call_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Call']))
+    all_put_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Put']))
+    
+    pain_dict = {}
+    for settle in all_strikes:
+        total_pain = 0
+        for strike in all_strikes:
+            if settle > strike: total_pain += all_call_oi.get(strike, 0) * (settle - strike)
+            if settle < strike: total_pain += all_put_oi.get(strike, 0) * (strike - settle)
+        pain_dict[settle] = total_pain
+        
+    true_max_pain = min(pain_dict, key=pain_dict.get)
 
     if latest_price > 0:
         lower_bound = latest_price * 0.90
@@ -544,259 +664,103 @@ if not options_df.empty:
     else:
         filtered_options = options_df.copy()
 
-    if not filtered_options.empty:
-        call_oi_wall = filtered_options.loc[filtered_options['OI_USD_Call'].idxmax()]
-        put_oi_wall = filtered_options.loc[filtered_options['OI_USD_Put'].idxmax()]
-        call_gamma_wall = filtered_options.loc[filtered_options['GEX_Call'].idxmax()]
-        put_gamma_wall = filtered_options.loc[filtered_options['GEX_Put'].idxmax()]
-        
-        total_calls_usd = filtered_options['OI_USD_Call'].sum()
-        total_puts_usd = filtered_options['OI_USD_Put'].sum()
-        pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
+    if filtered_options.empty:
+        st.warning("⚠️ No option strikes available inside the selected spot range (90%-110%).")
+        st.stop()
 
-        # Check Alerts
-        if st.session_state.prev_pcr != 0.0:
-            if (st.session_state.prev_pcr >= 1.20 and pcr < 1.20) or (st.session_state.prev_pcr >= 0.30 and pcr < 0.30):
-                alert_triggered = True
-                alert_message += f"⚠️ PCR EXTREME CROSSED: OI PCR is now {pcr:.2f}<br>"
-        
-        if st.session_state.prev_max_pain != 0 and abs(min(pain_dict) - st.session_state.prev_max_pain) >= 500:
-            alert_triggered = True
-            alert_message += f"🔄 MAX PAIN SHIFT: Moved to ${min(pain_dict):,.0f}!<br>"
-            
-        if st.session_state.prev_call_wall != 0 and abs(call_oi_wall['Strike'] - st.session_state.prev_call_wall) >= 200:
-            alert_triggered = True
-            alert_message += f"🚧 CALL OI WALL SHIFT: Moved to ${call_oi_wall['Strike']:,.0f}!<br>"
-            
-        if st.session_state.prev_put_wall != 0 and abs(put_oi_wall['Strike'] - st.session_state.prev_put_wall) >= 200:
-            alert_triggered = True
-            alert_message += f"🚧 PUT OI WALL SHIFT: Moved to ${put_oi_wall['Strike']:,.0f}!<br>"
-
-        if st.session_state.prev_price != 0.0:
-            if st.session_state.prev_price < call_gamma_wall['Strike'] and latest_price >= call_gamma_wall['Strike']:
-                alert_triggered = True
-                alert_message += f"🔥 GAMMA BREAKOUT: Price crossed above Call Wall (${call_gamma_wall['Strike']:,.0f})!<br>"
-            if st.session_state.prev_price > put_gamma_wall['Strike'] and latest_price <= put_gamma_wall['Strike']:
-                alert_triggered = True
-                alert_message += f"🔥 GAMMA BREAKDOWN: Price crossed below Put Wall (${put_gamma_wall['Strike']:,.0f})!<br>"
-
-        # Update state
-        st.session_state.prev_pcr = pcr
-        st.session_state.prev_max_pain = min(pain_dict)
-        st.session_state.prev_call_wall = call_oi_wall['Strike']
-        st.session_state.prev_put_wall = put_oi_wall['Strike']
-        st.session_state.prev_price = latest_price
-
-# Check AMT Alerts
-if journal_res is not None:
-    journal_df_check, _ = journal_res
-    if not journal_df_check.empty:
-        current_amt_state = journal_df_check.iloc[-1]['Code']
-        current_amt_name = journal_df_check.iloc[-1]['State Name']
-        
-        if st.session_state.prev_amt_state != -1 and current_amt_state != st.session_state.prev_amt_state:
-            if current_amt_state in [2, 3, 10, 11, 14]: 
-                alert_triggered = True
-                alert_message += f"📖 AMT STATE SHIFT: {current_amt_name}<br>"
-        
-        st.session_state.prev_amt_state = current_amt_state
-
-# IF ALERT FIRED: Save to history, send Telegram, show warning
-if alert_triggered:
-    # 1. Save to Memory
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    alert_history = get_alert_history()
-    alert_history.insert(0, {"Time": timestamp, "Alert": alert_message.replace("<br>", " | ")})
+    call_oi_wall = filtered_options.loc[filtered_options['OI_USD_Call'].idxmax()]
+    put_oi_wall = filtered_options.loc[filtered_options['OI_USD_Put'].idxmax()]
+    call_gamma_wall = filtered_options.loc[filtered_options['GEX_Call'].idxmax()]
+    put_gamma_wall = filtered_options.loc[filtered_options['GEX_Put'].idxmax()]
     
-    # 2. Send Telegram
+    total_calls_usd = filtered_options['OI_USD_Call'].sum()
+    total_puts_usd = filtered_options['OI_USD_Put'].sum()
+    pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
+
+    if st.session_state.prev_pcr != 0.0:
+        if (st.session_state.prev_pcr >= 1.20 and pcr < 1.20) or (st.session_state.prev_pcr >= 0.30 and pcr < 0.30):
+            alert_triggered = True
+            alert_message += f"⚠️ PCR EXTREME CROSSED: OI PCR is now {pcr:.2f}<br>"
+    
+    if st.session_state.prev_max_pain != 0 and abs(true_max_pain - st.session_state.prev_max_pain) >= 500:
+        alert_triggered = True
+        alert_message += f"🔄 MAX PAIN SHIFT: Moved to ${true_max_pain:,.0f}!<br>"
+    if st.session_state.prev_call_wall != 0 and abs(call_oi_wall['Strike'] - st.session_state.prev_call_wall) >= 200:
+        alert_triggered = True
+        alert_message += f"🚧 CALL OI WALL SHIFT: Moved to ${call_oi_wall['Strike']:,.0f}!<br>"
+    if st.session_state.prev_put_wall != 0 and abs(put_oi_wall['Strike'] - st.session_state.prev_put_wall) >= 200:
+        alert_triggered = True
+        alert_message += f"🚧 PUT OI WALL SHIFT: Moved to ${put_oi_wall['Strike']:,.0f}!<br>"
+
+    # 🆕 GAMMA BREAKOUT ALERTS
+    if st.session_state.prev_price != 0.0:
+        if st.session_state.prev_price < call_gamma_wall['Strike'] and latest_price >= call_gamma_wall['Strike']:
+            alert_triggered = True
+            alert_message += f"🔥 GAMMA BREAKOUT: Price crossed above Call Wall (${call_gamma_wall['Strike']:,.0f})!<br>"
+        
+        if st.session_state.prev_price > put_gamma_wall['Strike'] and latest_price <= put_gamma_wall['Strike']:
+            alert_triggered = True
+            alert_message += f"🔥 GAMMA BREAKDOWN: Price crossed below Put Wall (${put_gamma_wall['Strike']:,.0f})!<br>"
+
+    st.session_state.prev_pcr = pcr
+    st.session_state.prev_max_pain = true_max_pain
+    st.session_state.prev_call_wall = call_oi_wall['Strike']
+    st.session_state.prev_put_wall = put_oi_wall['Strike']
+    st.session_state.prev_price = latest_price
+
+    st.subheader("📊 Options Structure")
+    w1, w2, w3, w4 = st.columns(4)
+    
+    w1.metric("🔴 Call OI Concentration", f"${call_oi_wall['Strike']:,.0f}", f"OI: ${call_oi_wall['OI_USD_Call']/1e6:.2f}M")
+    w2.metric("🟢 Put OI Concentration", f"${put_oi_wall['Strike']:,.0f}", f"OI: ${put_oi_wall['OI_USD_Put']/1e6:.2f}M")
+    w3.metric("⚖️ Theoretical Min Payout", f"${true_max_pain:,.0f}", "Max Pain (Min Payout)")
+    w4.metric("📊 Local OI PCR (±10%)", f"{pcr:.2f}", "Put OI / Call OI (USD)")
+
+    w5, w6, w7, w8 = st.columns(4)
+    w5.metric("🔴 Call Gamma Wall", f"${call_gamma_wall['Strike']:,.0f}", f"Est. GEX: ${call_gamma_wall['GEX_Call']:,.0f}")
+    w6.metric("🟢 Put Gamma Wall", f"${put_gamma_wall['Strike']:,.0f}", f"Est. GEX: ${put_gamma_wall['GEX_Put']:,.0f}")
+    st.caption(f"⚠️ GEX is calculated within the ±10% spot band using a dynamic multiplier of {dynamic_contract_size}. Treat as estimated spot-band exposure.")
+    
+    st.markdown("---")
+
+    if 'Dist_to_Spot' in filtered_options.columns:
+        filtered_options = filtered_options.drop(columns=['Dist_to_Spot'])
+
+    display_df = filtered_options[['Bid_Call', 'Ask_Call', 'OI_USD_Call', 'Gamma_Call', 'IV_Call', 'Strike', 'IV_Put', 'Gamma_Put', 'OI_USD_Put', 'Bid_Put', 'Ask_Put']].copy()
+    st.dataframe(display_df, use_container_width=True, hide_index=True, column_config={
+        "Bid_Call": st.column_config.NumberColumn("Call Bid", format="$%.2f"),
+        "Ask_Call": st.column_config.NumberColumn("Call Ask", format="$%.2f"),
+        "OI_USD_Call": st.column_config.NumberColumn("Call OI", format="$%,.0f"),
+        "Gamma_Call": st.column_config.NumberColumn("Call Gamma", format="%.8f"),
+        "IV_Call": st.column_config.NumberColumn("Call IV", format="%.2f%%"),
+        "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
+        "IV_Put": st.column_config.NumberColumn("Put IV", format="%.2f%%"),
+        "Gamma_Put": st.column_config.NumberColumn("Put Gamma", format="%.8f"),
+        "OI_USD_Put": st.column_config.NumberColumn("Put OI", format="$%,.0f"),
+        "Bid_Put": st.column_config.NumberColumn("Put Bid", format="$%.2f"),
+        "Ask_Put": st.column_config.NumberColumn("Put Ask", format="$%.2f"),
+    })
+    csv = display_df.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Download Options Data as CSV", data=csv, file_name=f"delta_options_{loaded_expiry}.csv", mime="text/csv")
+else:
+    delta_status = "🔴 Failed"
+    st.error("Could not load Options Chain data from Delta API.")
+
+# ==========================================
+# FIRE ALERTS
+# ==========================================
+if alert_triggered:
     clean_telegram_msg = alert_message.replace("<br>", "\n")
     send_telegram_message(f"🚨 BTC TERMINAL ALERT 🚨\n\n{clean_telegram_msg}")
-    
-    # 3. Show Banner & Beep
     st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
     components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
 
+if st.button("🔄 Refresh All Data"):
+    st.cache_data.clear()
+    st.rerun()
 
-# --- RENDER TABS ---
-tab_dashboard, tab_history = st.tabs(["📊 Live Dashboard", "📜 Alert History"])
-
-with tab_history:
-    st.subheader("📜 Alert History Log")
-    st.caption("⚠️ This log resets when the Cloud server reboots (e.g., code updates).")
-    history_data = get_alert_history()
-    if history_data:
-        st.dataframe(pd.DataFrame(history_data), use_container_width=True, hide_index=True)
-    else:
-        st.info("No alerts have fired yet during this session.")
-
-with tab_dashboard:
-    if not df.empty:
-        st.subheader("📊 Live AMT Data (24-Hour Prior)")
-        if manual_values_valid: st.info("🟢 Reference Source: TRADINGVIEW MANUAL")
-        elif not pd.isna(final_vah): st.info("🔵 Reference Source: PYTHON CALCULATED")
-        else: st.warning("🔴 Reference Source: UNAVAILABLE")
-            
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Current Price", f"${latest_price:,.2f}")
-        col2.metric("Prior VAH", f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A")
-        col3.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
-        col4.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
-        
-        st.markdown("---")
-
-        st.subheader("🗺️ Session Journey (05:30 AM to 05:30 AM)")
-        session_df = calculate_session_journey(df, final_vah, final_val)
-        
-        if not session_df.empty:
-            st.dataframe(
-                session_df, use_container_width=True, hide_index=True,
-                column_config={
-                    "Session": st.column_config.TextColumn("Session"),
-                    "Open": st.column_config.NumberColumn("Open", format="$%.0f"),
-                    "High": st.column_config.NumberColumn("High", format="$%.0f"),
-                    "Low": st.column_config.NumberColumn("Low", format="$%.0f"),
-                    "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
-                    "Macro Bias": st.column_config.TextColumn("Macro Bias (vs Prior)"),
-                    "Micro Bias": st.column_config.TextColumn("Micro Bias (vs Session)"),
-                    "POC": st.column_config.NumberColumn("POC", format="$%.0f"),
-                    "VAH": st.column_config.NumberColumn("VAH", format="$%.0f"),
-                    "VAL": st.column_config.NumberColumn("VAL", format="$%.0f"),
-                }
-            )
-        st.markdown("---")
-
-        st.subheader("📖 PROJECT ECHO - State Journal")
-        st.caption("⚠️ Experimental State Journal. Shows when the auction shifted.")
-        
-        journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
-        
-        if journal_res is not None:
-            journal_df, echo_used_manual = journal_res
-            if not journal_df.empty:
-                if echo_used_manual: st.caption("Echo Reference: 🟢 TRADINGVIEW MANUAL")
-                else: st.caption("Echo Reference: 🔵 PYTHON CALCULATED")
-                    
-                st.dataframe(
-                    journal_df, use_container_width=True, hide_index=True,
-                    column_config={
-                        "Time": st.column_config.TextColumn("Time (IST)"),
-                        "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
-                        "Code": st.column_config.NumberColumn("Code"),
-                        "State Name": st.column_config.TextColumn("State Name"),
-                        "Dev VAH": st.column_config.NumberColumn("Dev VAH", format="$%.0f"),
-                        "Dev POC": st.column_config.NumberColumn("Dev POC", format="$%.0f"),
-                        "Dev VAL": st.column_config.NumberColumn("Dev VAL", format="$%.0f"),
-                    }
-                )
-            else:
-                st.info("Building State Journal...")
-        st.markdown("---")
-
-    else:
-        binance_status = "🔴 Failed"
-        st.warning("⚠️ Could not fetch AMT Data from Binance.")
-
-    # --- OPTIONS FLOW ---
-    delta_status = "🟢 Connected"
-
-    if not options_df.empty:
-        st.subheader(f"📉 Delta Options Chain (Expiry: {loaded_expiry})")
-        
-        if latest_price > 0:
-            call_premium = atm_row['Mark_Call']
-            put_premium = atm_row['Mark_Put']
-            straddle_price = call_premium + put_premium
-            
-            call_iv = atm_row['IV_Call']
-            put_iv = atm_row['IV_Put']
-            
-            dist_to_vah = final_vah - latest_price if not pd.isna(final_vah) else 0
-            dist_to_val = latest_price - final_val if not pd.isna(final_val) else 0
-            
-            straddle_delta = straddle_price - st.session_state.session_start_straddle
-            straddle_delta_str = f"{straddle_delta:+,.0f}" if straddle_delta != 0 else "Unchanged"
-            straddle_color = "normal" if straddle_delta >= 0 else "inverse" 
-            
-            st.markdown(f"#### 🧠 Market Expectations (ATM Straddle at ${atm_strike:,.0f})")
-            e1, e2, e3, e4, e5 = st.columns(5)
-            
-            e1.metric("ATM Straddle Price", f"${straddle_price:,.2f}", straddle_delta_str, delta_color=straddle_color)
-            e2.metric("ATM Call IV", f"{call_iv:.2f}%", f"Put IV: {put_iv:,.2f}%", delta_color="off")
-            
-            if dist_to_vah > 0: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Distance")
-            else: e3.metric("To Prior VAH", f"${dist_to_vah:,.2f}", "Above VAH")
-
-            if dist_to_val > 0: e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Distance")
-            else: e4.metric("To Prior VAL", f"${dist_to_val:,.2f}", "Below VAL")
-                
-            if call_premium > put_premium:
-                skew_label = f"Call Skew +${call_premium - put_premium:,.0f}"
-                skew_color = "inverse"
-            else:
-                skew_label = f"Put Skew +${put_premium - call_premium:,.0f}"
-                skew_color = "normal"
-                
-            e5.metric(label="ATM Premium (Call / Put)", value=f"${call_premium:,.0f} / ${put_premium:,.0f}", delta=skew_label, delta_color=skew_color)
-            st.markdown("---")
-
-        if not filtered_options.empty:
-            # PAIN DICT needs to be recalculated here because it was scoped in the alert block
-            all_strikes = options_df['Strike'].tolist()
-            all_call_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Call']))
-            all_put_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Put']))
-            pain_dict = {}
-            for settle in all_strikes:
-                total_pain = 0
-                for strike in all_strikes:
-                    if settle > strike: total_pain += all_call_oi.get(strike, 0) * (settle - strike)
-                    if settle < strike: total_pain += all_put_oi.get(strike, 0) * (strike - settle)
-                pain_dict[settle] = total_pain
-            true_max_pain = min(pain_dict, key=pain_dict.get)
-
-            st.subheader("📊 Options Structure")
-            w1, w2, w3, w4 = st.columns(4)
-            
-            w1.metric("🔴 Call OI Concentration", f"${call_oi_wall['Strike']:,.0f}", f"OI: ${call_oi_wall['OI_USD_Call']/1e6:.2f}M")
-            w2.metric("🟢 Put OI Concentration", f"${put_oi_wall['Strike']:,.0f}", f"OI: ${put_oi_wall['OI_USD_Put']/1e6:.2f}M")
-            w3.metric("⚖️ Theoretical Min Payout", f"${true_max_pain:,.0f}", "Max Pain (Min Payout)")
-            w4.metric("📊 Local OI PCR (±10%)", f"{pcr:.2f}", "Put OI / Call OI (USD)")
-
-            w5, w6, w7, w8 = st.columns(4)
-            w5.metric("🔴 Call Gamma Wall", f"${call_gamma_wall['Strike']:,.0f}", f"Est. GEX: ${call_gamma_wall['GEX_Call']:,.0f}")
-            w6.metric("🟢 Put Gamma Wall", f"${put_gamma_wall['Strike']:,.0f}", f"Est. GEX: ${put_gamma_wall['GEX_Put']:,.0f}")
-            st.caption(f"⚠️ GEX is calculated within the ±10% spot band using a dynamic multiplier of {dynamic_contract_size}. Treat as estimated spot-band exposure.")
-            
-            st.markdown("---")
-
-            if 'Dist_to_Spot' in filtered_options.columns:
-                filtered_options = filtered_options.drop(columns=['Dist_to_Spot'])
-
-            display_df = filtered_options[['Bid_Call', 'Ask_Call', 'OI_USD_Call', 'Gamma_Call', 'IV_Call', 'Strike', 'IV_Put', 'Gamma_Put', 'OI_USD_Put', 'Bid_Put', 'Ask_Put']].copy()
-            st.dataframe(display_df, use_container_width=True, hide_index=True, column_config={
-                "Bid_Call": st.column_config.NumberColumn("Call Bid", format="$%.2f"),
-                "Ask_Call": st.column_config.NumberColumn("Call Ask", format="$%.2f"),
-                "OI_USD_Call": st.column_config.NumberColumn("Call OI", format="$%,.0f"),
-                "Gamma_Call": st.column_config.NumberColumn("Call Gamma", format="%.8f"),
-                "IV_Call": st.column_config.NumberColumn("Call IV", format="%.2f%%"),
-                "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
-                "IV_Put": st.column_config.NumberColumn("Put IV", format="%.2f%%"),
-                "Gamma_Put": st.column_config.NumberColumn("Put Gamma", format="%.8f"),
-                "OI_USD_Put": st.column_config.NumberColumn("Put OI", format="$%,.0f"),
-                "Bid_Put": st.column_config.NumberColumn("Put Bid", format="$%.2f"),
-                "Ask_Put": st.column_config.NumberColumn("Put Ask", format="$%.2f"),
-            })
-            csv = display_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Options Data as CSV", data=csv, file_name=f"delta_options_{loaded_expiry}.csv", mime="text/csv")
-    else:
-        delta_status = "🔴 Failed"
-        st.error("Could not load Options Chain data from Delta API.")
-
-    if st.button("🔄 Refresh All Data"):
-        st.cache_data.clear()
-        st.rerun()
-
-    st.markdown("---")
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.caption(f"**System Health:** Binance {binance_status} | Delta {delta_status} | Last Fetched: {now}")
+st.markdown("---")
+now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+st.caption(f"**System Health:** Binance {binance_status} | Delta {delta_status} | Last Fetched: {now}")
 
 components.html("<script>setTimeout(function(){ window.parent.location.reload(); }, 180000);</script>", height=0, width=0)
