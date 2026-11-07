@@ -33,7 +33,9 @@ def get_persistent_state():
         "prev_price": 0.0,
         "session_start_straddle": None,
         "alert_history": [],
-        "options_flow_history": []  # NEW: Tracks shifts in walls/max pain
+        "options_flow_history": [],
+        "wall_status_log": [],
+        "trade_journal": ""
     }
 
 p_state = get_persistent_state()
@@ -56,7 +58,7 @@ def send_telegram_message(message):
         pass
 
 # ==========================================
-# SIDEBAR: MANUAL AMT OVERRIDES
+# SIDEBAR: MANUAL AMT OVERRIDES & JOURNAL
 # ==========================================
 qp = st.query_params
 default_vah = float(qp.get("vah", 0.0))
@@ -77,6 +79,14 @@ if st.sidebar.button("Apply Overrides"):
 if st.sidebar.button("Clear Overrides"):
     st.query_params.clear()
     st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.header("📝 Trade Journal")
+st.sidebar.caption("RESEARCH ONLY - Saved across reloads")
+journal_input = st.sidebar.text_area("Log Trade Details", value=p_state["trade_journal"], height=200)
+if st.sidebar.button("Save Journal"):
+    p_state["trade_journal"] = journal_input
+    st.sidebar.success("Journal saved!")
 
 st.title("⚡ BTC AMT & Delta Options Terminal")
 
@@ -801,7 +811,28 @@ if not options_df.empty and latest_price > 0:
             near_call, mid_call, far_call = [], [], []
             near_put, mid_put, far_put = [], [], []
 
-        # NEW: Flight Recorder - Log Options Shifts
+        # Passive Logging: Wall Status Shifts
+        current_call_status = "PRESENT" if near_call else "N/A"
+        current_put_status = "PRESENT" if near_put else "N/A"
+        
+        if not p_state["wall_status_log"]:
+            p_state["wall_status_log"].append({
+                "time": datetime.datetime.now().strftime("%H:%M"),
+                "call": current_call_status,
+                "put": current_put_status
+            })
+        else:
+            last_log = p_state["wall_status_log"][-1]
+            if last_log["call"] != current_call_status or last_log["put"] != current_put_status:
+                p_state["wall_status_log"].append({
+                    "time": datetime.datetime.now().strftime("%H:%M"),
+                    "call": current_call_status,
+                    "put": current_put_status
+                })
+                if len(p_state["wall_status_log"]) > 10:
+                    p_state["wall_status_log"].pop(0)
+
+        # NEW: Options Flow History
         current_wall_state = (call_oi_wall['Strike'], put_oi_wall['Strike'], true_max_pain)
         if p_state["options_flow_history"]:
             last_state = p_state["options_flow_history"][-1]
@@ -942,6 +973,11 @@ with tab_dashboard:
         if funding_rate is not None:
             f_color = "inverse" if funding_rate > 0.01 else "normal" if funding_rate < -0.01 else "off"
             v4.metric("Funding Rate (8h)", f"{funding_rate:+.4f}%", "Ext Neg" if funding_rate < -0.05 else "Ext Pos" if funding_rate > 0.05 else "Neutral", delta_color=f_color)
+            
+            if funding_rate > 0.15:
+                st.warning("⚠️ EXTREME POSITIVE FUNDING: Crowded long-side positioning / elevated squeeze risk. (Informational only, not an entry/exit signal).")
+            elif funding_rate < -0.15:
+                st.warning("⚠️ EXTREME NEGATIVE FUNDING: Crowded short-side positioning / elevated squeeze risk. (Informational only, not an entry/exit signal).")
         else:
             v4.metric("Funding Rate", "N/A")
             
@@ -1107,10 +1143,17 @@ with tab_dashboard:
     if journal_res is not None and not journal_df_check.empty:
         for idx, row in journal_df_check.tail(10).iterrows():
             echo_text += f"{row['Time']} | ${row['Close']:,.0f} | {row['State Name']}\n"
+            
+    # Build Wall Status Log Text
+    wall_text = ""
+    for entry in p_state["wall_status_log"][-5:]:
+        wall_text += f"{entry['time']} | Call: {entry['call']} | Put: {entry['put']}\n"
 
     snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
 Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} IST
+
+[RESEARCH OBSERVATIONS — NOT USED FOR TRADE DECISIONS]
 
 [VITAL SIGNS]
 Price: ${latest_price:,.2f}
@@ -1134,6 +1177,9 @@ Near-Term (<0.5x): Call {"$"+f"{near_call[0]['VWAS']:,.0f}" if near_call else "N
 Mid-Term (0.5-1.0x): Call {"$"+f"{mid_call[0]['VWAS']:,.0f}" if mid_call else "N/A"} | Put {"$"+f"{mid_put[0]['VWAS']:,.0f}" if mid_put else "N/A"}
 Distant (>=1.0x): Call {"$"+f"{far_call[0]['VWAS']:,.0f}" if far_call else "N/A"} | Put {"$"+f"{far_put[0]['VWAS']:,.0f}" if far_put else "N/A"}
 
+[WALL STATUS LOG (Passive Tracking)]
+{wall_text}
+
 [OPTIONS FLOW JOURNAL (Last 5 Shifts)]
 {flow_text}
 
@@ -1142,6 +1188,9 @@ Distant (>=1.0x): Call {"$"+f"{far_call[0]['VWAS']:,.0f}" if far_call else "N/A"
 
 [PROJECT ECHO (Last 10 States)]
 {echo_text}
+
+[TRADE JOURNAL]
+{p_state["trade_journal"] if p_state["trade_journal"] else "Empty"}
 """
 
     with st.expander("📋 Copy Dashboard Snapshot (Click to expand)"):
