@@ -11,11 +11,22 @@ from urllib3.util.retry import Retry
 st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 
 # ==========================================
-# ALERT HISTORY MEMORY
+# PERSISTENT STATE (Survives Hard Page Reloads)
 # ==========================================
 @st.cache_resource
-def get_alert_history():
-    return []
+def get_persistent_state():
+    return {
+        "prev_pcr": 0.0,
+        "prev_max_pain": 0.0,
+        "prev_call_wall": 0.0,
+        "prev_put_wall": 0.0,
+        "prev_amt_state": -1,
+        "prev_price": 0.0,
+        "session_start_straddle": None,
+        "alert_history": []
+    }
+
+p_state = get_persistent_state()
 
 # ==========================================
 # TELEGRAM ALERT FUNCTION
@@ -58,15 +69,6 @@ if st.sidebar.button("Clear Overrides"):
     st.rerun()
 
 st.title("⚡ BTC AMT & Delta Options Terminal")
-
-# Initialize Session State
-if 'prev_pcr' not in st.session_state: st.session_state.prev_pcr = 0.0
-if 'prev_max_pain' not in st.session_state: st.session_state.prev_max_pain = 0.0
-if 'prev_call_wall' not in st.session_state: st.session_state.prev_call_wall = 0.0
-if 'prev_put_wall' not in st.session_state: st.session_state.prev_put_wall = 0.0
-if 'prev_amt_state' not in st.session_state: st.session_state.prev_amt_state = -1
-if 'prev_price' not in st.session_state: st.session_state.prev_price = 0.0
-if 'session_start_straddle' not in st.session_state: st.session_state.session_start_straddle = None
 
 manual_values_valid = (input_vah > 0 and input_val > 0 and input_poc > 0 and input_vah >= input_poc >= input_val)
 final_vah, final_val, final_poc = np.nan, np.nan, np.nan
@@ -548,8 +550,8 @@ if not options_df.empty and latest_price > 0:
     atm_row = options_df[options_df['Strike'] == atm_strike].iloc[0]
     straddle_price = atm_row['Mark_Call'] + atm_row['Mark_Put']
     
-    if st.session_state.session_start_straddle is None:
-        st.session_state.session_start_straddle = straddle_price
+    if p_state["session_start_straddle"] is None:
+        p_state["session_start_straddle"] = straddle_price
 
     lower_bound = latest_price * 0.90
     upper_bound = latest_price * 1.10
@@ -577,36 +579,36 @@ if not options_df.empty and latest_price > 0:
             pain_dict[settle] = total_pain
         true_max_pain = min(pain_dict, key=pain_dict.get)
 
-        if st.session_state.prev_pcr != 0.0:
-            if (st.session_state.prev_pcr >= 1.20 and pcr < 1.20) or (st.session_state.prev_pcr >= 0.30 and pcr < 0.30):
+        if p_state["prev_pcr"] != 0.0:
+            if (p_state["prev_pcr"] >= 1.20 and pcr < 1.20) or (p_state["prev_pcr"] >= 0.30 and pcr < 0.30):
                 alert_triggered = True
                 alert_message += f"⚠️ PCR EXTREME CROSSED: OI PCR is now {pcr:.2f}<br>"
         
-        if st.session_state.prev_max_pain != 0 and abs(true_max_pain - st.session_state.prev_max_pain) >= 500:
+        if p_state["prev_max_pain"] != 0 and abs(true_max_pain - p_state["prev_max_pain"]) >= 500:
             alert_triggered = True
             alert_message += f"🔄 MAX PAIN SHIFT: Moved to ${true_max_pain:,.0f}!<br>"
             
-        if st.session_state.prev_call_wall != 0 and abs(call_oi_wall['Strike'] - st.session_state.prev_call_wall) >= 200:
+        if p_state["prev_call_wall"] != 0 and abs(call_oi_wall['Strike'] - p_state["prev_call_wall"]) >= 200:
             alert_triggered = True
             alert_message += f"🚧 CALL OI WALL SHIFT: Moved to ${call_oi_wall['Strike']:,.0f}!<br>"
             
-        if st.session_state.prev_put_wall != 0 and abs(put_oi_wall['Strike'] - st.session_state.prev_put_wall) >= 200:
+        if p_state["prev_put_wall"] != 0 and abs(put_oi_wall['Strike'] - p_state["prev_put_wall"]) >= 200:
             alert_triggered = True
             alert_message += f"🚧 PUT OI WALL SHIFT: Moved to ${put_oi_wall['Strike']:,.0f}!<br>"
 
-        if st.session_state.prev_price != 0.0:
-            if st.session_state.prev_price < call_gamma_wall['Strike'] and latest_price >= call_gamma_wall['Strike']:
+        if p_state["prev_price"] != 0.0:
+            if p_state["prev_price"] < call_gamma_wall['Strike'] and latest_price >= call_gamma_wall['Strike']:
                 alert_triggered = True
                 alert_message += f"🔥 GAMMA BREAKOUT: Price crossed above Call Wall (${call_gamma_wall['Strike']:,.0f})!<br>"
-            if st.session_state.prev_price > put_gamma_wall['Strike'] and latest_price <= put_gamma_wall['Strike']:
+            if p_state["prev_price"] > put_gamma_wall['Strike'] and latest_price <= put_gamma_wall['Strike']:
                 alert_triggered = True
                 alert_message += f"🔥 GAMMA BREAKDOWN: Price crossed below Put Wall (${put_gamma_wall['Strike']:,.0f})!<br>"
 
-        st.session_state.prev_pcr = pcr
-        st.session_state.prev_max_pain = true_max_pain
-        st.session_state.prev_call_wall = call_oi_wall['Strike']
-        st.session_state.prev_put_wall = put_oi_wall['Strike']
-        st.session_state.prev_price = latest_price
+        p_state["prev_pcr"] = pcr
+        p_state["prev_max_pain"] = true_max_pain
+        p_state["prev_call_wall"] = call_oi_wall['Strike']
+        p_state["prev_put_wall"] = put_oi_wall['Strike']
+        p_state["prev_price"] = latest_price
 
 journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
 if journal_res is not None:
@@ -615,7 +617,8 @@ if journal_res is not None:
         current_amt_state = journal_df_check.iloc[-1]['Code']
         current_amt_name = journal_df_check.iloc[-1]['State Name']
         
-        if st.session_state.prev_amt_state != -1 and current_amt_state != st.session_state.prev_amt_state:
+        # We now compare against the Persistent State instead of Session State
+        if p_state["prev_amt_state"] != -1 and current_amt_state != p_state["prev_amt_state"]:
             
             # 🆕 THE NEW FUNDING CONFLUENCE LOGIC
             is_extreme_neg = (funding_rate is not None and funding_rate < -0.05)
@@ -646,12 +649,15 @@ if journal_res is not None:
                     alert_triggered = True
                     alert_message += f"📖 AMT STATE SHIFT: {current_amt_name}<br>"
         
-        st.session_state.prev_amt_state = current_amt_state
+        p_state["prev_amt_state"] = current_amt_state
 
 if alert_triggered:
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    alert_history = get_alert_history()
-    alert_history.insert(0, {"Time": timestamp, "Alert": alert_message.replace("<br>", " | ")})
+    
+    # Save to persistent history (limit to last 50 to prevent memory bloat)
+    p_state["alert_history"].insert(0, {"Time": timestamp, "Alert": alert_message.replace("<br>", " | ")})
+    if len(p_state["alert_history"]) > 50:
+        p_state["alert_history"] = p_state["alert_history"][:50]
     
     clean_telegram_msg = alert_message.replace("<br>", "\n")
     send_telegram_message(f"🚨 BTC TERMINAL ALERT 🚨\n\n{clean_telegram_msg}")
@@ -667,8 +673,8 @@ tab_dashboard, tab_history = st.tabs(["📊 Live Dashboard", "📜 Alert History
 
 with tab_history:
     st.subheader("📜 Alert History Log")
-    st.caption("⚠️ This log resets when the Cloud server reboots (e.g., code updates).")
-    history_data = get_alert_history()
+    st.caption("⚠️ This log persists across page reloads.")
+    history_data = p_state["alert_history"]
     if history_data:
         st.dataframe(pd.DataFrame(history_data), use_container_width=True, hide_index=True)
     else:
@@ -783,7 +789,7 @@ with tab_dashboard:
             dist_to_vah = final_vah - latest_price if not pd.isna(final_vah) else 0
             dist_to_val = latest_price - final_val if not pd.isna(final_val) else 0
             
-            straddle_delta = straddle_price - st.session_state.session_start_straddle
+            straddle_delta = straddle_price - p_state["session_start_straddle"]
             straddle_delta_str = f"{straddle_delta:+,.0f}" if straddle_delta != 0 else "Unchanged"
             straddle_color = "normal" if straddle_delta >= 0 else "inverse" 
             
