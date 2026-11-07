@@ -20,7 +20,7 @@ OI_CLUSTER_MIN_USD = 5_000_000
 MARK_TOLERANCE_PCT = 0.02 
 
 # ==========================================
-# PERSISTENT STATE
+# PERSISTENT STATE (Flight Recorder)
 # ==========================================
 @st.cache_resource
 def get_persistent_state():
@@ -32,7 +32,8 @@ def get_persistent_state():
         "prev_amt_state": -1,
         "prev_price": 0.0,
         "session_start_straddle": None,
-        "alert_history": []
+        "alert_history": [],
+        "options_flow_history": []  # NEW: Tracks shifts in walls/max pain
     }
 
 p_state = get_persistent_state()
@@ -249,7 +250,7 @@ def calculate_session_journey(df, prev_vah, prev_val):
     return pd.DataFrame(sessions)
 
 # ==========================================
-# SECTION 2: PROJECT ECHO STATE ENGINE (FIXED)
+# SECTION 2: PROJECT ECHO STATE ENGINE (UNTOUCHED)
 # ==========================================
 def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc):
     if df.empty: return pd.DataFrame(), manual_valid
@@ -800,6 +801,27 @@ if not options_df.empty and latest_price > 0:
             near_call, mid_call, far_call = [], [], []
             near_put, mid_put, far_put = [], [], []
 
+        # NEW: Flight Recorder - Log Options Shifts
+        current_wall_state = (call_oi_wall['Strike'], put_oi_wall['Strike'], true_max_pain)
+        if p_state["options_flow_history"]:
+            last_state = p_state["options_flow_history"][-1]
+            if last_state["call"] != current_wall_state[0] or last_state["put"] != current_wall_state[1] or last_state["mp"] != current_wall_state[2]:
+                p_state["options_flow_history"].append({
+                    "time": datetime.datetime.now().strftime("%H:%M"),
+                    "call": current_wall_state[0],
+                    "put": current_wall_state[1],
+                    "mp": current_wall_state[2]
+                })
+                if len(p_state["options_flow_history"]) > 10:
+                    p_state["options_flow_history"].pop(0)
+        else:
+            p_state["options_flow_history"].append({
+                "time": datetime.datetime.now().strftime("%H:%M"),
+                "call": current_wall_state[0],
+                "put": current_wall_state[1],
+                "mp": current_wall_state[2]
+            })
+
         # SMART CONFLUENCE ALERTS
         if straddle_valid and near_put and current_amt_state in [3, 11, 14]:
             p_cluster = near_put[0]['VWAS'] if near_put else (mid_put[0]['VWAS'] if mid_put else 0)
@@ -1067,8 +1089,25 @@ with tab_dashboard:
         binance_status = "🔴 Failed"
         st.warning("⚠️ Could not fetch AMT Data from Binance.")
 
-    # --- MOVED TO BOTTOM: ONE-CLICK SNAPSHOT GENERATION ---
+    # --- MOVED TO BOTTOM: ONE-CLICK SNAPSHOT GENERATION (ENHANCED) ---
     st.markdown("---")
+    
+    # Build Options Flow History Text
+    flow_text = ""
+    for entry in p_state["options_flow_history"][-5:]:
+        flow_text += f"{entry['time']} | C: {entry['call']:.0f} | P: {entry['put']:.0f} | MP: {entry['mp']:.0f}\n"
+
+    # Build Recent Alerts Text
+    alert_text = ""
+    for entry in p_state["alert_history"][:5]:
+        alert_text += f"{entry['Time'][11:16]} | {entry['Alert'][:60]}...\n"
+
+    # Build Extended Echo Text
+    echo_text = ""
+    if journal_res is not None and not journal_df_check.empty:
+        for idx, row in journal_df_check.tail(10).iterrows():
+            echo_text += f"{row['Time']} | ${row['Close']:,.0f} | {row['State Name']}\n"
+
     snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
 Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} IST
@@ -1095,11 +1134,15 @@ Near-Term (<0.5x): Call {"$"+f"{near_call[0]['VWAS']:,.0f}" if near_call else "N
 Mid-Term (0.5-1.0x): Call {"$"+f"{mid_call[0]['VWAS']:,.0f}" if mid_call else "N/A"} | Put {"$"+f"{mid_put[0]['VWAS']:,.0f}" if mid_put else "N/A"}
 Distant (>=1.0x): Call {"$"+f"{far_call[0]['VWAS']:,.0f}" if far_call else "N/A"} | Put {"$"+f"{far_put[0]['VWAS']:,.0f}" if far_put else "N/A"}
 
-[PROJECT ECHO (Last 3 States)]
+[OPTIONS FLOW JOURNAL (Last 5 Shifts)]
+{flow_text}
+
+[RECENT ALERTS (Last 5)]
+{alert_text}
+
+[PROJECT ECHO (Last 10 States)]
+{echo_text}
 """
-    if journal_res is not None and not journal_df_check.empty:
-        for idx, row in journal_df_check.tail(3).iterrows():
-            snapshot_text += f"{row['Time']} | Close: ${row['Close']:,.0f} | {row['State Name']} (Code {row['Code']})\n"
 
     with st.expander("📋 Copy Dashboard Snapshot (Click to expand)"):
         st.code(snapshot_text, language="text")
