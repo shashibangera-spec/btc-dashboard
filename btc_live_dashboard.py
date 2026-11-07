@@ -869,9 +869,8 @@ if alert_triggered:
     st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
     components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
 
-
 # ==========================================
-# SECTION 5: RENDER UI TABS (REORGANIZED)
+# SECTION 5: RENDER UI TABS (REORGANIZED + SNAPSHOT)
 # ==========================================
 tab_dashboard, tab_history = st.tabs(["📊 Live Dashboard", "📜 Alert History"])
 
@@ -905,7 +904,44 @@ with tab_dashboard:
             v4.metric("Funding Rate (8h)", f"{funding_rate:+.4f}%", "Ext Neg" if funding_rate < -0.05 else "Ext Pos" if funding_rate > 0.05 else "Neutral", delta_color=f_color)
         else:
             v4.metric("Funding Rate", "N/A")
-        
+            
+        st.markdown("---")
+
+        # --- ONE-CLICK SNAPSHOT GENERATION ---
+        snapshot_text = f"""
+=== BTC TERMINAL SNAPSHOT ===
+Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} IST
+
+[VITAL SIGNS]
+Price: ${latest_price:,.2f}
+AMT State: {current_amt_name} (Code {current_amt_state})
+Options Bias: {b_text} (Score: {options_bias_score:+d})
+Funding Rate: {f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"}
+
+[AMT MAP]
+Prior VAH: ${final_vah:,.2f} | Prior POC: ${final_poc:,.2f} | Prior VAL: ${final_val:,.2f}
+Source: {"TradingView Manual" if manual_values_valid else "Python Calculated"}
+
+[OPTIONS SNAPSHOT]
+Expiry: {loaded_expiry} | Time Left: {time_str}
+ATM Straddle: {"$"+f"{straddle_price:,.2f}" if straddle_valid else "INVALID ("+straddle_reason+")"}
+Max Pain: ${true_max_pain:,.0f}
+Local PCR: {pcr:.2f}
+Gamma Walls: Call ${call_gamma_wall['Strike']:,.0f} / Put ${put_gamma_wall['Strike']:,.0f}
+
+[OI CLUSTERS]
+Near-Term (<0.5x): Call {"$"+f"{near_call[0]['VWAS']:,.0f}" if near_call else "N/A"} | Put {"$"+f"{near_put[0]['VWAS']:,.0f}" if near_put else "N/A"}
+Mid-Term (0.5-1.0x): Call {"$"+f"{mid_call[0]['VWAS']:,.0f}" if mid_call else "N/A"} | Put {"$"+f"{mid_put[0]['VWAS']:,.0f}" if mid_put else "N/A"}
+Distant (>=1.0x): Call {"$"+f"{far_call[0]['VWAS']:,.0f}" if far_call else "N/A"} | Put {"$"+f"{far_put[0]['VWAS']:,.0f}" if far_put else "N/A"}
+
+[PROJECT ECHO (Last 3 States)]
+"""
+        if journal_res is not None and not journal_df_check.empty:
+            for idx, row in journal_df_check.tail(3).iterrows():
+                snapshot_text += f"{row['Time']} | Close: ${row['Close']:,.0f} | {row['State Name']} (Code {row['Code']})\n"
+
+        st.write("**📋 Copy Dashboard Snapshot** (Click the copy icon in the top right)")
+        st.code(snapshot_text, language="text")
         st.markdown("---")
 
         # --- SECTION 1: AMT MAP ---
@@ -942,14 +978,6 @@ with tab_dashboard:
         if not options_df.empty and atm_row is not None:
             st.subheader(f"📉 Options Snapshot (Expiry: {loaded_expiry})")
             
-            time_remaining = expiry_dt - datetime.datetime.now(timezone.utc) if expiry_dt else None
-            time_str = str(time_remaining).split('.')[0] if time_remaining else "Unknown"
-            if expiry_dt:
-                ist_tz = timezone(timedelta(hours=5, minutes=30))
-                settlement_ist = expiry_dt.astimezone(ist_tz).strftime('%Y-%m-%d %H:%M:%S')
-            else:
-                settlement_ist = "Unknown"
-
             o1, o2, o3, o4 = st.columns(4)
             if straddle_valid:
                 straddle_delta = straddle_price - p_state["session_start_straddle"] if p_state["session_start_straddle"] else 0
