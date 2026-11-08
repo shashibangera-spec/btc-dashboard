@@ -38,6 +38,7 @@ def get_persistent_state():
         "inverted_gamma_history": [], 
         "active_inverted_event": None, 
         "last_inverted_status": False, 
+        "session_alert_log": {}, # NEW: Prevents duplicate session alerts
         "trade_journal": "",
         "last_closed_candle_time": 0,
         "previous_candle_time": 0,
@@ -57,6 +58,7 @@ p_state.setdefault("gamma_wall_unavailable", False)
 p_state.setdefault("inverted_gamma_history", [])
 p_state.setdefault("active_inverted_event", None)
 p_state.setdefault("last_inverted_status", False)
+p_state.setdefault("session_alert_log", {})
 
 # ==========================================
 # TELEGRAM
@@ -716,6 +718,36 @@ if not df.empty:
 
     latest_price = float(df['close'].iloc[-1])
 
+# Calculate session journey here so it's available for both alerts and UI
+session_df = calculate_session_journey(df, final_vah, final_val)
+
+# SESSION CLOSE ALERTS
+if not session_df.empty and not df.empty:
+    cycle_date_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
+    cycle_start = pd.Timestamp(cycle_date_str).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
+    now_ist = pd.Timestamp.now(tz='Asia/Kolkata')
+    
+    sessions_to_check = [
+        ("Asia (05:30-13:30)", 8),
+        ("Europe (13:30-17:30)", 12),
+        ("US Cash (17:30-01:30)", 20),
+        ("US Overnight (Current)", 24)
+    ]
+    
+    for s_name, s_offset in sessions_to_check:
+        s_end = cycle_start + pd.Timedelta(hours=s_offset)
+        if now_ist >= s_end:
+            if p_state["session_alert_log"].get(s_name) != cycle_date_str:
+                row = session_df[session_df['Session'] == s_name]
+                if not row.empty:
+                    r = row.iloc[0]
+                    alert_triggered = True
+                    alert_message += f"🔔 SESSION CLOSED: {s_name}<br>"
+                    alert_message += f"Close: ${r['Close']:,.0f} | Bias: {r['Macro Bias']} | {r['Micro Bias']}<br>"
+                    alert_message += f"H: ${r['High']:,.0f} | L: ${r['Low']:,.0f}<br>"
+                    alert_message += f"POC: ${r['POC']:,.0f} | VAH: ${r['VAH']:,.0f} | VAL: ${r['VAL']:,.0f}<br><br>"
+                    p_state["session_alert_log"][s_name] = cycle_date_str
+
 journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
 current_amt_state = 0
 current_amt_name = "UNKNOWN"
@@ -831,15 +863,12 @@ if not options_df.empty and latest_price > 0:
                 if nearest_call_dist < nearest_put_dist: options_bias_score -= 1
                 elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
 
-        # ==========================================
         # INVERTED GAMMA JOURNAL (STRICTLY FROM DETECTION MOMENT)
-        # ==========================================
         current_inverted_status = False
         if call_gamma_wall is not None and put_gamma_wall is not None:
             if call_gamma_wall['Strike'] < put_gamma_wall['Strike']:
                 current_inverted_status = True
                 
-        # Handle state transitions
         if current_inverted_status != p_state.get("last_inverted_status", False):
             if current_inverted_status: # Flipped to INVERTED
                 p_state["active_inverted_event"] = {
@@ -1109,7 +1138,6 @@ with tab_dashboard:
         c2.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
         c3.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
         
-        session_df = calculate_session_journey(df, final_vah, final_val)
         if not session_df.empty:
             st.dataframe(session_df, use_container_width=True, hide_index=True, column_config={
                 "Session": st.column_config.TextColumn("Session"),
