@@ -35,8 +35,8 @@ def get_persistent_state():
         "alert_history": [],
         "options_flow_history": [],
         "wall_status_log": [],
-        "inverted_gamma_history": [], # NEW: Inverted Gamma Log
-        "last_inverted_status": False, # NEW: Tracks if it was inverted last time
+        "inverted_gamma_history": [], 
+        "last_inverted_status": False, 
         "trade_journal": "",
         "last_closed_candle_time": 0,
         "previous_candle_time": 0,
@@ -829,9 +829,7 @@ if not options_df.empty and latest_price > 0:
                 if nearest_call_dist < nearest_put_dist: options_bias_score -= 1
                 elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
 
-        # ==========================================
-        # NEW: INVERTED GAMMA JOURNAL LOGGING
-        # ==========================================
+        # INVERTED GAMMA JOURNAL LOGGING (UPDATED WITH HIGH/LOW)
         current_inverted_status = False
         if call_gamma_wall is not None and put_gamma_wall is not None:
             if call_gamma_wall['Strike'] < put_gamma_wall['Strike']:
@@ -843,7 +841,9 @@ if not options_df.empty and latest_price > 0:
                 "Status": "INVERTED" if current_inverted_status else "NORMAL",
                 "Call Wall": call_gamma_wall['Strike'] if call_gamma_wall is not None else 0,
                 "Put Wall": put_gamma_wall['Strike'] if put_gamma_wall is not None else 0,
-                "Price": latest_price
+                "Price": latest_price,
+                "High": df['high'].iloc[-1] if not df.empty else latest_price,
+                "Low": df['low'].iloc[-1] if not df.empty else latest_price
             })
             if len(p_state["inverted_gamma_history"]) > 10:
                 p_state["inverted_gamma_history"].pop(0)
@@ -1174,7 +1174,6 @@ with tab_dashboard:
             st.caption("ℹ️ Context only — not support, resistance or price targets. Gross Gamma estimated using unsigned OI.")
             st.markdown("---")
 
-            # NEW: INVERTED GAMMA JOURNAL
             if p_state["inverted_gamma_history"]:
                 st.markdown("##### 📝 Inverted Gamma Journal (Research Only)")
                 inv_df = pd.DataFrame(p_state["inverted_gamma_history"])
@@ -1184,6 +1183,8 @@ with tab_dashboard:
                     "Call Wall": st.column_config.NumberColumn("Call Wall", format="$%.0f"),
                     "Put Wall": st.column_config.NumberColumn("Put Wall", format="$%.0f"),
                     "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                    "High": st.column_config.NumberColumn("High", format="$%.2f"),
+                    "Low": st.column_config.NumberColumn("Low", format="$%.2f"),
                 })
                 st.markdown("---")
 
@@ -1250,7 +1251,7 @@ with tab_dashboard:
 
     inv_text = ""
     for entry in p_state["inverted_gamma_history"][-5:]:
-        inv_text += f"{entry['Time']} | {entry['Status']} | C: ${entry['Call Wall']:,.0f} / P: ${entry['Put Wall']:,.0f} | Price: ${entry['Price']:,.0f}\n"
+        inv_text += f"{entry['Time']} | {entry['Status']} | C: ${entry['Call Wall']:,.0f} / P: ${entry['Put Wall']:,.0f} | Price: ${entry['Price']:,.0f} | H: ${entry['High']:,.0f} / L: ${entry['Low']:,.0f}\n"
 
     call_gamma_text = f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else "N/A"
     put_gamma_text = f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else "N/A"
