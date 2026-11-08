@@ -50,7 +50,7 @@ def get_persistent_state():
         "put_gamma_break_state": "SAFE",
         "active_broken_put_wall": 0.0,
         "gamma_wall_unavailable": False,
-        "futures_oi_history": [], # Tracks Delta Perp OI for 30m Delta
+        "futures_oi_history": [], 
     }
 
 p_state = get_persistent_state()
@@ -192,7 +192,6 @@ def fetch_futures_context():
                 spot_price = float(ticker.get("spot_price", 0))
                 oi_usd = float(ticker.get("oi_value_usd", 0))
                 
-                # Calculate Spot/Perp Premium
                 sp_prem = ((mark_price - spot_price) / spot_price) * 100 if spot_price > 0 else 0.0
                 
                 return funding_rate, mark_price, oi_usd, sp_prem
@@ -726,18 +725,15 @@ if oi_usd is not None:
     now_utc_ts = int(datetime.datetime.now(timezone.utc).timestamp())
     p_state["futures_oi_history"].append({"time": now_utc_ts, "oi": oi_usd})
     
-    # Keep only last 20 entries (1 hour of 3-min refreshes)
     if len(p_state["futures_oi_history"]) > 20:
         p_state["futures_oi_history"].pop(0)
         
     if len(p_state["futures_oi_history"]) >= 2:
-        # Find entry closest to 30 mins ago (1800 seconds)
         target_time = now_utc_ts - 1800
         closest_entry = min(p_state["futures_oi_history"], key=lambda x: abs(x["time"] - target_time))
         if closest_entry["oi"] > 0:
             oi_delta_pct = ((oi_usd - closest_entry["oi"]) / closest_entry["oi"]) * 100
 
-    # Pre-calculate Derivatives Flow for alerts
     if sp_prem is not None:
         if oi_delta_pct > 0 and sp_prem > 0:
             ctx = "🟢 Long Build"
@@ -769,7 +765,6 @@ if not df.empty:
 
 session_df = calculate_session_journey(df, final_vah, final_val)
 
-# SESSION CLOSE ALERTS
 if not session_df.empty and not df.empty:
     cycle_date_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     cycle_start = pd.Timestamp(cycle_date_str).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
@@ -911,16 +906,13 @@ if not options_df.empty and latest_price > 0:
                 if nearest_call_dist < nearest_put_dist: options_bias_score -= 1
                 elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
 
-        # ==========================================
-        # INVERTED GAMMA JOURNAL (STRICTLY FROM DETECTION MOMENT)
-        # ==========================================
         current_inverted_status = False
         if call_gamma_wall is not None and put_gamma_wall is not None:
             if call_gamma_wall['Strike'] < put_gamma_wall['Strike']:
                 current_inverted_status = True
                 
         if current_inverted_status != p_state.get("last_inverted_status", False):
-            if current_inverted_status: # Flipped to INVERTED
+            if current_inverted_status: 
                 p_state["active_inverted_event"] = {
                     "Time": datetime.datetime.now(IST_TZ).strftime("%H:%M"),
                     "Close Time": "ACTIVE",
@@ -931,7 +923,7 @@ if not options_df.empty and latest_price > 0:
                     "High": latest_price,
                     "Low": latest_price,
                 }
-            else: # Flipped back to NORMAL
+            else: 
                 if p_state.get("active_inverted_event"):
                     p_state["active_inverted_event"]["Close Time"] = datetime.datetime.now(IST_TZ).strftime("%H:%M")
                     p_state["inverted_gamma_history"].append(p_state["active_inverted_event"])
@@ -939,13 +931,10 @@ if not options_df.empty and latest_price > 0:
                         p_state["inverted_gamma_history"].pop(0)
                 p_state["active_inverted_event"] = None
             p_state["last_inverted_status"] = current_inverted_status
-
-        # If currently inverted, update the live High/Low going forward
         elif current_inverted_status and p_state.get("active_inverted_event"):
             p_state["active_inverted_event"]["High"] = max(p_state["active_inverted_event"]["High"], latest_price)
             p_state["active_inverted_event"]["Low"] = min(p_state["active_inverted_event"]["Low"], latest_price)
 
-        # PUT GAMMA STATE MACHINE
         notification_put_wall = None
         notification_candidates = filtered_options.copy()
         required_cols = ['Strike', 'Gamma_Put', 'OI_Contracts_Put', 'GEX_Put']
@@ -967,15 +956,12 @@ if not options_df.empty and latest_price > 0:
         now_utc_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
         completed_candles = df[df['CloseTimeMs'].notna() & (df['CloseTimeMs'] <= now_utc_ms)]
 
-        # AMT ALERTS (NOW CANDLE CLOSE CONFIRMED)
         if not completed_candles.empty:
             completed_candle = completed_candles.iloc[-1]
             completed_candle_time = int(completed_candle['CloseTimeMs'])
             completed_candle_close = float(completed_candle['close'])
 
-            # Safely determine the AMT state from the last FULLY CLOSED candle
             if not journal_df_check.empty:
-                # Find the journal row that matches the last closed candle time
                 last_closed_state_row = journal_df_check[journal_df_check['Time'] == completed_candle['Date'].strftime('%H:%M')]
                 if not last_closed_state_row.empty:
                     closed_amt_state = int(last_closed_state_row.iloc[-1]['Code'])
@@ -1006,7 +992,6 @@ if not options_df.empty and latest_price > 0:
                                 
                     p_state["prev_amt_state"] = closed_amt_state
 
-            # PUT GAMMA STATE MACHINE
             if not p_state["last_closed_candle_time"]:
                 p_state["last_closed_candle_time"] = completed_candle_time
                 if notification_put_wall is not None:
@@ -1050,7 +1035,6 @@ if not options_df.empty and latest_price > 0:
                             p_state["put_gamma_break_state"] = "SAFE"
                             p_state["active_broken_put_wall"] = 0.0
 
-        # WALL STATUS LOG
         current_call_status = "PRESENT" if near_call else "N/A"
         current_put_status = "PRESENT" if near_put else "N/A"
         if not p_state["wall_status_log"]:
@@ -1061,13 +1045,10 @@ if not options_df.empty and latest_price > 0:
                 p_state["wall_status_log"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_call_status, "put": current_put_status})
                 if len(p_state["wall_status_log"]) > 10: p_state["wall_status_log"].pop(0)
 
-        # OPTIONS FLOW HISTORY (Fixed NaN comparison)
         current_wall_state = (call_oi_wall['Strike'], put_oi_wall['Strike'], true_max_pain)
         if p_state["options_flow_history"]:
             last_state = p_state["options_flow_history"][-1]
             
-            # Fix: Python thinks NaN != NaN is True, causing duplicate log spam. 
-            # We use str() to compare NaN values safely.
             if (last_state["call"] != current_wall_state[0] or 
                 last_state["put"] != current_wall_state[1] or 
                 str(last_state["mp"]) != str(current_wall_state[2])):
@@ -1077,7 +1058,6 @@ if not options_df.empty and latest_price > 0:
         else:
             p_state["options_flow_history"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_wall_state[0], "put": current_wall_state[1], "mp": current_wall_state[2]})
 
-        # SMART CONFLUENCE ALERTS
         if straddle_valid and near_put and current_amt_state in [3, 11, 14]:
             p_cluster = near_put[0]['VWAS'] if near_put else (mid_put[0]['VWAS'] if mid_put else 0)
             if p_cluster > 0 and latest_price <= p_cluster and options_bias_score <= -1:
@@ -1094,7 +1074,6 @@ if not options_df.empty and latest_price > 0:
             alert_triggered = True
             alert_message += f"⚠️ GAMMA PIN: Price trapped near Max Pain (${true_max_pain:,.0f}). Avoid chopping. | Flow: {ctx}<br>"
 
-        # STANDARD ALERTS (UPDATED STRINGS FOR CONTEXT)
         if p_state["prev_pcr"] != 0.0:
             if (p_state["prev_pcr"] >= 1.20 and pcr < 1.20) or (p_state["prev_pcr"] >= 0.30 and pcr < 0.30):
                 alert_triggered = True
@@ -1194,61 +1173,54 @@ with tab_dashboard:
         st.markdown("---")
 
         # ==========================================
-        # NEW: ECHO TAPE READ & CONFLUENCE
+        # CLEANED UP TAPE READ
         # ==========================================
         st.subheader("🧠 Tape Read & Confluence")
         
-        tape_read = []
+        # Row 1: Metrics
+        tc1, tc2, tc3, tc4 = st.columns(4)
         
-        # 1. Gamma Structure
-        if current_inverted_status:
-            tape_read.append("🚨 **INVERTED GAMMA**: Call Wall < Put Wall. Dealers are forced to buy high/sell low. Do NOT trust raw breakouts. Wait for the fakeout to trap participants.")
+        gamma_struct = "🚨 INVERTED" if current_inverted_status else "🟢 NORMAL"
+        gamma_color = "inverse" if current_inverted_status else "normal"
+        tc1.metric("Gamma Structure", gamma_struct, "Trap Risk" if current_inverted_status else "Standard", delta_color=gamma_color)
+        
+        tc2.metric("Derivatives Flow", ctx)
+        
+        loc = "Above VAH" if latest_price > final_vah else "Below VAL" if latest_price < final_val else "Inside VA"
+        loc_color = "normal" if loc == "Above VAH" else "inverse" if loc == "Below VAL" else "off"
+        tc3.metric("Price Location", loc, f"${latest_price:,.0f}", delta_color=loc_color)
+        
+        tc4.metric("AMT State", current_amt_name, f"Code {current_amt_state}")
+        
+        # Row 2: The Verdict
+        verdict = ""
+        if current_inverted_status and "Short Build" in ctx:
+            verdict = "⚠️ **TRAP DOOR SETUP**: Shorts building into inverted gamma. Expect a violent fakeout/squeeze. Do NOT trust breakdowns."
+        elif current_inverted_status and "Long Build" in ctx:
+            verdict = "⚠️ **BULL TRAP SETUP**: Longs building into inverted gamma. Expect a violent fakeout/liquidation. Do NOT trust breakouts."
+        elif not current_inverted_status and "Short Build" in ctx and loc == "Below VAL":
+            verdict = "📉 **TREND CONTINUATION**: Bearish flow confirmed below value. Watch for acceptance lower."
+        elif not current_inverted_status and "Long Build" in ctx and loc == "Above VAH":
+            verdict = "📈 **TREND CONTINUATION**: Bullish flow confirmed above value. Watch for acceptance higher."
+        elif loc == "Inside VA":
+            verdict = "⚖️ **CHOP ZONE**: Price is inside value. Wait for the edges (VAH/VAL) to break before acting."
         else:
-            tape_read.append("⚪ **GAMMA STRUCTURE**: Standard (Call Wall > Put Wall).")
+            verdict = "⏳ **WAIT FOR CONFLUENCE**: No high-probability setup currently."
             
-        # 2. Futures vs Options Divergence
-        if ctx == "🔴 Short Build" and b_text == "🟢 BULLISH":
-            tape_read.append("🔥 **DIVERGENCE**: Fresh shorts building while Options are Bullish. High probability of a short squeeze.")
-        elif ctx == "🟢 Long Build" and b_text == "🔴 BEARISH":
-            tape_read.append("🔥 **DIVERGENCE**: Fresh longs building while Options are Bearish. High probability of a long liquidation.")
-        else:
-            tape_read.append(f"📊 **FLOW & BIAS**: Derivatives showing {ctx}, Options showing {b_text}.")
-            
-        # 3. Location relative to AMT
-        if latest_price > final_vah:
-            tape_read.append(f"📍 **LOCATION**: Price (${latest_price:,.0f}) is ABOVE Prior VAH (${final_vah:,.0f}). Bullish acceptance zone.")
-        elif latest_price < final_val:
-            tape_read.append(f"📍 **LOCATION**: Price (${latest_price:,.0f}) is BELOW Prior VAL (${final_val:,.0f}). Bearish acceptance zone.")
-        else:
-            tape_read.append(f"📍 **LOCATION**: Price (${latest_price:,.0f}) is INSIDE Prior Value. Chop zone. Wait for edges (VAH/VAL).")
-            
-        # 4. AMT State Context
-        if current_amt_state in [10, 11, 14]:
-            tape_read.append(f"📖 **AMT STATE**: {current_amt_name}. Failed discovery / Re-entry. Watch for rotation back to POC (${final_poc:,.0f}).")
-        elif current_amt_state in [2, 3]:
-            tape_read.append(f"📖 **AMT STATE**: {current_amt_name}. Auction is probing outside value. Watch for acceptance or rejection.")
-        else:
-            tape_read.append(f"📖 **AMT STATE**: {current_amt_name}.")
-            
-        # Render the synthesized context
-        st.info("\n\n".join(tape_read))
+        st.success(verdict)
         st.markdown("---")
 
-        # FUTURES CONTEXT SECTION
         st.subheader("📈 Futures Context (Delta Perpetual)")
         if oi_usd is not None:
             fc1, fc2, fc3, fc4 = st.columns(4)
             fc1.metric("Open Interest (USD)", f"${oi_usd/1e6:.2f}M")
             
-            # Color OI Delta
             oi_d_color = "normal" if oi_delta_pct > 0 else "inverse" if oi_delta_pct < 0 else "off"
             fc2.metric("OI Delta (30m)", f"{oi_delta_pct:+.2f}%", "Building" if oi_delta_pct > 0 else "Unwinding" if oi_delta_pct < 0 else "Stable", delta_color=oi_d_color)
             
-            # Color Spot/Perp Prem
             sp_color = "normal" if sp_prem > 0 else "inverse" if sp_prem < 0 else "off"
             fc3.metric("Spot/Perp Premium", f"{sp_prem:+.3f}%", "Perp Premium" if sp_prem > 0 else "Perp Discount" if sp_prem < 0 else "Flat", delta_color=sp_color)
             
-            # Derivatives Flow
             fc4.metric("Derivatives Flow", ctx)
         else:
             st.warning("⚠️ Could not fetch Delta Perpetual data.")
@@ -1458,8 +1430,6 @@ with tab_dashboard:
         val_text = f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A"
         funding_text = f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"
         straddle_text = f"${straddle_price:,.2f}" if straddle_valid else f"INVALID ({straddle_reason})"
-        
-        tape_read_text = "\n".join(tape_read)
 
         snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
@@ -1474,13 +1444,13 @@ Options Bias: {b_text} (Score: {options_bias_score:+d})
 Funding Rate: {funding_text}
 
 [TAPE READ & CONFLUENCE]
-{tape_read_text}
+Structure: {"INVERTED" if current_inverted_status else "NORMAL"} | Flow: {ctx} | Location: {loc} | AMT: {current_amt_name}
+Verdict: {verdict}
 
 [FUTURES CONTEXT]
 OI (USD): {f"${oi_usd/1e6:.2f}M" if oi_usd is not None else "N/A"}
 OI Delta (30m): {f"{oi_delta_pct:+.2f}%" if oi_usd is not None else "N/A"}
 Spot/Perp Premium: {f"{sp_prem:+.3f}%" if sp_prem is not None else "N/A"}
-Derivatives Flow: {ctx}
 
 [AMT MAP]
 Prior VAH: {vah_text} | Prior POC: {poc_text} | Prior VAL: {val_text}
