@@ -21,7 +21,6 @@ MARK_TOLERANCE_PCT = 0.02
 
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
-# SHARE MODE LOGIC
 qp = st.query_params
 is_share_mode = qp.get("share", "false").lower() == "true"
 
@@ -98,7 +97,7 @@ def send_telegram_message(message):
         return False
 
 # ==========================================
-# SIDEBAR (HIDDEN IN SHARE MODE)
+# SIDEBAR
 # ==========================================
 if not is_share_mode:
     try:
@@ -727,7 +726,6 @@ if not df.empty:
 
     latest_price = float(df['close'].iloc[-1])
 
-# Calculate session journey here so it's available for both alerts and UI
 session_df = calculate_session_journey(df, final_vah, final_val)
 
 # SESSION CLOSE ALERTS
@@ -871,7 +869,9 @@ if not options_df.empty and latest_price > 0:
                 if nearest_call_dist < nearest_put_dist: options_bias_score -= 1
                 elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
 
+        # ==========================================
         # INVERTED GAMMA JOURNAL (STRICTLY FROM DETECTION MOMENT)
+        # ==========================================
         current_inverted_status = False
         if call_gamma_wall is not None and put_gamma_wall is not None:
             if call_gamma_wall['Strike'] < put_gamma_wall['Strike']:
@@ -925,11 +925,46 @@ if not options_df.empty and latest_price > 0:
         now_utc_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
         completed_candles = df[df['CloseTimeMs'].notna() & (df['CloseTimeMs'] <= now_utc_ms)]
 
+        # AMT ALERTS (NOW CANDLE CLOSE CONFIRMED)
         if not completed_candles.empty:
             completed_candle = completed_candles.iloc[-1]
             completed_candle_time = int(completed_candle['CloseTimeMs'])
             completed_candle_close = float(completed_candle['close'])
 
+            # Safely determine the AMT state from the last FULLY CLOSED candle
+            if not journal_df_check.empty:
+                # Find the journal row that matches the last closed candle time
+                last_closed_state_row = journal_df_check[journal_df_check['Time'] == completed_candle['Date'].strftime('%H:%M')]
+                if not last_closed_state_row.empty:
+                    closed_amt_state = int(last_closed_state_row.iloc[-1]['Code'])
+                    closed_amt_name = last_closed_state_row.iloc[-1]['State Name']
+                    
+                    if p_state["prev_amt_state"] != -1 and closed_amt_state != p_state["prev_amt_state"]:
+                        is_extreme_neg = (funding_rate is not None and funding_rate < -0.05)
+                        is_extreme_pos = (funding_rate is not None and funding_rate > 0.05)
+                        
+                        if closed_amt_state in [2, 3, 10, 11, 14]:
+                            if closed_amt_state in [2, 10]:
+                                if is_extreme_neg:
+                                    alert_triggered = True
+                                    alert_message += f"🚨 POTENTIAL SHORT SQUEEZE: Breakout confirmed ({closed_amt_name}) with EXTREME NEGATIVE Funding ({funding_rate:.3f}%)!<br>"
+                                else:
+                                    alert_triggered = True
+                                    alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Upside breakout)<br>"
+                            elif closed_amt_state in [3, 11]:
+                                if is_extreme_pos:
+                                    alert_triggered = True
+                                    alert_message += f"🚨 POTENTIAL LONG LIQUIDATION: Breakdown confirmed ({closed_amt_name}) with EXTREME POSITIVE Funding ({funding_rate:.3f}%)!<br>"
+                                else:
+                                    alert_triggered = True
+                                    alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Downside breakdown)<br>"
+                            else:
+                                alert_triggered = True
+                                alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name}<br>"
+                                
+                    p_state["prev_amt_state"] = closed_amt_state
+
+            # PUT GAMMA STATE MACHINE
             if not p_state["last_closed_candle_time"]:
                 p_state["last_closed_candle_time"] = completed_candle_time
                 if notification_put_wall is not None:
@@ -1053,30 +1088,7 @@ if not df.empty and (options_df.empty or filtered_options.empty or latest_price 
             p_state["gamma_wall_unavailable"] = True
 
 if journal_res is not None and not journal_df_check.empty:
-    if p_state["prev_amt_state"] != -1 and current_amt_state != p_state["prev_amt_state"]:
-        is_extreme_neg = (funding_rate is not None and funding_rate < -0.05)
-        is_extreme_pos = (funding_rate is not None and funding_rate > 0.05)
-        
-        if current_amt_state in [2, 3, 10, 11, 14]:
-            if current_amt_state in [2, 10]:
-                if is_extreme_neg:
-                    alert_triggered = True
-                    alert_message += f"🚨 POTENTIAL SHORT SQUEEZE: Breakout confirmed ({current_amt_name}) with EXTREME NEGATIVE Funding ({funding_rate:.3f}%)!<br>"
-                else:
-                    alert_triggered = True
-                    alert_message += f"📖 AMT STATE SHIFT: {current_amt_name} (Upside breakout)<br>"
-            elif current_amt_state in [3, 11]:
-                if is_extreme_pos:
-                    alert_triggered = True
-                    alert_message += f"🚨 POTENTIAL LONG LIQUIDATION: Breakdown confirmed ({current_amt_name}) with EXTREME POSITIVE Funding ({funding_rate:.3f}%)!<br>"
-                else:
-                    alert_triggered = True
-                    alert_message += f"📖 AMT STATE SHIFT: {current_amt_name} (Downside breakdown)<br>"
-            else:
-                alert_triggered = True
-                alert_message += f"📖 AMT STATE SHIFT: {current_amt_name}<br>"
-    
-    p_state["prev_amt_state"] = current_amt_state
+    pass # AMT alerts moved to candle close confirmation block above
 
 if alert_triggered:
     timestamp = datetime.datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S")
