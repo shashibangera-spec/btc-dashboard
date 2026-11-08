@@ -1193,6 +1193,47 @@ with tab_dashboard:
             
         st.markdown("---")
 
+        # ==========================================
+        # NEW: ECHO TAPE READ & CONFLUENCE
+        # ==========================================
+        st.subheader("🧠 Tape Read & Confluence")
+        
+        tape_read = []
+        
+        # 1. Gamma Structure
+        if current_inverted_status:
+            tape_read.append("🚨 **INVERTED GAMMA**: Call Wall < Put Wall. Dealers are forced to buy high/sell low. Do NOT trust raw breakouts. Wait for the fakeout to trap participants.")
+        else:
+            tape_read.append("⚪ **GAMMA STRUCTURE**: Standard (Call Wall > Put Wall).")
+            
+        # 2. Futures vs Options Divergence
+        if ctx == "🔴 Short Build" and b_text == "🟢 BULLISH":
+            tape_read.append("🔥 **DIVERGENCE**: Fresh shorts building while Options are Bullish. High probability of a short squeeze.")
+        elif ctx == "🟢 Long Build" and b_text == "🔴 BEARISH":
+            tape_read.append("🔥 **DIVERGENCE**: Fresh longs building while Options are Bearish. High probability of a long liquidation.")
+        else:
+            tape_read.append(f"📊 **FLOW & BIAS**: Derivatives showing {ctx}, Options showing {b_text}.")
+            
+        # 3. Location relative to AMT
+        if latest_price > final_vah:
+            tape_read.append(f"📍 **LOCATION**: Price (${latest_price:,.0f}) is ABOVE Prior VAH (${final_vah:,.0f}). Bullish acceptance zone.")
+        elif latest_price < final_val:
+            tape_read.append(f"📍 **LOCATION**: Price (${latest_price:,.0f}) is BELOW Prior VAL (${final_val:,.0f}). Bearish acceptance zone.")
+        else:
+            tape_read.append(f"📍 **LOCATION**: Price (${latest_price:,.0f}) is INSIDE Prior Value. Chop zone. Wait for edges (VAH/VAL).")
+            
+        # 4. AMT State Context
+        if current_amt_state in [10, 11, 14]:
+            tape_read.append(f"📖 **AMT STATE**: {current_amt_name}. Failed discovery / Re-entry. Watch for rotation back to POC (${final_poc:,.0f}).")
+        elif current_amt_state in [2, 3]:
+            tape_read.append(f"📖 **AMT STATE**: {current_amt_name}. Auction is probing outside value. Watch for acceptance or rejection.")
+        else:
+            tape_read.append(f"📖 **AMT STATE**: {current_amt_name}.")
+            
+        # Render the synthesized context
+        st.info("\n\n".join(tape_read))
+        st.markdown("---")
+
         # FUTURES CONTEXT SECTION
         st.subheader("📈 Futures Context (Delta Perpetual)")
         if oi_usd is not None:
@@ -1417,6 +1458,8 @@ with tab_dashboard:
         val_text = f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A"
         funding_text = f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"
         straddle_text = f"${straddle_price:,.2f}" if straddle_valid else f"INVALID ({straddle_reason})"
+        
+        tape_read_text = "\n".join(tape_read)
 
         snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
@@ -1429,6 +1472,9 @@ Price: ${latest_price:,.2f}
 AMT State: {current_amt_name} (Code {current_amt_state})
 Options Bias: {b_text} (Score: {options_bias_score:+d})
 Funding Rate: {funding_text}
+
+[TAPE READ & CONFLUENCE]
+{tape_read_text}
 
 [FUTURES CONTEXT]
 OI (USD): {f"${oi_usd/1e6:.2f}M" if oi_usd is not None else "N/A"}
