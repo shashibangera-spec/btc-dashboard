@@ -50,6 +50,7 @@ def get_persistent_state():
         "put_gamma_break_state": "SAFE",
         "active_broken_put_wall": 0.0,
         "gamma_wall_unavailable": False,
+        "futures_oi_history": [], # NEW: Tracks Delta Perp OI for 30m Delta
     }
 
 p_state = get_persistent_state()
@@ -64,6 +65,7 @@ p_state.setdefault("inverted_gamma_history", [])
 p_state.setdefault("active_inverted_event", None)
 p_state.setdefault("last_inverted_status", False)
 p_state.setdefault("session_alert_log", {})
+p_state.setdefault("futures_oi_history", [])
 
 # ==========================================
 # TELEGRAM
@@ -177,8 +179,9 @@ def fetch_amt_data():
             continue
     return pd.DataFrame()
 
-@st.cache_data(ttl=180)
-def fetch_global_funding():
+# NEW: Fetch Delta Futures Context (Funding, OI, Spot/Perp)
+@st.cache_data(ttl=60)
+def fetch_futures_context():
     try:
         url = "https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures"
         res = requests.get(url, timeout=10).json()
@@ -186,10 +189,16 @@ def fetch_global_funding():
             if ticker.get("symbol") == "BTCUSD":
                 funding_rate = float(ticker.get("funding_rate", 0)) * 100
                 mark_price = float(ticker.get("mark_price", 0))
-                return funding_rate, mark_price
-        return None, None
+                spot_price = float(ticker.get("spot_price", 0))
+                oi_usd = float(ticker.get("oi_value_usd", 0))
+                
+                # Calculate Spot/Perp Premium
+                sp_prem = ((mark_price - spot_price) / spot_price) * 100 if spot_price > 0 else 0.0
+                
+                return funding_rate, mark_price, oi_usd, sp_prem
+        return None, None, None, None
     except Exception:
-        return None, None
+        return None, None, None, None
 
 def calculate_tpo(session_df):
     if session_df.empty: return np.nan, np.nan, np.nan
@@ -707,7 +716,25 @@ near_put, mid_put, far_put = [], [], []
 pending_gamma_breach = False
 pending_broken_wall = 0.0
 
-funding_rate, funding_mark_price = fetch_global_funding()
+# Fetch Futures Context
+funding_rate, mark_price, oi_usd, sp_prem = fetch_futures_context()
+
+# Calculate 30M OI Delta %
+oi_delta_pct = 0.0
+if oi_usd is not None:
+    now_utc_ts = int(datetime.datetime.now(timezone.utc).timestamp())
+    p_state["futures_oi_history"].append({"time": now_utc_ts, "oi": oi_usd})
+    
+    # Keep only last 20 entries (1 hour of 3-min refreshes)
+    if len(p_state["futures_oi_history"]) > 20:
+        p_state["futures_oi_history"].pop(0)
+        
+    if len(p_state["futures_oi_history"]) >= 2:
+        # Find entry closest to 30 mins ago (1800 seconds)
+        target_time = now_utc_ts - 1800
+        closest_entry = min(p_state["futures_oi_history"], key=lambda x: abs(x["time"] - target_time))
+        if closest_entry["oi"] > 0:
+            oi_delta_pct = ((oi_usd - closest_entry["oi"]) / closest_entry["oi"]) * 100
 
 if not df.empty:
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
@@ -1087,9 +1114,6 @@ if not df.empty and (options_df.empty or filtered_options.empty or latest_price 
             p_state["last_closed_candle_time"] = latest_completed_time
             p_state["gamma_wall_unavailable"] = True
 
-if journal_res is not None and not journal_df_check.empty:
-    pass # AMT alerts moved to candle close confirmation block above
-
 if alert_triggered:
     timestamp = datetime.datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S")
     p_state["alert_history"].insert(0, {"Time": timestamp, "Alert": alert_message.replace("<br>", " | ")})
@@ -1146,6 +1170,36 @@ with tab_dashboard:
             elif funding_rate < -0.15: st.warning("⚠️ EXTREME NEGATIVE FUNDING: Crowded short-side positioning / elevated squeeze risk. (Informational only, not an entry/exit signal).")
         else: v4.metric("Funding Rate", "N/A")
             
+        st.markdown("---")
+
+        # NEW: FUTURES CONTEXT SECTION
+        st.subheader("📈 Futures Context (Delta Perpetual)")
+        if oi_usd is not None:
+            fc1, fc2, fc3, fc4 = st.columns(4)
+            fc1.metric("Open Interest (USD)", f"${oi_usd/1e6:.2f}M")
+            
+            # Color OI Delta
+            oi_d_color = "normal" if oi_delta_pct > 0 else "inverse" if oi_delta_pct < 0 else "off"
+            fc2.metric("OI Delta (30m)", f"{oi_delta_pct:+.2f}%", "Building" if oi_delta_pct > 0 else "Unwinding" if oi_delta_pct < 0 else "Stable", delta_color=oi_d_color)
+            
+            # Color Spot/Perp Prem
+            sp_color = "normal" if sp_prem > 0 else "inverse" if sp_prem < 0 else "off"
+            fc3.metric("Spot/Perp Premium", f"{sp_prem:+.3f}%", "Perp Premium" if sp_prem > 0 else "Perp Discount" if sp_prem < 0 else "Flat", delta_color=sp_color)
+            
+            # Put context bias
+            if oi_delta_pct > 0 and sp_prem > 0:
+                ctx = "🟢 Long Build"
+            elif oi_delta_pct > 0 and sp_prem < 0:
+                ctx = "🔴 Short Build"
+            elif oi_delta_pct < 0 and sp_prem > 0:
+                ctx = "🟡 Short Covering"
+            elif oi_delta_pct < 0 and sp_prem < 0:
+                ctx = "🟠 Long Liquidation"
+            else:
+                ctx = "⚪ Neutral"
+            fc4.metric("Derivatives Flow", ctx)
+        else:
+            st.warning("⚠️ Could not fetch Delta Perpetual data.")
         st.markdown("---")
 
         st.subheader("🗺️ AMT Map & Context")
@@ -1364,6 +1418,11 @@ Price: ${latest_price:,.2f}
 AMT State: {current_amt_name} (Code {current_amt_state})
 Options Bias: {b_text} (Score: {options_bias_score:+d})
 Funding Rate: {funding_text}
+
+[FUTURES CONTEXT]
+OI (USD): ${oi_usd/1e6:.2f}M if oi_usd is not None else "N/A"
+OI Delta (30m): {oi_delta_pct:+.2f}% if oi_usd is not None else "N/A"
+Spot/Perp Premium: {sp_prem:+.3f}% if sp_prem is not None else "N/A"
 
 [AMT MAP]
 Prior VAH: {vah_text} | Prior POC: {poc_text} | Prior VAL: {val_text}
