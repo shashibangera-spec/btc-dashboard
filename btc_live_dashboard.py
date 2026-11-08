@@ -719,8 +719,9 @@ pending_broken_wall = 0.0
 # Fetch Futures Context
 funding_rate, mark_price, oi_usd, sp_prem = fetch_futures_context()
 
-# Calculate 30M OI Delta %
+# Calculate 30M OI Delta % and Derivatives Flow Context
 oi_delta_pct = 0.0
+ctx = "⚪ Neutral"
 if oi_usd is not None:
     now_utc_ts = int(datetime.datetime.now(timezone.utc).timestamp())
     p_state["futures_oi_history"].append({"time": now_utc_ts, "oi": oi_usd})
@@ -735,6 +736,19 @@ if oi_usd is not None:
         closest_entry = min(p_state["futures_oi_history"], key=lambda x: abs(x["time"] - target_time))
         if closest_entry["oi"] > 0:
             oi_delta_pct = ((oi_usd - closest_entry["oi"]) / closest_entry["oi"]) * 100
+
+    # Pre-calculate Derivatives Flow for alerts
+    if sp_prem is not None:
+        if oi_delta_pct > 0 and sp_prem > 0:
+            ctx = "🟢 Long Build"
+        elif oi_delta_pct > 0 and sp_prem < 0:
+            ctx = "🔴 Short Build"
+        elif oi_delta_pct < 0 and sp_prem > 0:
+            ctx = "🟡 Short Covering"
+        elif oi_delta_pct < 0 and sp_prem < 0:
+            ctx = "🟠 Long Liquidation"
+        else:
+            ctx = "⚪ Neutral"
 
 if not df.empty:
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
@@ -779,7 +793,8 @@ if not session_df.empty and not df.empty:
                     alert_message += f"🔔 SESSION CLOSED: {s_name}<br>"
                     alert_message += f"Close: ${r['Close']:,.0f} | Bias: {r['Macro Bias']} | {r['Micro Bias']}<br>"
                     alert_message += f"H: ${r['High']:,.0f} | L: ${r['Low']:,.0f}<br>"
-                    alert_message += f"POC: ${r['POC']:,.0f} | VAH: ${r['VAH']:,.0f} | VAL: ${r['VAL']:,.0f}<br><br>"
+                    alert_message += f"POC: ${r['POC']:,.0f} | VAH: ${r['VAH']:,.0f} | VAL: ${r['VAL']:,.0f}<br>"
+                    alert_message += f"Flow: {ctx}<br><br>"
                     p_state["session_alert_log"][s_name] = cycle_date_str
 
 journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
@@ -974,20 +989,20 @@ if not options_df.empty and latest_price > 0:
                             if closed_amt_state in [2, 10]:
                                 if is_extreme_neg:
                                     alert_triggered = True
-                                    alert_message += f"🚨 POTENTIAL SHORT SQUEEZE: Breakout confirmed ({closed_amt_name}) with EXTREME NEGATIVE Funding ({funding_rate:.3f}%)!<br>"
+                                    alert_message += f"🚨 POTENTIAL SHORT SQUEEZE: Breakout confirmed ({closed_amt_name}) with EXTREME NEGATIVE Funding ({funding_rate:.3f}%)! | Flow: {ctx}<br>"
                                 else:
                                     alert_triggered = True
-                                    alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Upside breakout)<br>"
+                                    alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Upside breakout) | Flow: {ctx}<br>"
                             elif closed_amt_state in [3, 11]:
                                 if is_extreme_pos:
                                     alert_triggered = True
-                                    alert_message += f"🚨 POTENTIAL LONG LIQUIDATION: Breakdown confirmed ({closed_amt_name}) with EXTREME POSITIVE Funding ({funding_rate:.3f}%)!<br>"
+                                    alert_message += f"🚨 POTENTIAL LONG LIQUIDATION: Breakdown confirmed ({closed_amt_name}) with EXTREME POSITIVE Funding ({funding_rate:.3f}%)! | Flow: {ctx}<br>"
                                 else:
                                     alert_triggered = True
-                                    alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Downside breakdown)<br>"
+                                    alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Downside breakdown) | Flow: {ctx}<br>"
                             else:
                                 alert_triggered = True
-                                alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name}<br>"
+                                alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} | Flow: {ctx}<br>"
                                 
                     p_state["prev_amt_state"] = closed_amt_state
 
@@ -1027,7 +1042,7 @@ if not options_df.empty and latest_price > 0:
                     if p_state["put_gamma_break_state"] == "SAFE":
                         if completed_candle_close < wall_strike:
                             alert_triggered = True
-                            alert_message += f"🚨 GAMMA WALL BREAK — 30M CLOSE CONFIRMED: Price closed at ${completed_candle_close:,.2f}, below Put Wall (${wall_strike:,.0f}).<br>"
+                            alert_message += f"🚨 GAMMA WALL BREAK — 30M CLOSE CONFIRMED: Price closed at ${completed_candle_close:,.2f}, below Put Wall (${wall_strike:,.0f}). | Flow: {ctx}<br>"
                             pending_gamma_breach = True
                             pending_broken_wall = wall_strike
                     elif p_state["put_gamma_break_state"] == "BREACHED":
@@ -1067,43 +1082,43 @@ if not options_df.empty and latest_price > 0:
             p_cluster = near_put[0]['VWAS'] if near_put else (mid_put[0]['VWAS'] if mid_put else 0)
             if p_cluster > 0 and latest_price <= p_cluster and options_bias_score <= -1:
                 alert_triggered = True
-                alert_message += f"🚨 TRAP DOOR: Price breaking below Put Cluster (${p_cluster:,.0f}) with Bearish Bias!<br>"
+                alert_message += f"🚨 TRAP DOOR: Price breaking below Put Cluster (${p_cluster:,.0f}) with Bearish Bias! | Flow: {ctx}<br>"
                 
         if straddle_valid and near_call and current_amt_state in [2, 10]:
             c_cluster = near_call[0]['VWAS'] if near_call else (mid_call[0]['VWAS'] if mid_call else 0)
             if c_cluster > 0 and latest_price >= c_cluster and funding_rate is not None and funding_rate < -0.05:
                 alert_triggered = True
-                alert_message += f"🚨 SQUEEZE: Price breaking above Call Cluster (${c_cluster:,.0f}) with Negative Funding!<br>"
+                alert_message += f"🚨 SQUEEZE: Price breaking above Call Cluster (${c_cluster:,.0f}) with Negative Funding! | Flow: {ctx}<br>"
 
         if straddle_valid and pcr > 0.8 and pcr < 1.1 and not pd.isna(true_max_pain) and abs(latest_price - true_max_pain) < 100:
             alert_triggered = True
-            alert_message += f"⚠️ GAMMA PIN: Price trapped near Max Pain (${true_max_pain:,.0f}). Avoid chopping.<br>"
+            alert_message += f"⚠️ GAMMA PIN: Price trapped near Max Pain (${true_max_pain:,.0f}). Avoid chopping. | Flow: {ctx}<br>"
 
         # STANDARD ALERTS (UPDATED STRINGS FOR CONTEXT)
         if p_state["prev_pcr"] != 0.0:
             if (p_state["prev_pcr"] >= 1.20 and pcr < 1.20) or (p_state["prev_pcr"] >= 0.30 and pcr < 0.30):
                 alert_triggered = True
-                alert_message += f"⚠️ PCR EXTREME CROSSED: OI PCR is now {pcr:.2f}<br>"
+                alert_message += f"⚠️ PCR EXTREME CROSSED: OI PCR is now {pcr:.2f} | Flow: {ctx}<br>"
         
         if p_state["prev_max_pain"] != 0 and not pd.isna(true_max_pain) and abs(true_max_pain - p_state["prev_max_pain"]) >= 500:
             alert_triggered = True
             direction = "UP" if true_max_pain > p_state["prev_max_pain"] else "DOWN"
-            alert_message += f"🔄 MAX PAIN SHIFT {direction}: Moved from ${p_state['prev_max_pain']:,.0f} to ${true_max_pain:,.0f}!<br>"
+            alert_message += f"🔄 MAX PAIN SHIFT {direction}: Moved from ${p_state['prev_max_pain']:,.0f} to ${true_max_pain:,.0f}! | Flow: {ctx}<br>"
             
         if p_state["prev_call_wall"] != 0 and abs(call_oi_wall['Strike'] - p_state["prev_call_wall"]) >= 200:
             alert_triggered = True
             direction = "UP" if call_oi_wall['Strike'] > p_state["prev_call_wall"] else "DOWN"
-            alert_message += f"🚧 CALL OI WALL SHIFT {direction}: Moved from ${p_state['prev_call_wall']:,.0f} to ${call_oi_wall['Strike']:,.0f}!<br>"
+            alert_message += f"🚧 CALL OI WALL SHIFT {direction}: Moved from ${p_state['prev_call_wall']:,.0f} to ${call_oi_wall['Strike']:,.0f}! | Flow: {ctx}<br>"
             
         if p_state["prev_put_wall"] != 0 and abs(put_oi_wall['Strike'] - p_state["prev_put_wall"]) >= 200:
             alert_triggered = True
             direction = "UP" if put_oi_wall['Strike'] > p_state["prev_put_wall"] else "DOWN"
-            alert_message += f"🚧 PUT OI WALL SHIFT {direction}: Moved from ${p_state['prev_put_wall']:,.0f} to ${put_oi_wall['Strike']:,.0f}!<br>"
+            alert_message += f"🚧 PUT OI WALL SHIFT {direction}: Moved from ${p_state['prev_put_wall']:,.0f} to ${put_oi_wall['Strike']:,.0f}! | Flow: {ctx}<br>"
 
         if p_state["prev_price"] != 0.0:
             if p_state["prev_price"] < call_gamma_wall['Strike'] and latest_price >= call_gamma_wall['Strike']:
                 alert_triggered = True
-                alert_message += f"🔥 GAMMA BREAKOUT: Price crossed above Call Wall (${call_gamma_wall['Strike']:,.0f})!<br>"
+                alert_message += f"🔥 GAMMA BREAKOUT: Price crossed above Call Wall (${call_gamma_wall['Strike']:,.0f})! | Flow: {ctx}<br>"
 
         p_state["prev_pcr"] = pcr
         p_state["prev_max_pain"] = true_max_pain
@@ -1192,17 +1207,7 @@ with tab_dashboard:
             sp_color = "normal" if sp_prem > 0 else "inverse" if sp_prem < 0 else "off"
             fc3.metric("Spot/Perp Premium", f"{sp_prem:+.3f}%", "Perp Premium" if sp_prem > 0 else "Perp Discount" if sp_prem < 0 else "Flat", delta_color=sp_color)
             
-            # Put context bias
-            if oi_delta_pct > 0 and sp_prem > 0:
-                ctx = "🟢 Long Build"
-            elif oi_delta_pct > 0 and sp_prem < 0:
-                ctx = "🔴 Short Build"
-            elif oi_delta_pct < 0 and sp_prem > 0:
-                ctx = "🟡 Short Covering"
-            elif oi_delta_pct < 0 and sp_prem < 0:
-                ctx = "🟠 Long Liquidation"
-            else:
-                ctx = "⚪ Neutral"
+            # Derivatives Flow
             fc4.metric("Derivatives Flow", ctx)
         else:
             st.warning("⚠️ Could not fetch Delta Perpetual data.")
@@ -1413,7 +1418,6 @@ with tab_dashboard:
         funding_text = f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"
         straddle_text = f"${straddle_price:,.2f}" if straddle_valid else f"INVALID ({straddle_reason})"
 
-        # FIXED: Added proper f-string braces and fallbacks for Futures Context
         snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
 Time: {datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')} IST
@@ -1430,6 +1434,7 @@ Funding Rate: {funding_text}
 OI (USD): {f"${oi_usd/1e6:.2f}M" if oi_usd is not None else "N/A"}
 OI Delta (30m): {f"{oi_delta_pct:+.2f}%" if oi_usd is not None else "N/A"}
 Spot/Perp Premium: {f"{sp_prem:+.3f}%" if sp_prem is not None else "N/A"}
+Derivatives Flow: {ctx}
 
 [AMT MAP]
 Prior VAH: {vah_text} | Prior POC: {poc_text} | Prior VAL: {val_text}
