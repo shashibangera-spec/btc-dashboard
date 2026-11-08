@@ -832,7 +832,7 @@ if not options_df.empty and latest_price > 0:
                 elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
 
         # ==========================================
-        # INVERTED GAMMA JOURNAL (TRACKS FROM DETECTION MOMENT)
+        # INVERTED GAMMA JOURNAL (STRICTLY FROM DETECTION MOMENT)
         # ==========================================
         current_inverted_status = False
         if call_gamma_wall is not None and put_gamma_wall is not None:
@@ -842,18 +842,15 @@ if not options_df.empty and latest_price > 0:
         # Handle state transitions
         if current_inverted_status != p_state.get("last_inverted_status", False):
             if current_inverted_status: # Flipped to INVERTED
-                # Seed with current candle's high/low (represents price action AT detection)
-                current_candle_high = df['high'].iloc[-1] if not df.empty else latest_price
-                current_candle_low = df['low'].iloc[-1] if not df.empty else latest_price
-
+                # Seed strictly with the exact price at the moment of detection
                 p_state["active_inverted_event"] = {
                     "Time": datetime.datetime.now().strftime("%H:%M"),
                     "Status": "INVERTED",
                     "Call Wall": call_gamma_wall['Strike'] if call_gamma_wall is not None else 0,
                     "Put Wall": put_gamma_wall['Strike'] if put_gamma_wall is not None else 0,
                     "Entry Price": latest_price,
-                    "High": max(latest_price, current_candle_high),
-                    "Low": min(latest_price, current_candle_low),
+                    "High": latest_price,
+                    "Low": latest_price,
                 }
             else: # Flipped back to NORMAL
                 if p_state.get("active_inverted_event"):
