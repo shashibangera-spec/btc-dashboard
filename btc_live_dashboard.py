@@ -12,15 +12,18 @@ from datetime import timezone, timedelta
 st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 
 # ==========================================
-# CONFIGURATION
+# CONFIGURATION & SHARE MODE
 # ==========================================
 CLUSTER_ABSORPTION_PCT = 0.30
 MAX_CLUSTER_WIDTH = 5
 OI_CLUSTER_MIN_USD = 5_000_000
 MARK_TOLERANCE_PCT = 0.02 
 
-# Define IST Timezone
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+# SHARE MODE LOGIC
+qp = st.query_params
+is_share_mode = qp.get("share", "false").lower() == "true"
 
 # ==========================================
 # PERSISTENT STATE
@@ -95,38 +98,41 @@ def send_telegram_message(message):
         return False
 
 # ==========================================
-# SIDEBAR
+# SIDEBAR (HIDDEN IN SHARE MODE)
 # ==========================================
-qp = st.query_params
-try:
-    default_vah = float(qp.get("vah", 0.0))
-    default_val = float(qp.get("val", 0.0))
-    default_poc = float(qp.get("poc", 0.0))
-except (TypeError, ValueError):
-    default_vah = default_val = default_poc = 0.0
+if not is_share_mode:
+    try:
+        default_vah = float(qp.get("vah", 0.0))
+        default_val = float(qp.get("val", 0.0))
+        default_poc = float(qp.get("poc", 0.0))
+    except (TypeError, ValueError):
+        default_vah = default_val = default_poc = 0.0
 
-st.sidebar.header("🛠️ Manual AMT Overrides")
-input_vah = st.sidebar.number_input("Prior VAH", value=default_vah, step=50.0, format="%.2f")
-input_val = st.sidebar.number_input("Prior VAL", value=default_val, step=50.0, format="%.2f")
-input_poc = st.sidebar.number_input("Prior POC", value=default_poc, step=50.0, format="%.2f")
+    st.sidebar.header("🛠️ Manual AMT Overrides")
+    input_vah = st.sidebar.number_input("Prior VAH", value=default_vah, step=50.0, format="%.2f")
+    input_val = st.sidebar.number_input("Prior VAL", value=default_val, step=50.0, format="%.2f")
+    input_poc = st.sidebar.number_input("Prior POC", value=default_poc, step=50.0, format="%.2f")
 
-if st.sidebar.button("Apply Overrides"):
-    st.query_params["vah"] = str(input_vah)
-    st.query_params["val"] = str(input_val)
-    st.query_params["poc"] = str(input_poc)
-    st.rerun()
+    if st.sidebar.button("Apply Overrides"):
+        st.query_params["vah"] = str(input_vah)
+        st.query_params["val"] = str(input_val)
+        st.query_params["poc"] = str(input_poc)
+        st.rerun()
 
-if st.sidebar.button("Clear Overrides"):
-    st.query_params.clear()
-    st.rerun()
+    if st.sidebar.button("Clear Overrides"):
+        st.query_params.clear()
+        st.rerun()
 
-st.sidebar.markdown("---")
-st.sidebar.header("📝 Trade Journal")
-st.sidebar.caption("RESEARCH ONLY - Saved across reloads")
-journal_input = st.sidebar.text_area("Log Trade Details", value=p_state["trade_journal"], height=200)
-if st.sidebar.button("Save Journal"):
-    p_state["trade_journal"] = journal_input
-    st.sidebar.success("Journal saved!")
+    st.sidebar.markdown("---")
+    st.sidebar.header("📝 Trade Journal")
+    st.sidebar.caption("RESEARCH ONLY - Saved across reloads")
+    journal_input = st.sidebar.text_area("Log Trade Details", value=p_state["trade_journal"], height=200)
+    if st.sidebar.button("Save Journal"):
+        p_state["trade_journal"] = journal_input
+        st.sidebar.success("Journal saved!")
+else:
+    input_vah, input_val, input_poc = 0.0, 0.0, 0.0
+    st.sidebar.info("🔒 Share Mode Active. Overrides and Journal hidden.")
 
 st.title("⚡ BTC AMT & Delta Options Terminal")
 
@@ -1288,52 +1294,54 @@ with tab_dashboard:
         b_text = "⚪ UNAVAILABLE"
         st.warning("⚠️ Could not fetch AMT Data from Binance.")
 
-    st.markdown("---")
-    
-    flow_text = ""
-    for entry in p_state["options_flow_history"][-5:]:
-        mp_text = f"{entry['mp']:.0f}" if pd.notna(entry["mp"]) else "N/A"
-        flow_text += f"{entry['time']} | C: {entry['call']:.0f} | P: {entry['put']:.0f} | MP: {mp_text}\n"
-
-    alert_text = ""
-    for entry in p_state["alert_history"][:5]:
-        alert_text += f"{entry['Time'][11:16]} | {entry['Alert'][:60]}...\n"
-
-    echo_text = ""
-    if not journal_df_check.empty:
-        for _, row in journal_df_check.tail(10).iterrows():
-            echo_text += f"{row['Time']} | ${row['Close']:,.0f} | {row['State Name']}\n"
-
-    wall_text = ""
-    for entry in p_state["wall_status_log"][-5:]:
-        wall_text += f"{entry['time']} | Call: {entry['call']} | Put: {entry['put']}\n"
-
-    inv_text = ""
-    display_inv_history = p_state["inverted_gamma_history"].copy()
-    if p_state.get("active_inverted_event"):
-        active_event = p_state["active_inverted_event"].copy()
-        active_event["Status"] = "ACTIVE"
-        display_inv_history.append(active_event)
+    # RENDER SNAPSHOT (HIDDEN IN SHARE MODE)
+    if not is_share_mode:
+        st.markdown("---")
         
-    for entry in display_inv_history[-5:]:
-        inv_text += f"{entry['Time']} - {entry.get('Close Time', 'ACTIVE')} | {entry['Status']} | C: ${entry['Call Wall']:,.0f} / P: ${entry['Put Wall']:,.0f} | Entry: ${entry['Entry Price']:,.0f} | H: ${entry['High']:,.0f} / L: ${entry['Low']:,.0f}\n"
+        flow_text = ""
+        for entry in p_state["options_flow_history"][-5:]:
+            mp_text = f"{entry['mp']:.0f}" if pd.notna(entry["mp"]) else "N/A"
+            flow_text += f"{entry['time']} | C: {entry['call']:.0f} | P: {entry['put']:.0f} | MP: {mp_text}\n"
 
-    call_gamma_text = f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else "N/A"
-    put_gamma_text = f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else "N/A"
-    call_cluster_near = f"${near_call[0]['VWAS']:,.0f}" if near_call else "N/A"
-    put_cluster_near = f"${near_put[0]['VWAS']:,.0f}" if near_put else "N/A"
-    call_cluster_mid = f"${mid_call[0]['VWAS']:,.0f}" if mid_call else "N/A"
-    put_cluster_mid = f"${mid_put[0]['VWAS']:,.0f}" if mid_put else "N/A"
-    call_cluster_far = f"${far_call[0]['VWAS']:,.0f}" if far_call else "N/A"
-    put_cluster_far = f"${far_put[0]['VWAS']:,.0f}" if far_put else "N/A"
-    max_pain_text = f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else "N/A"
-    vah_text = f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A"
-    poc_text = f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A"
-    val_text = f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A"
-    funding_text = f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"
-    straddle_text = f"${straddle_price:,.2f}" if straddle_valid else f"INVALID ({straddle_reason})"
+        alert_text = ""
+        for entry in p_state["alert_history"][:5]:
+            alert_text += f"{entry['Time'][11:16]} | {entry['Alert'][:60]}...\n"
 
-    snapshot_text = f"""
+        echo_text = ""
+        if not journal_df_check.empty:
+            for _, row in journal_df_check.tail(10).iterrows():
+                echo_text += f"{row['Time']} | ${row['Close']:,.0f} | {row['State Name']}\n"
+
+        wall_text = ""
+        for entry in p_state["wall_status_log"][-5:]:
+            wall_text += f"{entry['time']} | Call: {entry['call']} | Put: {entry['put']}\n"
+
+        inv_text = ""
+        display_inv_history = p_state["inverted_gamma_history"].copy()
+        if p_state.get("active_inverted_event"):
+            active_event = p_state["active_inverted_event"].copy()
+            active_event["Status"] = "ACTIVE"
+            display_inv_history.append(active_event)
+            
+        for entry in display_inv_history[-5:]:
+            inv_text += f"{entry['Time']} - {entry.get('Close Time', 'ACTIVE')} | {entry['Status']} | C: ${entry['Call Wall']:,.0f} / P: ${entry['Put Wall']:,.0f} | Entry: ${entry['Entry Price']:,.0f} | H: ${entry['High']:,.0f} / L: ${entry['Low']:,.0f}\n"
+
+        call_gamma_text = f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else "N/A"
+        put_gamma_text = f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else "N/A"
+        call_cluster_near = f"${near_call[0]['VWAS']:,.0f}" if near_call else "N/A"
+        put_cluster_near = f"${near_put[0]['VWAS']:,.0f}" if near_put else "N/A"
+        call_cluster_mid = f"${mid_call[0]['VWAS']:,.0f}" if mid_call else "N/A"
+        put_cluster_mid = f"${mid_put[0]['VWAS']:,.0f}" if mid_put else "N/A"
+        call_cluster_far = f"${far_call[0]['VWAS']:,.0f}" if far_call else "N/A"
+        put_cluster_far = f"${far_put[0]['VWAS']:,.0f}" if far_put else "N/A"
+        max_pain_text = f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else "N/A"
+        vah_text = f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A"
+        poc_text = f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A"
+        val_text = f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A"
+        funding_text = f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"
+        straddle_text = f"${straddle_price:,.2f}" if straddle_valid else f"INVALID ({straddle_reason})"
+
+        snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
 Time: {datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')} IST
 
@@ -1380,8 +1388,8 @@ Distant (>=1.0x): Call {call_cluster_far} | Put {put_cluster_far}
 {p_state["trade_journal"] if p_state["trade_journal"] else "Empty"}
 """
 
-    with st.expander("📋 Copy Dashboard Snapshot (Click to expand)"):
-        st.code(snapshot_text, language="text")
+        with st.expander("📋 Copy Dashboard Snapshot (Click to expand)"):
+            st.code(snapshot_text, language="text")
 
     if st.button("🔄 Refresh All Data"):
         st.cache_data.clear()
