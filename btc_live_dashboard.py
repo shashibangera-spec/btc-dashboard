@@ -36,7 +36,7 @@ def get_persistent_state():
         "options_flow_history": [],
         "wall_status_log": [],
         "inverted_gamma_history": [], 
-        "active_inverted_event": None, # NEW: Tracks the live high/low of the current trap
+        "active_inverted_event": None, 
         "last_inverted_status": False, 
         "trade_journal": "",
         "last_closed_candle_time": 0,
@@ -832,24 +832,28 @@ if not options_df.empty and latest_price > 0:
                 elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
 
         # ==========================================
-        # INVERTED GAMMA JOURNAL LOGGING (PERIOD TRACKING)
+        # INVERTED GAMMA JOURNAL (TRACKS FROM DETECTION MOMENT)
         # ==========================================
         current_inverted_status = False
         if call_gamma_wall is not None and put_gamma_wall is not None:
             if call_gamma_wall['Strike'] < put_gamma_wall['Strike']:
                 current_inverted_status = True
                 
-        # 1. Handle state transitions
+        # Handle state transitions
         if current_inverted_status != p_state.get("last_inverted_status", False):
             if current_inverted_status: # Flipped to INVERTED
+                # Seed with current candle's high/low (represents price action AT detection)
+                current_candle_high = df['high'].iloc[-1] if not df.empty else latest_price
+                current_candle_low = df['low'].iloc[-1] if not df.empty else latest_price
+
                 p_state["active_inverted_event"] = {
                     "Time": datetime.datetime.now().strftime("%H:%M"),
                     "Status": "INVERTED",
                     "Call Wall": call_gamma_wall['Strike'] if call_gamma_wall is not None else 0,
                     "Put Wall": put_gamma_wall['Strike'] if put_gamma_wall is not None else 0,
                     "Entry Price": latest_price,
-                    "High": latest_price,
-                    "Low": latest_price,
+                    "High": max(latest_price, current_candle_high),
+                    "Low": min(latest_price, current_candle_low),
                 }
             else: # Flipped back to NORMAL
                 if p_state.get("active_inverted_event"):
@@ -859,7 +863,7 @@ if not options_df.empty and latest_price > 0:
                 p_state["active_inverted_event"] = None
             p_state["last_inverted_status"] = current_inverted_status
 
-        # 2. If currently inverted, update the live High/Low
+        # If currently inverted, update the live High/Low going forward
         elif current_inverted_status and p_state.get("active_inverted_event"):
             p_state["active_inverted_event"]["High"] = max(p_state["active_inverted_event"]["High"], latest_price)
             p_state["active_inverted_event"]["Low"] = min(p_state["active_inverted_event"]["Low"], latest_price)
