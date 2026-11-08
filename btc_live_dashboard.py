@@ -50,7 +50,7 @@ def get_persistent_state():
         "put_gamma_break_state": "SAFE",
         "active_broken_put_wall": 0.0,
         "gamma_wall_unavailable": False,
-        "futures_oi_history": [], # NEW: Tracks Delta Perp OI for 30m Delta
+        "futures_oi_history": [], # Tracks Delta Perp OI for 30m Delta
     }
 
 p_state = get_persistent_state()
@@ -179,7 +179,7 @@ def fetch_amt_data():
             continue
     return pd.DataFrame()
 
-# NEW: Fetch Delta Futures Context (Funding, OI, Spot/Perp)
+# Fetch Delta Futures Context (Funding, OI, Spot/Perp)
 @st.cache_data(ttl=60)
 def fetch_futures_context():
     try:
@@ -1046,11 +1046,17 @@ if not options_df.empty and latest_price > 0:
                 p_state["wall_status_log"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_call_status, "put": current_put_status})
                 if len(p_state["wall_status_log"]) > 10: p_state["wall_status_log"].pop(0)
 
-        # OPTIONS FLOW HISTORY
+        # OPTIONS FLOW HISTORY (Fixed NaN comparison)
         current_wall_state = (call_oi_wall['Strike'], put_oi_wall['Strike'], true_max_pain)
         if p_state["options_flow_history"]:
             last_state = p_state["options_flow_history"][-1]
-            if last_state["call"] != current_wall_state[0] or last_state["put"] != current_wall_state[1] or last_state["mp"] != current_wall_state[2]:
+            
+            # Fix: Python thinks NaN != NaN is True, causing duplicate log spam. 
+            # We use str() to compare NaN values safely.
+            if (last_state["call"] != current_wall_state[0] or 
+                last_state["put"] != current_wall_state[1] or 
+                str(last_state["mp"]) != str(current_wall_state[2])):
+                
                 p_state["options_flow_history"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_wall_state[0], "put": current_wall_state[1], "mp": current_wall_state[2]})
                 if len(p_state["options_flow_history"]) > 10: p_state["options_flow_history"].pop(0)
         else:
@@ -1172,7 +1178,7 @@ with tab_dashboard:
             
         st.markdown("---")
 
-        # NEW: FUTURES CONTEXT SECTION
+        # FUTURES CONTEXT SECTION
         st.subheader("📈 Futures Context (Delta Perpetual)")
         if oi_usd is not None:
             fc1, fc2, fc3, fc4 = st.columns(4)
@@ -1348,7 +1354,7 @@ with tab_dashboard:
                 "IV_Call": st.column_config.NumberColumn("Call IV", format="%.2f%%"),
                 "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
                 "IV_Put": st.column_config.NumberColumn("Put IV", format="%.2f%%"),
-                "Gamma_Put": st.column_config.NumberColumn("Put Gamma", format="%.8f"),
+                "Gamma_Put": st.column_config.NumberColumn("Gamma_Put", format="%.8f"),
                 "OI_USD_Put": st.column_config.NumberColumn("Put OI", format="$%,.0f"),
                 "Bid_Put": st.column_config.NumberColumn("Put Bid", format="$%.2f"),
                 "Ask_Put": st.column_config.NumberColumn("Put Ask", format="$%.2f"),
@@ -1407,6 +1413,7 @@ with tab_dashboard:
         funding_text = f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"
         straddle_text = f"${straddle_price:,.2f}" if straddle_valid else f"INVALID ({straddle_reason})"
 
+        # FIXED: Added proper f-string braces and fallbacks for Futures Context
         snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
 Time: {datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')} IST
@@ -1420,9 +1427,9 @@ Options Bias: {b_text} (Score: {options_bias_score:+d})
 Funding Rate: {funding_text}
 
 [FUTURES CONTEXT]
-OI (USD): ${oi_usd/1e6:.2f}M if oi_usd is not None else "N/A"
-OI Delta (30m): {oi_delta_pct:+.2f}% if oi_usd is not None else "N/A"
-Spot/Perp Premium: {sp_prem:+.3f}% if sp_prem is not None else "N/A"
+OI (USD): {f"${oi_usd/1e6:.2f}M" if oi_usd is not None else "N/A"}
+OI Delta (30m): {f"{oi_delta_pct:+.2f}%" if oi_usd is not None else "N/A"}
+Spot/Perp Premium: {f"{sp_prem:+.3f}%" if sp_prem is not None else "N/A"}
 
 [AMT MAP]
 Prior VAH: {vah_text} | Prior POC: {poc_text} | Prior VAL: {val_text}
