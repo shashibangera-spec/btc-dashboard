@@ -842,9 +842,9 @@ if not options_df.empty and latest_price > 0:
         # Handle state transitions
         if current_inverted_status != p_state.get("last_inverted_status", False):
             if current_inverted_status: # Flipped to INVERTED
-                # Seed strictly with the exact price at the moment of detection
                 p_state["active_inverted_event"] = {
                     "Time": datetime.datetime.now().strftime("%H:%M"),
+                    "Close Time": "ACTIVE",
                     "Status": "INVERTED",
                     "Call Wall": call_gamma_wall['Strike'] if call_gamma_wall is not None else 0,
                     "Put Wall": put_gamma_wall['Strike'] if put_gamma_wall is not None else 0,
@@ -854,6 +854,7 @@ if not options_df.empty and latest_price > 0:
                 }
             else: # Flipped back to NORMAL
                 if p_state.get("active_inverted_event"):
+                    p_state["active_inverted_event"]["Close Time"] = datetime.datetime.now().strftime("%H:%M")
                     p_state["inverted_gamma_history"].append(p_state["active_inverted_event"])
                     if len(p_state["inverted_gamma_history"]) > 10:
                         p_state["inverted_gamma_history"].pop(0)
@@ -1201,11 +1202,12 @@ with tab_dashboard:
                 st.markdown("##### 📝 Inverted Gamma Journal (Research Only)")
                 inv_df = pd.DataFrame(display_inv_history)
                 # Reorder columns for clarity
-                cols = ["Time", "Status", "Call Wall", "Put Wall", "Entry Price", "High", "Low"]
+                cols = ["Time", "Close Time", "Status", "Call Wall", "Put Wall", "Entry Price", "High", "Low"]
                 inv_df = inv_df[[c for c in cols if c in inv_df.columns]]
                 
                 st.dataframe(inv_df, use_container_width=True, hide_index=True, column_config={
                     "Time": st.column_config.TextColumn("Time"),
+                    "Close Time": st.column_config.TextColumn("Close Time"),
                     "Status": st.column_config.TextColumn("Status"),
                     "Call Wall": st.column_config.NumberColumn("Call Wall", format="$%.0f"),
                     "Put Wall": st.column_config.NumberColumn("Put Wall", format="$%.0f"),
@@ -1284,7 +1286,7 @@ with tab_dashboard:
         display_inv_history.append(active_event)
         
     for entry in display_inv_history[-5:]:
-        inv_text += f"{entry['Time']} | {entry['Status']} | C: ${entry['Call Wall']:,.0f} / P: ${entry['Put Wall']:,.0f} | Entry: ${entry['Entry Price']:,.0f} | H: ${entry['High']:,.0f} / L: ${entry['Low']:,.0f}\n"
+        inv_text += f"{entry['Time']} - {entry.get('Close Time', 'ACTIVE')} | {entry['Status']} | C: ${entry['Call Wall']:,.0f} / P: ${entry['Put Wall']:,.0f} | Entry: ${entry['Entry Price']:,.0f} | H: ${entry['High']:,.0f} / L: ${entry['Low']:,.0f}\n"
 
     call_gamma_text = f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else "N/A"
     put_gamma_text = f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else "N/A"
