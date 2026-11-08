@@ -35,6 +35,8 @@ def get_persistent_state():
         "alert_history": [],
         "options_flow_history": [],
         "wall_status_log": [],
+        "inverted_gamma_history": [], # NEW: Inverted Gamma Log
+        "last_inverted_status": False, # NEW: Tracks if it was inverted last time
         "trade_journal": "",
         "last_closed_candle_time": 0,
         "previous_candle_time": 0,
@@ -51,6 +53,8 @@ p_state.setdefault("previous_candle_time", 0)
 p_state.setdefault("put_gamma_break_state", "SAFE")
 p_state.setdefault("active_broken_put_wall", 0.0)
 p_state.setdefault("gamma_wall_unavailable", False)
+p_state.setdefault("inverted_gamma_history", [])
+p_state.setdefault("last_inverted_status", False)
 
 # ==========================================
 # TELEGRAM
@@ -825,6 +829,26 @@ if not options_df.empty and latest_price > 0:
                 if nearest_call_dist < nearest_put_dist: options_bias_score -= 1
                 elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
 
+        # ==========================================
+        # NEW: INVERTED GAMMA JOURNAL LOGGING
+        # ==========================================
+        current_inverted_status = False
+        if call_gamma_wall is not None and put_gamma_wall is not None:
+            if call_gamma_wall['Strike'] < put_gamma_wall['Strike']:
+                current_inverted_status = True
+                
+        if current_inverted_status != p_state.get("last_inverted_status", False):
+            p_state["inverted_gamma_history"].append({
+                "Time": datetime.datetime.now().strftime("%H:%M"),
+                "Status": "INVERTED" if current_inverted_status else "NORMAL",
+                "Call Wall": call_gamma_wall['Strike'] if call_gamma_wall is not None else 0,
+                "Put Wall": put_gamma_wall['Strike'] if put_gamma_wall is not None else 0,
+                "Price": latest_price
+            })
+            if len(p_state["inverted_gamma_history"]) > 10:
+                p_state["inverted_gamma_history"].pop(0)
+            p_state["last_inverted_status"] = current_inverted_status
+
         # PUT GAMMA STATE MACHINE
         notification_put_wall = None
         notification_candidates = filtered_options.copy()
@@ -1150,6 +1174,19 @@ with tab_dashboard:
             st.caption("ℹ️ Context only — not support, resistance or price targets. Gross Gamma estimated using unsigned OI.")
             st.markdown("---")
 
+            # NEW: INVERTED GAMMA JOURNAL
+            if p_state["inverted_gamma_history"]:
+                st.markdown("##### 📝 Inverted Gamma Journal (Research Only)")
+                inv_df = pd.DataFrame(p_state["inverted_gamma_history"])
+                st.dataframe(inv_df, use_container_width=True, hide_index=True, column_config={
+                    "Time": st.column_config.TextColumn("Time"),
+                    "Status": st.column_config.TextColumn("Status"),
+                    "Call Wall": st.column_config.NumberColumn("Call Wall", format="$%.0f"),
+                    "Put Wall": st.column_config.NumberColumn("Put Wall", format="$%.0f"),
+                    "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                })
+                st.markdown("---")
+
         st.subheader("📖 PROJECT ECHO - State Journal")
         if journal_res is not None:
             journal_df, echo_used_manual = journal_res
@@ -1211,6 +1248,10 @@ with tab_dashboard:
     for entry in p_state["wall_status_log"][-5:]:
         wall_text += f"{entry['time']} | Call: {entry['call']} | Put: {entry['put']}\n"
 
+    inv_text = ""
+    for entry in p_state["inverted_gamma_history"][-5:]:
+        inv_text += f"{entry['Time']} | {entry['Status']} | C: ${entry['Call Wall']:,.0f} / P: ${entry['Put Wall']:,.0f} | Price: ${entry['Price']:,.0f}\n"
+
     call_gamma_text = f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else "N/A"
     put_gamma_text = f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else "N/A"
     call_cluster_near = f"${near_call[0]['VWAS']:,.0f}" if near_call else "N/A"
@@ -1256,6 +1297,9 @@ Distant (>=1.0x): Call {call_cluster_far} | Put {put_cluster_far}
 
 [WALL STATUS LOG (Passive Tracking)]
 {wall_text}
+
+[INVERTED GAMMA JOURNAL (Passive Tracking)]
+{inv_text}
 
 [OPTIONS FLOW JOURNAL (Last 5 Shifts)]
 {flow_text}
