@@ -19,6 +19,9 @@ MAX_CLUSTER_WIDTH = 5
 OI_CLUSTER_MIN_USD = 5_000_000
 MARK_TOLERANCE_PCT = 0.02 
 
+# Define IST Timezone
+IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
 # ==========================================
 # PERSISTENT STATE
 # ==========================================
@@ -38,7 +41,7 @@ def get_persistent_state():
         "inverted_gamma_history": [], 
         "active_inverted_event": None, 
         "last_inverted_status": False, 
-        "session_alert_log": {}, # NEW: Prevents duplicate session alerts
+        "session_alert_log": {}, 
         "trade_journal": "",
         "last_closed_candle_time": 0,
         "previous_candle_time": 0,
@@ -765,8 +768,7 @@ delta_status = "🟢 Connected" if not options_df.empty else "🔴 Failed"
 if expiry_dt:
     time_remaining = expiry_dt - datetime.datetime.now(timezone.utc)
     time_str = str(time_remaining).split('.')[0]
-    ist_tz = timezone(timedelta(hours=5, minutes=30))
-    settlement_ist = expiry_dt.astimezone(ist_tz).strftime('%Y-%m-%d %H:%M:%S')
+    settlement_ist = expiry_dt.astimezone(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')
 
 if not options_df.empty and latest_price > 0:
     options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * latest_price * dynamic_contract_size
@@ -872,7 +874,7 @@ if not options_df.empty and latest_price > 0:
         if current_inverted_status != p_state.get("last_inverted_status", False):
             if current_inverted_status: # Flipped to INVERTED
                 p_state["active_inverted_event"] = {
-                    "Time": datetime.datetime.now().strftime("%H:%M"),
+                    "Time": datetime.datetime.now(IST_TZ).strftime("%H:%M"),
                     "Close Time": "ACTIVE",
                     "Status": "INVERTED",
                     "Call Wall": call_gamma_wall['Strike'] if call_gamma_wall is not None else 0,
@@ -883,7 +885,7 @@ if not options_df.empty and latest_price > 0:
                 }
             else: # Flipped back to NORMAL
                 if p_state.get("active_inverted_event"):
-                    p_state["active_inverted_event"]["Close Time"] = datetime.datetime.now().strftime("%H:%M")
+                    p_state["active_inverted_event"]["Close Time"] = datetime.datetime.now(IST_TZ).strftime("%H:%M")
                     p_state["inverted_gamma_history"].append(p_state["active_inverted_event"])
                     if len(p_state["inverted_gamma_history"]) > 10:
                         p_state["inverted_gamma_history"].pop(0)
@@ -969,11 +971,11 @@ if not options_df.empty and latest_price > 0:
         current_call_status = "PRESENT" if near_call else "N/A"
         current_put_status = "PRESENT" if near_put else "N/A"
         if not p_state["wall_status_log"]:
-            p_state["wall_status_log"].append({"time": datetime.datetime.now().strftime("%H:%M"), "call": current_call_status, "put": current_put_status})
+            p_state["wall_status_log"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_call_status, "put": current_put_status})
         else:
             last_log = p_state["wall_status_log"][-1]
             if last_log["call"] != current_call_status or last_log["put"] != current_put_status:
-                p_state["wall_status_log"].append({"time": datetime.datetime.now().strftime("%H:%M"), "call": current_call_status, "put": current_put_status})
+                p_state["wall_status_log"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_call_status, "put": current_put_status})
                 if len(p_state["wall_status_log"]) > 10: p_state["wall_status_log"].pop(0)
 
         # OPTIONS FLOW HISTORY
@@ -981,10 +983,10 @@ if not options_df.empty and latest_price > 0:
         if p_state["options_flow_history"]:
             last_state = p_state["options_flow_history"][-1]
             if last_state["call"] != current_wall_state[0] or last_state["put"] != current_wall_state[1] or last_state["mp"] != current_wall_state[2]:
-                p_state["options_flow_history"].append({"time": datetime.datetime.now().strftime("%H:%M"), "call": current_wall_state[0], "put": current_wall_state[1], "mp": current_wall_state[2]})
+                p_state["options_flow_history"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_wall_state[0], "put": current_wall_state[1], "mp": current_wall_state[2]})
                 if len(p_state["options_flow_history"]) > 10: p_state["options_flow_history"].pop(0)
         else:
-            p_state["options_flow_history"].append({"time": datetime.datetime.now().strftime("%H:%M"), "call": current_wall_state[0], "put": current_wall_state[1], "mp": current_wall_state[2]})
+            p_state["options_flow_history"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_wall_state[0], "put": current_wall_state[1], "mp": current_wall_state[2]})
 
         # SMART CONFLUENCE ALERTS
         if straddle_valid and near_put and current_amt_state in [3, 11, 14]:
@@ -1071,7 +1073,7 @@ if journal_res is not None and not journal_df_check.empty:
     p_state["prev_amt_state"] = current_amt_state
 
 if alert_triggered:
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S")
     p_state["alert_history"].insert(0, {"Time": timestamp, "Alert": alert_message.replace("<br>", " | ")})
     if len(p_state["alert_history"]) > 50: p_state["alert_history"] = p_state["alert_history"][:50]
     
@@ -1333,7 +1335,7 @@ with tab_dashboard:
 
     snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
-Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} IST
+Time: {datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')} IST
 
 [RESEARCH OBSERVATIONS — NOT USED FOR TRADE DECISIONS]
 
@@ -1386,7 +1388,7 @@ Distant (>=1.0x): Call {call_cluster_far} | Put {put_cluster_far}
         st.rerun()
 
     st.markdown("---")
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S")
     st.caption(f"**System Health:** Binance {binance_status} | Delta {delta_status} | Last Fetched: {now}")
 
 components.html("<script>setTimeout(function(){ window.parent.location.reload(); }, 180000);</script>", height=0, width=0)
