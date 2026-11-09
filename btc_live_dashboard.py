@@ -665,9 +665,6 @@ def fetch_delta_options():
                 oi_usd = float(ticker.get("oi_value_usd")) if ticker.get("oi_value_usd") is not None else None
                 oi_contracts = float(ticker.get("oi_contracts") or ticker.get("oi")) if (ticker.get("oi_contracts") or ticker.get("oi")) is not None else None
                 
-                # NEW: Extract Volume
-                volume = float(ticker.get("volume", 0)) if ticker.get("volume") is not None else 0.0
-                
                 quotes = ticker.get("quotes", {})
                 bid = float(quotes.get("best_bid") or ticker.get("best_bid")) if (quotes.get("best_bid") or ticker.get("best_bid")) is not None else None
                 ask = float(quotes.get("best_ask") or ticker.get("best_ask")) if (quotes.get("best_ask") or ticker.get("best_ask")) is not None else None
@@ -680,7 +677,7 @@ def fetch_delta_options():
                 
                 chain.append({
                     "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, 
-                    "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val
+                    "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv, "Timestamp": ts_val
                 })
             except (ValueError, TypeError):
                 continue
@@ -688,7 +685,7 @@ def fetch_delta_options():
         df = pd.DataFrame(chain)
         if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, None, False
 
-        df_pivot = df.pivot_table(index="Strike", columns="Type", values=["Bid", "Ask", "Mark", "OI_USD", "OI_Contracts", "Gamma", "IV", "Volume"], aggfunc="first").reset_index()
+        df_pivot = df.pivot_table(index="Strike", columns="Type", values=["Bid", "Ask", "Mark", "OI_USD", "OI_Contracts", "Gamma", "IV"], aggfunc="first").reset_index()
 
         new_cols = []
         for col in df_pivot.columns:
@@ -696,7 +693,7 @@ def fetch_delta_options():
             else: new_cols.append(str(col))
         df_pivot.columns = new_cols
 
-        expected_columns = ['Bid_Call', 'Ask_Call', 'Mark_Call', 'OI_USD_Call', 'OI_Contracts_Call', 'Gamma_Call', 'IV_Call', 'Volume_Call', 'Bid_Put', 'Ask_Put', 'Mark_Put', 'OI_USD_Put', 'OI_Contracts_Put', 'Gamma_Put', 'IV_Put', 'Volume_Put']
+        expected_columns = ['Bid_Call', 'Ask_Call', 'Mark_Call', 'OI_USD_Call', 'OI_Contracts_Call', 'Gamma_Call', 'IV_Call', 'Bid_Put', 'Ask_Put', 'Mark_Put', 'OI_USD_Put', 'OI_Contracts_Put', 'Gamma_Put', 'IV_Put']
         for col in expected_columns:
             if col not in df_pivot.columns: df_pivot[col] = np.nan
 
@@ -716,7 +713,6 @@ filtered_options = pd.DataFrame()
 call_oi_wall, put_oi_wall, call_gamma_wall, put_gamma_wall = None, None, None, None
 true_max_pain = np.nan
 pcr = 0.0
-pcr_volume = 0.0
 atm_row, atm_strike = None, 0.0
 straddle_valid = False
 straddle_reason = ""
@@ -904,11 +900,6 @@ if not options_df.empty and latest_price > 0:
         total_calls_usd = temp_filt['OI_USD_Call'].sum()
         total_puts_usd = temp_filt['OI_USD_Put'].sum()
         pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
-
-        # NEW: Calculate Volume PCR
-        total_calls_vol = temp_filt['Volume_Call'].sum()
-        total_puts_vol = temp_filt['Volume_Put'].sum()
-        pcr_volume = total_puts_vol / total_calls_vol if total_calls_vol > 0 else 0
 
         if is_chain_complete:
             all_strikes = options_df['Strike'].tolist()
@@ -1327,30 +1318,17 @@ with tab_dashboard:
 
         if not options_df.empty and atm_row is not None:
             st.subheader(f"📉 Options Snapshot (Expiry: {loaded_expiry})")
-            
-            o1, o2, o3, o4, o5 = st.columns(5)
-            
-            o1.metric("ATM Strike", f"${atm_strike:,.0f}")
-            
+            o1, o2, o3, o4 = st.columns(4)
             if straddle_valid:
                 straddle_delta = straddle_price - p_state["session_start_straddle"] if p_state["session_start_straddle"] else 0
                 straddle_delta_str = f"{straddle_delta:+,.0f}" if straddle_delta != 0 else "Unchanged"
-                o2.metric("ATM Straddle", f"${straddle_price:,.2f}", straddle_delta_str)
+                o1.metric("ATM Straddle", f"${straddle_price:,.2f}", straddle_delta_str)
             else:
-                o2.metric("ATM Straddle", "⚠️ INVALID", straddle_reason)
-                
-            o3.metric("Max Pain", f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else "N/A")
-            o4.metric("Settlement", settlement_ist)
-            o5.metric("Remaining", time_str)
-            
+                o1.metric("ATM Straddle", "⚠️ INVALID", straddle_reason)
+            o2.metric("Max Pain (Expiry Ref)", f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else "N/A")
+            o3.metric("Settlement Time", settlement_ist)
+            o4.metric("Remaining Time", time_str)
             st.caption(f"Expiry Source: {expiry_source} | Quote Freshness: {quote_freshness} | Call Ticker Age: {atm_call_age} | Put Ticker Age: {atm_put_age}")
-            
-            atm_call_iv = atm_row['IV_Call']
-            atm_put_iv = atm_row['IV_Put']
-            if not pd.isna(atm_call_iv) and not pd.isna(atm_put_iv):
-                skew = atm_call_iv - atm_put_iv
-                st.caption(f"**ATM Call IV:** {atm_call_iv:.2f}% | **ATM Put IV:** {atm_put_iv:.2f}% | **Skew (Call - Put):** {skew:+.2f}%")
-            
             st.markdown("---")
 
         if not filtered_options.empty:
@@ -1397,15 +1375,10 @@ with tab_dashboard:
             st.caption("Context only — not support, resistance or price targets. Normalized distance based on ATM Straddle.")
 
             st.markdown("##### 📊 Context Metrics")
-            
-            w1, w2 = st.columns(2)
+            w1, w2, w3 = st.columns(3)
             w1.metric("Local OI PCR (±10%)", f"{pcr:.2f}", "Put OI / Call OI (USD)")
-            w2.metric("Local Vol PCR (±10%)", f"{pcr_volume:.2f}", "Put Vol / Call Vol")
-            
-            w3, w4 = st.columns(2)
-            w3.metric("Local Gross Gamma (±10%)", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A", "Unsigned OI Estimation")
-            w4.metric("Local Structural Extreme (±10%)", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}" if call_oi_wall is not None and put_oi_wall is not None else "N/A")
-            
+            w2.metric("Local Gross Gamma (±10%)", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A", "Unsigned OI Estimation")
+            w3.metric("Local Structural Extreme (±10%)", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}" if call_oi_wall is not None and put_oi_wall is not None else "N/A")
             st.caption("ℹ️ Context only — not support, resistance or price targets. Gross Gamma estimated using unsigned OI.")
             st.markdown("---")
 
@@ -1453,18 +1426,16 @@ with tab_dashboard:
         st.subheader("📋 Raw Options Data")
         if not filtered_options.empty:
             if 'Dist_to_Spot' in filtered_options.columns: filtered_options = filtered_options.drop(columns=['Dist_to_Spot'])
-            display_df = filtered_options[['Bid_Call', 'Ask_Call', 'OI_USD_Call', 'Volume_Call', 'Gamma_Call', 'IV_Call', 'Strike', 'IV_Put', 'Gamma_Put', 'Volume_Put', 'OI_USD_Put', 'Bid_Put', 'Ask_Put']].copy()
+            display_df = filtered_options[['Bid_Call', 'Ask_Call', 'OI_USD_Call', 'Gamma_Call', 'IV_Call', 'Strike', 'IV_Put', 'Gamma_Put', 'OI_USD_Put', 'Bid_Put', 'Ask_Put']].copy()
             st.dataframe(display_df, use_container_width=True, hide_index=True, column_config={
                 "Bid_Call": st.column_config.NumberColumn("Call Bid", format="$%.2f"),
                 "Ask_Call": st.column_config.NumberColumn("Call Ask", format="$%.2f"),
                 "OI_USD_Call": st.column_config.NumberColumn("Call OI", format="$%,.0f"),
-                "Volume_Call": st.column_config.NumberColumn("Call Vol", format="$%,.0f"),
                 "Gamma_Call": st.column_config.NumberColumn("Call Gamma", format="%.8f"),
                 "IV_Call": st.column_config.NumberColumn("Call IV", format="%.2f%%"),
                 "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
                 "IV_Put": st.column_config.NumberColumn("Put IV", format="%.2f%%"),
-                "Gamma_Put": st.column_config.NumberColumn("Put Gamma", format="%.8f"),
-                "Volume_Put": st.column_config.NumberColumn("Put Vol", format="$%,.0f"),
+                "Gamma_Put": st.column_config.NumberColumn("Gamma_Put", format="%.8f"),
                 "OI_USD_Put": st.column_config.NumberColumn("Put OI", format="$%,.0f"),
                 "Bid_Put": st.column_config.NumberColumn("Put Bid", format="$%.2f"),
                 "Ask_Put": st.column_config.NumberColumn("Put Ask", format="$%.2f"),
@@ -1524,10 +1495,6 @@ with tab_dashboard:
         straddle_text = f"${straddle_price:,.2f}" if straddle_valid else f"INVALID ({straddle_reason})"
 
         oi_delta_text = f"{oi_delta_pct:+.2f}%" if not pd.isna(oi_delta_pct) else "N/A (Insufficient 30m History)"
-        
-        atm_call_iv_text = f"{atm_row['IV_Call']:.2f}%" if atm_row is not None and not pd.isna(atm_row['IV_Call']) else "N/A"
-        atm_put_iv_text = f"{atm_row['IV_Put']:.2f}%" if atm_row is not None and not pd.isna(atm_row['IV_Put']) else "N/A"
-        skew_text = f"{atm_row['IV_Call'] - atm_row['IV_Put']:+.2f}%" if atm_row is not None and not pd.isna(atm_row['IV_Call']) and not pd.isna(atm_row['IV_Put']) else "N/A"
 
         snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
@@ -1557,11 +1524,9 @@ Source: {"TradingView Manual" if manual_values_valid else "Python Calculated"}
 
 [OPTIONS SNAPSHOT]
 Expiry: {loaded_expiry} | Time Left: {time_str}
-ATM Strike: ${atm_strike:,.0f}
 ATM Straddle: {straddle_text}
-ATM Call IV / Put IV: {atm_call_iv_text} / {atm_put_iv_text} (Skew: {skew_text})
 Max Pain: {max_pain_text}
-Local OI PCR: {pcr:.2f} | Local Vol PCR: {pcr_volume:.2f}
+Local PCR: {pcr:.2f}
 Gamma Walls: Call {call_gamma_text} / Put {put_gamma_text}
 
 [OI CLUSTERS]
