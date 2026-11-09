@@ -37,7 +37,7 @@ def get_persistent_state():
         "prev_amt_state": -1,
         "prev_price": 0.0,
         "session_start_straddle": None,
-        "session_start_expiry": None, # FIX #6
+        "session_start_expiry": None,
         "alert_history": [],
         "options_flow_history": [],
         "wall_status_log": [],
@@ -51,7 +51,10 @@ def get_persistent_state():
         "put_gamma_break_state": "SAFE",
         "active_broken_put_wall": 0.0,
         "gamma_wall_unavailable": False,
-        "futures_oi_history": [], 
+        "futures_oi_history": [],
+        "last_alerted_max_pain": None, # FIX #2 Deduplication
+        "last_alerted_trap_door": None, # FIX #2 Deduplication
+        "last_alerted_squeeze": None, # FIX #2 Deduplication
     }
 
 p_state = get_persistent_state()
@@ -67,7 +70,10 @@ p_state.setdefault("active_inverted_event", None)
 p_state.setdefault("last_inverted_status", False)
 p_state.setdefault("session_alert_log", {})
 p_state.setdefault("futures_oi_history", [])
-p_state.setdefault("session_start_expiry", None) # FIX #6
+p_state.setdefault("session_start_expiry", None)
+p_state.setdefault("last_alerted_max_pain", None)
+p_state.setdefault("last_alerted_trap_door", None)
+p_state.setdefault("last_alerted_squeeze", None)
 
 # ==========================================
 # TELEGRAM
@@ -145,7 +151,9 @@ final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 alert_triggered = False
 alert_message = ""
 
-# FIX #7: Initialize globally
+# FIX #5: Initialize globally to prevent snapshot crash
+loc = "Unavailable"
+verdict = "Unavailable"
 current_inverted_status = False
 
 # ==========================================
@@ -321,7 +329,7 @@ def calculate_session_journey(df, prev_vah, prev_val):
 # SECTION 2: PROJECT ECHO STATE ENGINE
 # ==========================================
 def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc):
-    if df.empty: return pd.DataFrame(), manual_valid
+    if df.empty: return pd.DataFrame(), manual_valid, {}
     
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low'])
@@ -334,7 +342,7 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
     today_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str].copy()
     yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str].copy()
     
-    if yesterday_df.empty or today_df.empty: return pd.DataFrame(), manual_valid
+    if yesterday_df.empty or today_df.empty: return pd.DataFrame(), manual_valid, {}
 
     last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
@@ -344,9 +352,10 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
     else:
         prevVAH, prevVAL, prevPOC = calculate_tpo(prev_day_df)
     
-    if pd.isna(prevVAH) or pd.isna(prevVAL) or pd.isna(prevPOC): return pd.DataFrame(), manual_valid
+    if pd.isna(prevVAH) or pd.isna(prevVAL) or pd.isna(prevPOC): return pd.DataFrame(), manual_valid, {}
 
     journal = []
+    candle_state_map = {} # FIX #1: Track every candle's state
     auctionState = 0
     discoveryStartBar = 0
     cycleBars = 0
@@ -464,13 +473,16 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
             
         prev_currVAH, prev_currVAL, prev_currPOC = currVAH, currVAL, currPOC
         
+        # FIX #1: Record state for EVERY candle
+        candle_state_map[bar['Date'].strftime('%H:%M')] = auctionState
+        
         if i == 0 or auctionState != journal[-1]['Code'] or i == len(today_df) - 1:
             journal.append({
                 "Time": bar['Date'].strftime('%H:%M'), "Close": close, "Code": auctionState,
                 "State Name": state_names.get(auctionState, "UNKNOWN"),
                 "Dev VAH": currVAH, "Dev POC": currPOC, "Dev VAL": currVAL,
             })
-    return pd.DataFrame(journal), manual_valid
+    return pd.DataFrame(journal), manual_valid, candle_state_map
 
 # ==========================================
 # SECTION 3: DELTA OPTIONS DATA
@@ -631,7 +643,10 @@ def fetch_delta_options():
 
         tickers, tick_complete = fetch_paginated_data(f"{BASE_URL}/tickers?contract_types=call_options,put_options&page_size=1000")
         ticker_map = {t.get("symbol"): t for t in tickers if t.get("symbol")}
-        is_chain_complete = prod_complete and tick_complete
+        
+        # FIX #3: Verify contract coverage, not just pagination completeness
+        expected_symbols = [p.get("symbol") for p in filtered_options]
+        is_chain_complete = prod_complete and tick_complete and all(sym in ticker_map for sym in expected_symbols)
 
         chain = []
         for opt in filtered_options:
@@ -723,8 +738,8 @@ pending_broken_wall = 0.0
 # Fetch Futures Context
 funding_rate, mark_price, oi_usd, sp_prem = fetch_futures_context()
 
-# FIX #2: Calculate 30M OI Delta % with strict tolerance
-oi_delta_pct = 0.0
+# FIX #6: Initialize as NaN, not 0.0
+oi_delta_pct = np.nan
 ctx = "⚪ Neutral"
 if oi_usd is not None:
     now_utc_ts = int(datetime.datetime.now(timezone.utc).timestamp())
@@ -737,11 +752,8 @@ if oi_usd is not None:
         target_time = now_utc_ts - 1800
         closest_entry = min(p_state["futures_oi_history"], key=lambda x: abs(x["time"] - target_time))
         
-        # Only calculate if the closest entry is within 5 minutes (300 seconds) of the target time
         if abs(closest_entry["time"] - target_time) <= 300 and closest_entry["oi"] > 0:
             oi_delta_pct = ((oi_usd - closest_entry["oi"]) / closest_entry["oi"]) * 100
-        else:
-            oi_delta_pct = np.nan
 
     if sp_prem is not None and not pd.isna(oi_delta_pct):
         if oi_delta_pct > 0 and sp_prem > 0:
@@ -799,15 +811,19 @@ if not session_df.empty and not df.empty:
                     alert_message += f"H: ${r['High']:,.0f} | L: ${r['Low']:,.0f}<br>"
                     alert_message += f"POC: ${r['POC']:,.0f} | VAH: ${r['VAH']:,.0f} | VAL: ${r['VAL']:,.0f}<br>"
                     alert_message += f"Flow: {ctx}<br><br>"
-                    p_state["session_alert_log"][s_name] = cycle_date_str
+                    # FIX #7: Session alert logged only after Telegram succeeds
+                    pending_session_alerts = p_state.get("pending_session_alerts", [])
+                    pending_session_alerts.append((s_name, cycle_date_str))
+                    p_state["pending_session_alerts"] = pending_session_alerts
 
 journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
 current_amt_state = 0
 current_amt_name = "UNKNOWN"
 journal_df_check = pd.DataFrame()
+candle_state_map = {}
 
 if journal_res is not None:
-    journal_df_check, _ = journal_res
+    journal_df_check, _, candle_state_map = journal_res
     if not journal_df_check.empty:
         current_amt_state = int(journal_df_check.iloc[-1]['Code'])
         current_amt_name = journal_df_check.iloc[-1]['State Name']
@@ -815,7 +831,6 @@ if journal_res is not None:
 options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, strike_ladder, is_chain_complete = fetch_delta_options()
 delta_status = "🟢 Connected" if not options_df.empty else "🔴 Failed"
 
-# FIX #6: Reset straddle on new expiry
 if loaded_expiry != "N/A" and loaded_expiry != p_state.get("session_start_expiry"):
     p_state["session_start_straddle"] = None
     p_state["session_start_expiry"] = loaded_expiry
@@ -857,7 +872,6 @@ if not options_df.empty and latest_price > 0:
         dt_p = parse_timestamp(put_ts[0])
         if dt_p: atm_put_age = f"{(now_utc - dt_p).total_seconds():.0f}s"
 
-    # FIX #4: Calculate quote freshness
     if atm_call_age != "N/A" and atm_put_age != "N/A":
         try:
             max_age = max(float(atm_call_age.replace("s", "")), float(atm_put_age.replace("s", "")))
@@ -880,11 +894,13 @@ if not options_df.empty and latest_price > 0:
     filtered_options = options_df[(options_df['Strike'] >= lower_bound) & (options_df['Strike'] <= upper_bound)].copy()
 
     if not filtered_options.empty:
+        # FIX #4: Validate max values before selecting
         temp_filt = filtered_options.fillna(0)
-        call_oi_wall = temp_filt.loc[temp_filt['OI_USD_Call'].idxmax()]
-        put_oi_wall = temp_filt.loc[temp_filt['OI_USD_Put'].idxmax()]
-        call_gamma_wall = temp_filt.loc[temp_filt['GEX_Call'].idxmax()]
-        put_gamma_wall = temp_filt.loc[temp_filt['GEX_Put'].idxmax()]
+        
+        if temp_filt['OI_USD_Call'].max() > 0: call_oi_wall = temp_filt.loc[temp_filt['OI_USD_Call'].idxmax()]
+        if temp_filt['OI_USD_Put'].max() > 0: put_oi_wall = temp_filt.loc[temp_filt['OI_USD_Put'].idxmax()]
+        if temp_filt['GEX_Call'].max() > 0: call_gamma_wall = temp_filt.loc[temp_filt['GEX_Call'].idxmax()]
+        if temp_filt['GEX_Put'].max() > 0: put_gamma_wall = temp_filt.loc[temp_filt['GEX_Put'].idxmax()]
         
         total_calls_usd = temp_filt['OI_USD_Call'].sum()
         total_puts_usd = temp_filt['OI_USD_Put'].sum()
@@ -928,10 +944,15 @@ if not options_df.empty and latest_price > 0:
                 if nearest_call_dist < nearest_put_dist: options_bias_score -= 1
                 elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
 
+        # FIX #8: Three states for inverted gamma
         current_inverted_status = False
+        gamma_unavailable = False
+        
         if call_gamma_wall is not None and put_gamma_wall is not None:
             if call_gamma_wall['Strike'] < put_gamma_wall['Strike']:
                 current_inverted_status = True
+        else:
+            gamma_unavailable = True
                 
         if current_inverted_status != p_state.get("last_inverted_status", False):
             if current_inverted_status: 
@@ -983,36 +1004,35 @@ if not options_df.empty and latest_price > 0:
             completed_candle_time = int(completed_candle['CloseTimeMs'])
             completed_candle_close = float(completed_candle['close'])
 
-            if not journal_df_check.empty:
-                last_closed_state_row = journal_df_check[journal_df_check['Time'] == completed_candle['Date'].strftime('%H:%M')]
-                if not last_closed_state_row.empty:
-                    closed_amt_state = int(last_closed_state_row.iloc[-1]['Code'])
-                    closed_amt_name = last_closed_state_row.iloc[-1]['State Name']
+            # FIX #1: Use the state map, not the filtered journal
+            closed_amt_state = candle_state_map.get(completed_candle['Date'].strftime('%H:%M'))
+            if closed_amt_state is not None:
+                closed_amt_name = state_names.get(closed_amt_state, "UNKNOWN")
+                
+                if p_state["prev_amt_state"] != -1 and closed_amt_state != p_state["prev_amt_state"]:
+                    is_extreme_neg = (funding_rate is not None and funding_rate < -0.05)
+                    is_extreme_pos = (funding_rate is not None and funding_rate > 0.05)
                     
-                    if p_state["prev_amt_state"] != -1 and closed_amt_state != p_state["prev_amt_state"]:
-                        is_extreme_neg = (funding_rate is not None and funding_rate < -0.05)
-                        is_extreme_pos = (funding_rate is not None and funding_rate > 0.05)
-                        
-                        if closed_amt_state in [2, 3, 10, 11, 14]:
-                            if closed_amt_state in [2, 10]:
-                                if is_extreme_neg:
-                                    alert_triggered = True
-                                    alert_message += f"🚨 POTENTIAL SHORT SQUEEZE: Breakout confirmed ({closed_amt_name}) with EXTREME NEGATIVE Funding ({funding_rate:.3f}%)! | Flow: {ctx}<br>"
-                                else:
-                                    alert_triggered = True
-                                    alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Upside breakout) | Flow: {ctx}<br>"
-                            elif closed_amt_state in [3, 11]:
-                                if is_extreme_pos:
-                                    alert_triggered = True
-                                    alert_message += f"🚨 POTENTIAL LONG LIQUIDATION: Breakdown confirmed ({closed_amt_name}) with EXTREME POSITIVE Funding ({funding_rate:.3f}%)! | Flow: {ctx}<br>"
-                                else:
-                                    alert_triggered = True
-                                    alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Downside breakdown) | Flow: {ctx}<br>"
+                    if closed_amt_state in [2, 3, 10, 11, 14]:
+                        if closed_amt_state in [2, 10]:
+                            if is_extreme_neg:
+                                alert_triggered = True
+                                alert_message += f"🚨 POTENTIAL SHORT SQUEEZE: Breakout confirmed ({closed_amt_name}) with EXTREME NEGATIVE Funding ({funding_rate:.3f}%)! | Flow: {ctx}<br>"
                             else:
                                 alert_triggered = True
-                                alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} | Flow: {ctx}<br>"
-                                
-                    p_state["prev_amt_state"] = closed_amt_state
+                                alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Upside breakout) | Flow: {ctx}<br>"
+                        elif closed_amt_state in [3, 11]:
+                            if is_extreme_pos:
+                                alert_triggered = True
+                                alert_message += f"🚨 POTENTIAL LONG LIQUIDATION: Breakdown confirmed ({closed_amt_name}) with EXTREME POSITIVE Funding ({funding_rate:.3f}%)! | Flow: {ctx}<br>"
+                            else:
+                                alert_triggered = True
+                                alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Downside breakdown) | Flow: {ctx}<br>"
+                        else:
+                            alert_triggered = True
+                            alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} | Flow: {ctx}<br>"
+                            
+                p_state["prev_amt_state"] = closed_amt_state
 
             if not p_state["last_closed_candle_time"]:
                 p_state["last_closed_candle_time"] = completed_candle_time
@@ -1057,7 +1077,6 @@ if not options_df.empty and latest_price > 0:
                             p_state["put_gamma_break_state"] = "SAFE"
                             p_state["active_broken_put_wall"] = 0.0
 
-        # FIX #5: Rename Wall Status Log to Cluster Status Log
         current_call_status = "PRESENT" if near_call else "N/A"
         current_put_status = "PRESENT" if near_put else "N/A"
         if not p_state["wall_status_log"]:
@@ -1068,7 +1087,7 @@ if not options_df.empty and latest_price > 0:
                 p_state["wall_status_log"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_call_status, "put": current_put_status})
                 if len(p_state["wall_status_log"]) > 10: p_state["wall_status_log"].pop(0)
 
-        current_wall_state = (call_oi_wall['Strike'], put_oi_wall['Strike'], true_max_pain)
+        current_wall_state = (call_oi_wall['Strike'] if call_oi_wall is not None else 0, put_oi_wall['Strike'] if put_oi_wall is not None else 0, true_max_pain)
         if p_state["options_flow_history"]:
             last_state = p_state["options_flow_history"][-1]
             
@@ -1081,21 +1100,29 @@ if not options_df.empty and latest_price > 0:
         else:
             p_state["options_flow_history"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_wall_state[0], "put": current_wall_state[1], "mp": current_wall_state[2]})
 
+        # FIX #2: Deduplicate persistent alerts
         if straddle_valid and near_put and current_amt_state in [3, 11, 14]:
             p_cluster = near_put[0]['VWAS'] if near_put else (mid_put[0]['VWAS'] if mid_put else 0)
             if p_cluster > 0 and latest_price <= p_cluster and options_bias_score <= -1:
-                alert_triggered = True
-                alert_message += f"🚨 TRAP DOOR: Price breaking below Put Cluster (${p_cluster:,.0f}) with Bearish Bias! | Flow: {ctx}<br>"
+                # Deduplication: Only fire if it's a new cluster or price moved away and came back
+                if p_state["last_alerted_trap_door"] != p_cluster:
+                    alert_triggered = True
+                    alert_message += f"🚨 TRAP DOOR: Price breaking below Put Cluster (${p_cluster:,.0f}) with Bearish Bias! | Flow: {ctx}<br>"
+                    p_state["last_alerted_trap_door"] = p_cluster
                 
         if straddle_valid and near_call and current_amt_state in [2, 10]:
             c_cluster = near_call[0]['VWAS'] if near_call else (mid_call[0]['VWAS'] if mid_call else 0)
             if c_cluster > 0 and latest_price >= c_cluster and funding_rate is not None and funding_rate < -0.05:
-                alert_triggered = True
-                alert_message += f"🚨 SQUEEZE: Price breaking above Call Cluster (${c_cluster:,.0f}) with Negative Funding! | Flow: {ctx}<br>"
+                if p_state["last_alerted_squeeze"] != c_cluster:
+                    alert_triggered = True
+                    alert_message += f"🚨 SQUEEZE: Price breaking above Call Cluster (${c_cluster:,.0f}) with Negative Funding! | Flow: {ctx}<br>"
+                    p_state["last_alerted_squeeze"] = c_cluster
 
         if straddle_valid and pcr > 0.8 and pcr < 1.1 and not pd.isna(true_max_pain) and abs(latest_price - true_max_pain) < 100:
-            alert_triggered = True
-            alert_message += f"⚠️ GAMMA PIN: Price trapped near Max Pain (${true_max_pain:,.0f}). Avoid chopping. | Flow: {ctx}<br>"
+            if p_state["last_alerted_max_pain"] != true_max_pain:
+                alert_triggered = True
+                alert_message += f"⚠️ GAMMA PIN: Price trapped near Max Pain (${true_max_pain:,.0f}). Avoid chopping. | Flow: {ctx}<br>"
+                p_state["last_alerted_max_pain"] = true_max_pain
 
         if p_state["prev_pcr"] != 0.0:
             if (p_state["prev_pcr"] >= 1.20 and pcr < 1.20) or (p_state["prev_pcr"] >= 0.30 and pcr < 0.30):
@@ -1107,25 +1134,25 @@ if not options_df.empty and latest_price > 0:
             direction = "UP" if true_max_pain > p_state["prev_max_pain"] else "DOWN"
             alert_message += f"🔄 MAX PAIN SHIFT {direction}: Moved from ${p_state['prev_max_pain']:,.0f} to ${true_max_pain:,.0f}! | Flow: {ctx}<br>"
             
-        if p_state["prev_call_wall"] != 0 and abs(call_oi_wall['Strike'] - p_state["prev_call_wall"]) >= 200:
+        if p_state["prev_call_wall"] != 0 and call_oi_wall is not None and abs(call_oi_wall['Strike'] - p_state["prev_call_wall"]) >= 200:
             alert_triggered = True
             direction = "UP" if call_oi_wall['Strike'] > p_state["prev_call_wall"] else "DOWN"
             alert_message += f"🚧 CALL OI WALL SHIFT {direction}: Moved from ${p_state['prev_call_wall']:,.0f} to ${call_oi_wall['Strike']:,.0f}! | Flow: {ctx}<br>"
             
-        if p_state["prev_put_wall"] != 0 and abs(put_oi_wall['Strike'] - p_state["prev_put_wall"]) >= 200:
+        if p_state["prev_put_wall"] != 0 and put_oi_wall is not None and abs(put_oi_wall['Strike'] - p_state["prev_put_wall"]) >= 200:
             alert_triggered = True
             direction = "UP" if put_oi_wall['Strike'] > p_state["prev_put_wall"] else "DOWN"
             alert_message += f"🚧 PUT OI WALL SHIFT {direction}: Moved from ${p_state['prev_put_wall']:,.0f} to ${put_oi_wall['Strike']:,.0f}! | Flow: {ctx}<br>"
 
-        if p_state["prev_price"] != 0.0:
+        if p_state["prev_price"] != 0.0 and call_gamma_wall is not None:
             if p_state["prev_price"] < call_gamma_wall['Strike'] and latest_price >= call_gamma_wall['Strike']:
                 alert_triggered = True
                 alert_message += f"🔥 GAMMA BREAKOUT: Price crossed above Call Wall (${call_gamma_wall['Strike']:,.0f})! | Flow: {ctx}<br>"
 
         p_state["prev_pcr"] = pcr
         p_state["prev_max_pain"] = true_max_pain
-        p_state["prev_call_wall"] = call_oi_wall['Strike']
-        p_state["prev_put_wall"] = put_oi_wall['Strike']
+        if call_oi_wall is not None: p_state["prev_call_wall"] = call_oi_wall['Strike']
+        if put_oi_wall is not None: p_state["prev_put_wall"] = put_oi_wall['Strike']
         p_state["prev_price"] = latest_price
 
 if not df.empty and (options_df.empty or filtered_options.empty or latest_price <= 0):
@@ -1149,12 +1176,25 @@ if alert_triggered:
         if pending_gamma_breach:
             p_state["put_gamma_break_state"] = "BREACHED"
             p_state["active_broken_put_wall"] = pending_broken_wall
+            
+        # FIX #7: Commit session logs only after successful Telegram delivery
+        pending_alerts = p_state.get("pending_session_alerts", [])
+        for s_name, c_date in pending_alerts:
+            p_state["session_alert_log"][s_name] = c_date
+        p_state["pending_session_alerts"] = []
+            
         st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
         components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
     else:
         if pending_gamma_breach:
             p_state["last_closed_candle_time"] = p_state["previous_candle_time"]
         if p_state["alert_history"]: p_state["alert_history"].pop(0)
+        
+        # Clear deduplication so it can retry next time
+        p_state["last_alerted_max_pain"] = None
+        p_state["last_alerted_trap_door"] = None
+        p_state["last_alerted_squeeze"] = None
+        
         if pending_gamma_breach:
             st.error("⚠️ TELEGRAM DELIVERY FAILED. Pending gamma alert will be retried on the next refresh.")
         else:
@@ -1199,13 +1239,19 @@ with tab_dashboard:
         
         tc1, tc2, tc3, tc4 = st.columns(4)
         
-        gamma_struct = "🚨 INVERTED" if current_inverted_status else "🟢 NORMAL"
-        gamma_color = "inverse" if current_inverted_status else "normal"
+        # FIX #8: 3 states for Gamma Structure
+        if options_df.empty:
+            gamma_struct = "⚪ UNAVAILABLE"
+            gamma_color = "off"
+        else:
+            gamma_struct = "🚨 INVERTED" if current_inverted_status else "🟢 NORMAL"
+            gamma_color = "inverse" if current_inverted_status else "normal"
+            
         tc1.metric("Gamma Structure", gamma_struct, "Trap Risk" if current_inverted_status else "Standard", delta_color=gamma_color)
         
         tc2.metric("Derivatives Flow", ctx)
         
-        # FIX #9: Handle unavailable VA levels
+        # FIX #5: Handled properly with global initialization
         if pd.isna(final_vah) or pd.isna(final_val):
             loc = "Value Area Unavailable"
             loc_color = "off"
@@ -1244,7 +1290,6 @@ with tab_dashboard:
             fc1, fc2, fc3, fc4 = st.columns(4)
             fc1.metric("Open Interest (USD)", f"${oi_usd/1e6:.2f}M")
             
-            # FIX #2: Display N/A if 30m history is insufficient
             if pd.isna(oi_delta_pct):
                 fc2.metric("OI Delta (30m)", "N/A", "Insufficient History", delta_color="off")
             else:
@@ -1345,8 +1390,6 @@ with tab_dashboard:
             st.markdown("##### 📊 Context Metrics")
             w1, w2, w3 = st.columns(3)
             w1.metric("Local OI PCR (±10%)", f"{pcr:.2f}", "Put OI / Call OI (USD)")
-            
-            # FIX #10: Clarify local window names
             w2.metric("Local Gross Gamma (±10%)", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A", "Unsigned OI Estimation")
             w3.metric("Local Structural Extreme (±10%)", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}" if call_oi_wall is not None and put_oi_wall is not None else "N/A")
             st.caption("ℹ️ Context only — not support, resistance or price targets. Gross Gamma estimated using unsigned OI.")
@@ -1378,7 +1421,7 @@ with tab_dashboard:
 
         st.subheader("📖 PROJECT ECHO - State Journal")
         if journal_res is not None:
-            journal_df, echo_used_manual = journal_res
+            journal_df, echo_used_manual, _ = journal_res
             if not journal_df.empty:
                 if echo_used_manual: st.caption("Echo Reference: 🟢 TRADINGVIEW MANUAL")
                 else: st.caption("Echo Reference: 🔵 PYTHON CALCULATED")
@@ -1435,7 +1478,6 @@ with tab_dashboard:
             for _, row in journal_df_check.tail(10).iterrows():
                 echo_text += f"{row['Time']} | ${row['Close']:,.0f} | {row['State Name']}\n"
 
-        # FIX #5: Rename in Snapshot
         wall_text = ""
         for entry in p_state["wall_status_log"][-5:]:
             wall_text += f"{entry['time']} | Call: {entry['call']} | Put: {entry['put']}\n"
@@ -1480,7 +1522,7 @@ Options Bias: {b_text} (Score: {options_bias_score:+d})
 Funding Rate: {funding_text}
 
 [TAPE READ & CONFLUENCE]
-Structure: {"INVERTED" if current_inverted_status else "NORMAL"} | Flow: {ctx} | Location: {loc} | AMT: {current_amt_name}
+Structure: {gamma_struct} | Flow: {ctx} | Location: {loc} | AMT: {current_amt_name}
 Verdict: {verdict}
 
 [FUTURES CONTEXT]
