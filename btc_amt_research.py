@@ -1,4 +1,3 @@
-
 """
 BTC AMT RESEARCH DASHBOARD
 AMT + Price Action + Futures OI + Options Positioning
@@ -1673,10 +1672,11 @@ with tab_futures:
             )
         )
 
+        # FIXED: Removed the * 100 multiplier. Delta returns 0.01 for 0.01%.
         col2.metric(
             "Current Funding Rate",
             (
-                f"{funding * 100:.6f}%"
+                f"{funding:.4f}%"
                 if np.isfinite(funding)
                 else "Unavailable"
             )
