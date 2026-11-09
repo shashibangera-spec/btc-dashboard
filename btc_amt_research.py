@@ -41,7 +41,7 @@ st.set_page_config(
 
 IST = ZoneInfo("Asia/Kolkata")
 
-BINANCE_BASE = "https://api.binance.com"
+BINANCE_BASE = "https://data-api.binance.vision"
 DELTA_BASE = "https://api.india.delta.exchange"
 
 BINANCE_KLINES_URL = f"{BINANCE_BASE}/api/v3/klines"
