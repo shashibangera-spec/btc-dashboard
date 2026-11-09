@@ -1,1602 +1,3138 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import requests
-import datetime
-import math
-import streamlit.components.v1 as components
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from datetime import timezone, timedelta
+"""
+BTC AMT RESEARCH DASHBOARD
+AMT + Price Action + Futures OI + Options Positioning
 
-st.set_page_config(page_title="BTC Data Terminal", layout="wide")
+PRIMARY BTC AMT CYCLE:
+00:00 UTC to 00:00 UTC
+05:30 IST to 05:30 IST
 
-# ==========================================
-# CONFIGURATION & SHARE MODE
-# ==========================================
-CLUSTER_ABSORPTION_PCT = 0.30
-MAX_CLUSTER_WIDTH = 5
-OI_CLUSTER_MIN_USD = 5_000_000
-MARK_TOLERANCE_PCT = 0.02 
+DELTA OPTIONS EXPIRY:
+17:30 IST (independent contract expiry reference)
 
-IST_TZ = timezone(timedelta(hours=5, minutes=30))
+Primary timeframe: 30 minutes
+Timezone: Asia/Kolkata
 
-qp = st.query_params
-is_share_mode = qp.get("share", "false").lower() == "true"
+Public endpoints only. No authentication required.
 
-state_names = {
-    0: "BUILDING", 1: "DEVELOPMENT", 2: "DISCOVERY ABOVE", 3: "DISCOVERY BELOW",
-    4: "ACCEPTANCE UP", 5: "ACCEPTANCE DOWN", 6: "POC BREAK ABOVE",
-    7: "POC BREAK BELOW", 8: "NEW AREA UP", 9: "NEW AREA DOWN", 10: "FAILED DISC UP",
-    11: "FAILED DISC DOWN", 12: "ACC FAILURE UP", 13: "ACC FAILURE DOWN",
-    14: "RE-ENTRY CONFIRMED", 15: "STALLED ABOVE", 16: "STALLED BELOW",
-    17: "FAILED UP (CAND)", 18: "FAILED DOWN (CAND)"
-}
+IMPORTANT:
+Volume Profile is an OHLCV range-distributed approximation.
+True trade-level volume-at-price requires trade-level data.
 
-# ==========================================
-# PERSISTENT STATE
-# ==========================================
-@st.cache_resource
-def get_persistent_state():
-    return {
-        "prev_pcr": 0.0,
-        "prev_max_pain": 0.0,
-        "prev_call_wall": 0.0,
-        "prev_put_wall": 0.0,
-        "prev_amt_state": -1,
-        "prev_price": 0.0,
-        "session_start_straddle": None,
-        "session_start_expiry": None,
-        "alert_history": [],
-        "options_flow_history": [],
-        "wall_status_log": [],
-        "inverted_gamma_history": [], 
-        "active_inverted_event": None, 
-        "last_inverted_status": False, 
-        "session_alert_log": {}, 
-        "trade_journal": "",
-        "last_closed_candle_time": 0,
-        "previous_candle_time": 0,
-        "put_gamma_break_state": "SAFE",
-        "active_broken_put_wall": 0.0,
-        "gamma_wall_unavailable": False,
-        "futures_oi_history": [],
-        "last_alerted_max_pain": None,
-        "last_alerted_trap_door": None,
-        "last_alerted_squeeze": None,
-        "pending_session_alerts": [],
-    }
-
-p_state = get_persistent_state()
-
-# Backward compatibility
-p_state.setdefault("last_closed_candle_time", 0)
-p_state.setdefault("previous_candle_time", 0)
-p_state.setdefault("put_gamma_break_state", "SAFE")
-p_state.setdefault("active_broken_put_wall", 0.0)
-p_state.setdefault("gamma_wall_unavailable", False)
-p_state.setdefault("inverted_gamma_history", [])
-p_state.setdefault("active_inverted_event", None)
-p_state.setdefault("last_inverted_status", False)
-p_state.setdefault("session_alert_log", {})
-p_state.setdefault("futures_oi_history", [])
-p_state.setdefault("session_start_expiry", None)
-p_state.setdefault("last_alerted_max_pain", None)
-p_state.setdefault("last_alerted_trap_door", None)
-p_state.setdefault("last_alerted_squeeze", None)
-p_state.setdefault("pending_session_alerts", [])
-
-# ==========================================
-# TELEGRAM
-# ==========================================
-def send_telegram_message(message):
-    try:
-        token = st.secrets["TELEGRAM_TOKEN"]
-        chat_id = st.secrets["TELEGRAM_CHAT_ID"]
-    except (KeyError, AttributeError):
-        st.error("Telegram secrets not found.")
-        return False
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
-
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code != 200:
-            st.error(f"Telegram API error: HTTP {response.status_code}")
-            return False
-        result = response.json()
-        if result.get("ok") is True:
-            return True
-        st.error(f"Telegram rejected: {result.get('description', 'Unknown error')}")
-        return False
-    except requests.RequestException as e:
-        st.error(f"Telegram connection error: {e}")
-        return False
-    except ValueError:
-        st.error("Telegram returned an invalid response.")
-        return False
-
-# ==========================================
-# SIDEBAR
-# ==========================================
-if not is_share_mode:
-    try:
-        default_vah = float(qp.get("vah", 0.0))
-        default_val = float(qp.get("val", 0.0))
-        default_poc = float(qp.get("poc", 0.0))
-    except (TypeError, ValueError):
-        default_vah = default_val = default_poc = 0.0
-
-    st.sidebar.header("🛠️ Manual AMT Overrides")
-    input_vah = st.sidebar.number_input("Prior VAH", value=default_vah, step=50.0, format="%.2f")
-    input_val = st.sidebar.number_input("Prior VAL", value=default_val, step=50.0, format="%.2f")
-    input_poc = st.sidebar.number_input("Prior POC", value=default_poc, step=50.0, format="%.2f")
-
-    if st.sidebar.button("Apply Overrides"):
-        st.query_params["vah"] = str(input_vah)
-        st.query_params["val"] = str(input_val)
-        st.query_params["poc"] = str(input_poc)
-        st.rerun()
-
-    if st.sidebar.button("Clear Overrides"):
-        st.query_params.clear()
-        st.rerun()
-
-    st.sidebar.markdown("---")
-    st.sidebar.header("📝 Trade Journal")
-    st.sidebar.caption("RESEARCH ONLY - Saved across reloads")
-    journal_input = st.sidebar.text_area("Log Trade Details", value=p_state["trade_journal"], height=200)
-    if st.sidebar.button("Save Journal"):
-        p_state["trade_journal"] = journal_input
-        st.sidebar.success("Journal saved!")
-else:
-    input_vah, input_val, input_poc = 0.0, 0.0, 0.0
-    st.sidebar.info("🔒 Share Mode Active. Overrides and Journal hidden.")
-
-st.title("⚡ BTC AMT & Delta Options Terminal")
-
-manual_values_valid = (input_vah > 0 and input_val > 0 and input_poc > 0 and input_vah >= input_poc >= input_val)
-final_vah, final_val, final_poc = np.nan, np.nan, np.nan
-
-alert_triggered = False
-alert_message = ""
-
-loc = "Unavailable"
-verdict = "Unavailable"
-current_inverted_status = False
-
-# ==========================================
-# SECTION 1: BINANCE DATA & AMT
-# ==========================================
-@st.cache_data(ttl=180)
-def fetch_amt_data():
-    session = requests.Session()
-    retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["GET"])
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-
-    endpoints = ["https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com", "https://api3.binance.com", "https://data-api.binance.vision"]
-    
-    for base in endpoints:
-        try:
-            url = f"{base}/api/v3/klines?symbol=BTCUSDT&interval=30m&limit=1000"
-            response = session.get(url, timeout=10)
-            response.raise_for_status()
-            res = response.json()
-            if not res or not isinstance(res, list): continue
-                
-            df = pd.DataFrame(res, columns=['Date', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'tbbav', 'tbqav', 'ignore'])
-            df['Date'] = pd.to_datetime(df['Date'], unit='ms', utc=True).dt.tz_convert('Asia/Kolkata')
-            df['CloseTimeUTC'] = pd.to_datetime(df['close_time'], unit='ms', utc=True)
-            df['CloseTimeMs'] = pd.to_numeric(df['close_time'], errors='coerce')
-            
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = df[col].astype(float)
-            
-            df['ShiftedDate'] = df['Date'] - pd.Timedelta(hours=5, minutes=30)
-            df = df[['Date', 'CloseTimeUTC', 'CloseTimeMs', 'open', 'high', 'low', 'close', 'ShiftedDate']]
-            return df.sort_values('Date').reset_index(drop=True)
-        except Exception:
-            continue
-    return pd.DataFrame()
-
-@st.cache_data(ttl=60)
-def fetch_futures_context():
-    try:
-        url = "https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures"
-        res = requests.get(url, timeout=10).json()
-        for ticker in res.get("result", []):
-            if ticker.get("symbol") == "BTCUSD":
-                # FIX: Removed the * 100 multiplier. Delta returns 0.01 for 0.01%.
-                funding_rate = float(ticker.get("funding_rate", 0)) 
-                mark_price = float(ticker.get("mark_price", 0))
-                spot_price = float(ticker.get("spot_price", 0))
-                oi_usd = float(ticker.get("oi_value_usd", 0))
-                
-                sp_prem = ((mark_price - spot_price) / spot_price) * 100 if spot_price > 0 else 0.0
-                
-                return funding_rate, mark_price, oi_usd, sp_prem
-        return None, None, None, None
-    except Exception:
-        return None, None, None, None
-
-def calculate_tpo(session_df):
-    if session_df.empty: return np.nan, np.nan, np.nan
-    row_size = 50.0
-    value_pct = 0.70
-    high = session_df['high'].max()
-    low = session_df['low'].min()
-    if high - low <= 0: return np.nan, np.nan, np.nan
-    
-    base_bucket = math.floor(low / row_size)
-    num_buckets = math.floor(high / row_size) - base_bucket + 1
-    tpo = np.zeros(num_buckets)
-    
-    for _, row in session_df.iterrows():
-        lo_idx = max(0, int(math.floor(row['low'] / row_size) - base_bucket))
-        hi_idx = min(num_buckets - 1, int(math.floor(row['high'] / row_size) - base_bucket))
-        for i in range(lo_idx, hi_idx + 1): tpo[i] += 1
-            
-    poc_idx = np.argmax(tpo)
-    max_val = np.max(tpo)
-    tied_indices = np.where(tpo == max_val)[0]
-    if len(tied_indices) > 1:
-        profile_mid = (num_buckets - 1) / 2.0
-        distances = np.abs(tied_indices - profile_mid)
-        poc_idx = tied_indices[np.argmin(distances)]
-        
-    target = math.ceil(np.sum(tpo) * value_pct)
-    covered = tpo[poc_idx]
-    up, dn = poc_idx, poc_idx
-    
-    while covered < target:
-        can_down, can_up = dn > 0, up < num_buckets - 1
-        if not can_down and not can_up: break
-        d = tpo[dn - 1] if can_down else -1
-        u = tpo[up + 1] if can_up else -1
-        if u > d: up += 1; covered += u
-        elif d > u: dn -= 1; covered += d
-        else:
-            if can_down: dn -= 1; covered += d
-            if covered < target and can_up: up += 1; covered += u
-                
-    return (base_bucket + up) * row_size + row_size/2, (base_bucket + dn) * row_size + row_size/2, (base_bucket + poc_idx) * row_size + row_size/2
-
-def calculate_session_journey(df, prev_vah, prev_val):
-    if df.empty: return pd.DataFrame()
-    
-    cycle_date = df['ShiftedDate'].iloc[-1].date()
-    cycle_start = pd.Timestamp(cycle_date).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
-    asia_end = cycle_start + pd.Timedelta(hours=8)
-    europe_end = cycle_start + pd.Timedelta(hours=12)
-    us_cash_end = cycle_start + pd.Timedelta(hours=20)
-    cycle_end = cycle_start + pd.Timedelta(hours=24)
-
-    prev_us_over_start = cycle_start - pd.Timedelta(hours=4)
-    prev_us_over_end = cycle_start
-    
-    sessions = []
-    
-    prev_us_df = df[(df['Date'] >= prev_us_over_start) & (df['Date'] < prev_us_over_end)]
-    if not prev_us_df.empty:
-        vah, val, poc = calculate_tpo(prev_us_df)
-        close = prev_us_df['close'].iloc[-1]
-        high = prev_us_df['high'].max()
-        low = prev_us_df['low'].min()
-        
-        macro_bias = "⚪ Inside Prior Value"
-        if not pd.isna(prev_vah) and not pd.isna(prev_val):
-            if close > prev_vah: macro_bias = "🟢 Bullish (Above Prior VAH)"
-            elif close < prev_val: macro_bias = "🔴 Bearish (Below Prior VAL)"
-            elif high > prev_vah and close < prev_vah: macro_bias = "⚠️ Bull Trap (Rejected Prior VAH)"
-            elif low < prev_val and close > prev_val: macro_bias = "⚠️ Bear Trap (Rejected Prior VAL)"
-                
-        micro_bias = "⚪ Balanced (Inside Value)"
-        if not pd.isna(vah) and not pd.isna(val):
-            if close > vah: micro_bias = "🟢 Strong Close (Above Session VAH)"
-            elif close < val: micro_bias = "🔴 Weak Close (Below Session VAL)"
-
-        sessions.append({
-            "Session": "US Overnight (Prev)", "Open": prev_us_df['open'].iloc[0], "High": high, "Low": low, "Close": close,
-            "Macro Bias": macro_bias, "Micro Bias": micro_bias, "POC": poc, "VAH": vah, "VAL": val
-        })
-
-    for name, session_data in [
-        ("Asia (05:30-13:30)", df[(df['Date'] >= cycle_start) & (df['Date'] < asia_end)]),
-        ("Europe (13:30-17:30)", df[(df['Date'] >= asia_end) & (df['Date'] < europe_end)]),
-        ("US Cash (17:30-01:30)", df[(df['Date'] >= europe_end) & (df['Date'] < us_cash_end)]),
-        ("US Overnight (Current)", df[(df['Date'] >= us_cash_end) & (df['Date'] < cycle_end)])
-    ]:
-        if session_data.empty: continue
-        vah, val, poc = calculate_tpo(session_data)
-        
-        close = session_data['close'].iloc[-1]
-        high = session_data['high'].max()
-        low = session_data['low'].min()
-        
-        macro_bias = "⚪ Inside Prior Value"
-        if not pd.isna(prev_vah) and not pd.isna(prev_val):
-            if close > prev_vah: macro_bias = "🟢 Bullish (Above Prior VAH)"
-            elif close < prev_val: macro_bias = "🔴 Bearish (Below Prior VAL)"
-            elif high > prev_vah and close < prev_vah: macro_bias = "⚠️ Bull Trap (Rejected Prior VAH)"
-            elif low < prev_val and close > prev_val: macro_bias = "⚠️ Bear Trap (Rejected Prior VAL)"
-                
-        micro_bias = "⚪ Balanced (Inside Value)"
-        if not pd.isna(vah) and not pd.isna(val):
-            if close > vah: micro_bias = "🟢 Strong Close (Above Session VAH)"
-            elif close < val: micro_bias = "🔴 Weak Close (Below Session VAL)"
-
-        sessions.append({
-            "Session": name, "Open": session_data['open'].iloc[0], "High": high, "Low": low, "Close": close,
-            "Macro Bias": macro_bias, "Micro Bias": micro_bias, "POC": poc, "VAH": vah, "VAL": val
-        })
-        
-    return pd.DataFrame(sessions)
-
-# ==========================================
-# SECTION 2: PROJECT ECHO STATE ENGINE
-# ==========================================
-def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc):
-    if df.empty: return pd.DataFrame(), manual_valid, {}
-    
-    df['prev_close'] = df['close'].shift(1)
-    df['tr0'] = abs(df['high'] - df['low'])
-    df['tr1'] = abs(df['high'] - df['prev_close'])
-    df['tr2'] = abs(df['low'] - df['prev_close'])
-    df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
-    df['atr20'] = df['tr'].ewm(alpha=1/20, adjust=False).mean()
-    
-    today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    today_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str].copy()
-    yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str].copy()
-    
-    if yesterday_df.empty or today_df.empty: return pd.DataFrame(), manual_valid, {}
-
-    last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
-    
-    if manual_valid:
-        prevVAH, prevVAL, prevPOC = manual_vah, manual_val, manual_poc
-    else:
-        prevVAH, prevVAL, prevPOC = calculate_tpo(prev_day_df)
-    
-    if pd.isna(prevVAH) or pd.isna(prevVAL) or pd.isna(prevPOC): return pd.DataFrame(), manual_valid, {}
-
-    journal = []
-    candle_state_map = {}
-    auctionState = 0
-    discoveryStartBar = 0
-    cycleBars = 0
-    aboveValueBars = 0
-    belowValueBars = 0
-    insideValueBars = 0
-    acceptancePullbackBarsDown = 0
-    acceptanceConfirmedDown = False
-    pocAboveBars = 0
-    pocBelowBars = 0
-    reentryInsideBars = 0
-    prev_currVAH, prev_currVAL, prev_currPOC = np.nan, np.nan, np.nan
-
-    for i in range(len(today_df)):
-        bar = today_df.iloc[i]
-        current_bar_df = today_df.iloc[:i+1]
-        cycleBars += 1
-        
-        currVAH, currVAL, currPOC = calculate_tpo(current_bar_df)
-        close = bar['close']
-        
-        if close > prevVAH: aboveValueBars += 1; belowValueBars = 0; insideValueBars = 0
-        elif close < prevVAL: belowValueBars += 1; aboveValueBars = 0; insideValueBars = 0
-        else: aboveValueBars = 0; belowValueBars = 0; insideValueBars += 1
-
-        if not pd.isna(currPOC):
-            if currPOC > prevVAH: pocAboveBars += 1; pocBelowBars = 0
-            elif currPOC < prevVAL: pocBelowBars += 1; pocAboveBars = 0
-            else: pocAboveBars = 0; pocBelowBars = 0
-
-        barRange = bar['high'] - bar['low']
-        wideBar = not pd.isna(bar['atr20']) and barRange > bar['atr20'] * 1.5
-        significantBar = wideBar
-        
-        effectiveTimeout = 6
-        if not pd.isna(bar['atr20']):
-            effectiveTimeout = max(3, min(20, round(6 * (bar['atr20'] / 250.0))))
-        discoveryTimedOut = (i - discoveryStartBar) >= effectiveTimeout
-
-        if belowValueBars >= 2:
-            if bar['high'] >= prevVAL and close < prevVAL and significantBar:
-                acceptancePullbackBarsDown += 1
-                if acceptancePullbackBarsDown >= 2: acceptanceConfirmedDown = True
-            elif close > prevVAL:
-                acceptancePullbackBarsDown = 0; acceptanceConfirmedDown = False
-        else:
-            acceptancePullbackBarsDown = 0; acceptanceConfirmedDown = False
-
-        vaShiftDown = not pd.isna(prev_currVAH) and currVAH < prev_currVAH and currVAL < prev_currVAL
-        pocShiftDown = not pd.isna(prev_currPOC) and (prev_currPOC - currPOC) >= (50.0 * 1.0)
-        valueMigrationDown = vaShiftDown and pocShiftDown
-        newValueDevelopingDown = pocBelowBars >= 2 and cycleBars >= 3
-
-        if auctionState == 0:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i
-            elif cycleBars >= 3: auctionState = 1
-        elif auctionState == 1:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i
-        elif auctionState == 2:
-            if close < prevVAL: auctionState = 3; discoveryStartBar = i
-            elif close <= prevVAH: auctionState = 17
-            elif discoveryTimedOut: auctionState = 15
-        elif auctionState == 3:
-            if acceptanceConfirmedDown: auctionState = 5
-            elif close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close >= prevVAL: auctionState = 18
-            elif discoveryTimedOut: auctionState = 16
-        elif auctionState == 5:
-            if valueMigrationDown: auctionState = 7
-            elif close >= prevVAL: auctionState = 13
-        elif auctionState == 7:
-            if newValueDevelopingDown: auctionState = 9
-            elif close >= prevVAL: auctionState = 13
-        elif auctionState == 17:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i
-            elif insideValueBars >= 2: auctionState = 10
-        elif auctionState == 18:
-            if close < prevVAL: auctionState = 3; discoveryStartBar = i
-            elif close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif insideValueBars >= 2: auctionState = 11
-        elif auctionState == 10:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i
-            elif insideValueBars >= 2: auctionState = 14
-        elif auctionState == 11:
-            if close < prevVAL: auctionState = 3; discoveryStartBar = i
-            elif close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif insideValueBars >= 2: auctionState = 14
-        elif auctionState == 14:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i
-            else:
-                reentryInsideBars += 1
-                if reentryInsideBars >= 3 and cycleBars >= 3:
-                    auctionState = 1
-                    reentryInsideBars = 0
-        elif auctionState == 16:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close >= prevVAL and close <= prevVAH: auctionState = 11
-            
-        if auctionState != 14:
-            reentryInsideBars = 0
-            
-        prev_currVAH, prev_currVAL, prev_currPOC = currVAH, currVAL, currPOC
-        
-        candle_state_map[bar['Date'].strftime('%H:%M')] = auctionState
-        
-        if i == 0 or auctionState != journal[-1]['Code'] or i == len(today_df) - 1:
-            journal.append({
-                "Time": bar['Date'].strftime('%H:%M'), "Close": close, "Code": auctionState,
-                "State Name": state_names.get(auctionState, "UNKNOWN"),
-                "Dev VAH": currVAH, "Dev POC": currPOC, "Dev VAL": currVAL,
-            })
-    return pd.DataFrame(journal), manual_valid, candle_state_map
-
-# ==========================================
-# SECTION 3: DELTA OPTIONS DATA
-# ==========================================
-def parse_timestamp(ts):
-    if ts is None: return None
-    try:
-        if isinstance(ts, (int, float, np.integer, np.floating)):
-            value = float(ts)
-            if not math.isfinite(value): return None
-            if value > 1e11: value /= 1000.0
-            return datetime.datetime.fromtimestamp(value, tz=timezone.utc)
-        if isinstance(ts, str):
-            ts = ts.strip()
-            if not ts: return None
-            if ts.isdigit():
-                value = float(ts)
-                if value > 1e11: value /= 1000.0
-                return datetime.datetime.fromtimestamp(value, tz=timezone.utc)
-            dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
-            else: dt = dt.astimezone(timezone.utc)
-            return dt
-    except (ValueError, TypeError, OverflowError, OSError):
-        return None
-    return None
-
-def find_oi_clusters(strike_ladder, df_opt, opt_type, spot_price, straddle_price):
-    if not strike_ladder or pd.isna(straddle_price) or straddle_price <= 0: return [], [], []
-    df_type = df_opt[df_opt['Type'] == opt_type].copy()
-    if df_type.empty: return [], [], []
-    df_type = df_type.dropna(subset=['OI_USD'])
-    if df_type.empty: return [], [], []
-    
-    df_sorted = df_type.sort_values('OI_USD', ascending=False)
-    claimed = set()
-    clusters = []
-    
-    for _, row in df_sorted.iterrows():
-        peak_strike = row['Strike']
-        if peak_strike in claimed: continue
-        peak_oi = row['OI_USD']
-        if peak_oi < OI_CLUSTER_MIN_USD: continue
-        if peak_strike not in strike_ladder: continue
-        peak_idx = strike_ladder.index(peak_strike)
-        
-        current_cluster = [peak_strike]
-        claimed.add(peak_strike)
-        
-        left = peak_idx - 1
-        while left >= 0 and len(current_cluster) < MAX_CLUSTER_WIDTH:
-            test_strike = strike_ladder[left]
-            if test_strike in claimed: break
-            row_data = df_type[df_type['Strike'] == test_strike]
-            if row_data.empty: break
-            test_oi = row_data['OI_USD'].values[0]
-            if pd.isna(test_oi) or test_oi < (peak_oi * CLUSTER_ABSORPTION_PCT): break
-            current_cluster.append(test_strike); claimed.add(test_strike); left -= 1
-                
-        right = peak_idx + 1
-        while right < len(strike_ladder) and len(current_cluster) < MAX_CLUSTER_WIDTH:
-            test_strike = strike_ladder[right]
-            if test_strike in claimed: break
-            row_data = df_type[df_type['Strike'] == test_strike]
-            if row_data.empty: break
-            test_oi = row_data['OI_USD'].values[0]
-            if pd.isna(test_oi) or test_oi < (peak_oi * CLUSTER_ABSORPTION_PCT): break
-            current_cluster.append(test_strike); claimed.add(test_strike); right += 1
-                
-        cluster_df = df_type[df_type['Strike'].isin(current_cluster)]
-        total_oi = cluster_df['OI_USD'].sum()
-        if total_oi == 0: continue
-        
-        vwas = (cluster_df['Strike'] * cluster_df['OI_USD']).sum() / total_oi
-        if opt_type == "Call" and vwas <= spot_price: continue
-        if opt_type == "Put" and vwas >= spot_price: continue
-
-        dist = abs(vwas - spot_price) / straddle_price
-        clusters.append({"Type": opt_type, "VWAS": vwas, "OI_USD": total_oi, "Dist": dist, "Strikes": current_cluster})
-        
-    near, mid, far = [], [], []
-    for c in clusters:
-        if c['Dist'] < 0.5: near.append(c)
-        elif c['Dist'] < 1.0: mid.append(c)
-        else: far.append(c)
-        
-    near.sort(key=lambda x: x['Dist']); mid.sort(key=lambda x: x['Dist']); far.sort(key=lambda x: x['Dist'])
-    return near, mid, far
-
-@st.cache_data(ttl=180)
-def fetch_delta_options():
-    BASE_URL = "https://api.india.delta.exchange/v2"
-    
-    def fetch_paginated_data(url):
-        results = []
-        seen_cursors = set()
-        page_count = 0
-        while url and page_count < 20:
-            try:
-                response = requests.get(url, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-                results.extend(data.get("result", []))
-                meta = data.get("meta", {})
-                after = meta.get("after")
-                if not after or after in seen_cursors: break
-                seen_cursors.add(after)
-                base_url = url.split("?")[0]
-                query_params = url.split("?")[1]
-                params = [p for p in query_params.split("&") if not p.startswith("after=")]
-                params.append(f"after={after}")
-                url = f"{base_url}?{'&'.join(params)}"
-                page_count += 1
-            except Exception:
-                break
-        return results, True if not url else False
-
-    try:
-        products, prod_complete = fetch_paginated_data(f"{BASE_URL}/products?states=live&page_size=1000")
-        btc_options = [p for p in products if p.get("underlying_asset", {}).get("symbol") == "BTC" and p.get("contract_type") in ("call_options", "put_options")]
-        if not btc_options: return pd.DataFrame(), None, None, None, None, None, None, False
-
-        now_utc = datetime.datetime.now(timezone.utc)
-        valid_expiries = []
-        
-        for opt in btc_options:
-            sym = opt.get("symbol", "")
-            parts = sym.split("-")
-            if len(parts) >= 4:
-                exp_str = parts[3]
-                try:
-                    settlement_time_str = opt.get("settlement_time") or opt.get("expiry_time")
-                    dt_utc = parse_timestamp(settlement_time_str)
-                    source = "metadata"
-                    if dt_utc is None:
-                        dt_naive = datetime.datetime.strptime(exp_str, "%d%m%y")
-                        dt_utc = dt_naive.replace(hour=12, minute=0, second=0, tzinfo=timezone.utc)
-                        source = "fallback_12utc"
-                    if dt_utc > now_utc:
-                        valid_expiries.append({"expiry_str": exp_str, "dt_utc": dt_utc, "source": source})
-                except Exception:
-                    pass
-                    
-        if not valid_expiries: return pd.DataFrame(), None, None, None, None, None, None, False
-        
-        nearest = min(valid_expiries, key=lambda x: x["dt_utc"])
-        nearest_expiry = nearest["expiry_str"]
-        expiry_dt = nearest["dt_utc"]
-        expiry_source = nearest["source"]
-        
-        filtered_options = [opt for opt in btc_options if len(opt.get("symbol", "").split("-")) >= 4 and opt.get("symbol", "").split("-")[3] == nearest_expiry]
-        strike_ladder = sorted(list(set(float(p.get("strike_price")) for p in filtered_options if p.get("strike_price") is not None)))
-
-        contract_size = 0.001
-        if filtered_options:
-            try: contract_size = float(filtered_options[0].get("contract_value", 0.001))
-            except: pass
-
-        tickers, tick_complete = fetch_paginated_data(f"{BASE_URL}/tickers?contract_types=call_options,put_options&page_size=1000")
-        ticker_map = {t.get("symbol"): t for t in tickers if t.get("symbol")}
-        
-        expected_symbols = [p.get("symbol") for p in filtered_options]
-        is_chain_complete = prod_complete and tick_complete and all(sym in ticker_map for sym in expected_symbols)
-
-        chain = []
-        for opt in filtered_options:
-            sym = opt.get("symbol")
-            ticker = ticker_map.get(sym)
-            if not ticker: continue
-            try:
-                strike = opt.get("strike_price")
-                if strike is None:
-                    parts = sym.split("-")
-                    if len(parts) >= 3:
-                        raw_strike = parts[2].replace(",", "").strip().upper()
-                        strike = float(raw_strike.replace("K", "")) * 1000 if "K" in raw_strike else float(raw_strike)
-                
-                strike = float(strike)
-                opt_type = "Call" if opt.get("contract_type") == "call_options" else "Put"
-                oi_usd = float(ticker.get("oi_value_usd")) if ticker.get("oi_value_usd") is not None else None
-                oi_contracts = float(ticker.get("oi_contracts") or ticker.get("oi")) if (ticker.get("oi_contracts") or ticker.get("oi")) is not None else None
-                
-                # NEW: Extract Volume
-                volume = float(ticker.get("volume", 0)) if ticker.get("volume") is not None else 0.0
-                
-                quotes = ticker.get("quotes", {})
-                bid = float(quotes.get("best_bid") or ticker.get("best_bid")) if (quotes.get("best_bid") or ticker.get("best_bid")) is not None else None
-                ask = float(quotes.get("best_ask") or ticker.get("best_ask")) if (quotes.get("best_ask") or ticker.get("best_ask")) is not None else None
-                mark = float(ticker.get("mark_price")) if ticker.get("mark_price") is not None else None
-
-                greeks = ticker.get("greeks") or {}
-                gamma = float(greeks.get("gamma") or "0")
-                iv = float(quotes.get("mark_iv") or quotes.get("ask_iv") or "0") * 100
-                ts_val = ticker.get("timestamp") or ticker.get("updated_at")
-                
-                chain.append({
-                    "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, 
-                    "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val
-                })
-            except (ValueError, TypeError):
-                continue
-
-        df = pd.DataFrame(chain)
-        if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, None, False
-
-        df_pivot = df.pivot_table(index="Strike", columns="Type", values=["Bid", "Ask", "Mark", "OI_USD", "OI_Contracts", "Gamma", "IV", "Volume"], aggfunc="first").reset_index()
-
-        new_cols = []
-        for col in df_pivot.columns:
-            if isinstance(col, tuple): new_cols.append("_".join([str(c) for c in col if c != ""]).strip("_"))
-            else: new_cols.append(str(col))
-        df_pivot.columns = new_cols
-
-        expected_columns = ['Bid_Call', 'Ask_Call', 'Mark_Call', 'OI_USD_Call', 'OI_Contracts_Call', 'Gamma_Call', 'IV_Call', 'Volume_Call', 'Bid_Put', 'Ask_Put', 'Mark_Put', 'OI_USD_Put', 'OI_Contracts_Put', 'Gamma_Put', 'IV_Put', 'Volume_Put']
-        for col in expected_columns:
-            if col not in df_pivot.columns: df_pivot[col] = np.nan
-
-        return df_pivot, nearest_expiry, expiry_dt, expiry_source, contract_size, df, strike_ladder, is_chain_complete
-
-    except Exception:
-        return pd.DataFrame(), None, None, None, None, None, None, False
-
-# ==========================================
-# SECTION 4: PRE-CALCULATE DATA & ALERTS
-# ==========================================
-df = fetch_amt_data()
-binance_status = "🟢 Connected"
-latest_price = 0.0
-options_df = pd.DataFrame()
-filtered_options = pd.DataFrame()
-call_oi_wall, put_oi_wall, call_gamma_wall, put_gamma_wall = None, None, None, None
-true_max_pain = np.nan
-pcr = 0.0
-pcr_volume = 0.0
-atm_row, atm_strike = None, 0.0
-straddle_valid = False
-straddle_reason = ""
-straddle_price = np.nan
-quote_freshness = "Unverified"
-atm_call_age = "N/A"
-atm_put_age = "N/A"
-time_str = "Unknown"
-settlement_ist = "Unknown"
-loaded_expiry = "N/A"
-expiry_source = "Unknown"
-
-options_bias_score = 0
-nearest_call_dist = None
-nearest_put_dist = None
-near_call, mid_call, far_call = [], [], []
-near_put, mid_put, far_put = [], [], []
-
-pending_gamma_breach = False
-pending_broken_wall = 0.0
-
-funding_rate, mark_price, oi_usd, sp_prem = fetch_futures_context()
-
-oi_delta_pct = np.nan
-ctx = "⚪ Neutral"
-if oi_usd is not None:
-    now_utc_ts = int(datetime.datetime.now(timezone.utc).timestamp())
-    p_state["futures_oi_history"].append({"time": now_utc_ts, "oi": oi_usd})
-    
-    if len(p_state["futures_oi_history"]) > 20:
-        p_state["futures_oi_history"].pop(0)
-        
-    if len(p_state["futures_oi_history"]) >= 2:
-        target_time = now_utc_ts - 1800
-        closest_entry = min(p_state["futures_oi_history"], key=lambda x: abs(x["time"] - target_time))
-        
-        if abs(closest_entry["time"] - target_time) <= 300 and closest_entry["oi"] > 0:
-            oi_delta_pct = ((oi_usd - closest_entry["oi"]) / closest_entry["oi"]) * 100
-
-    if sp_prem is not None and not pd.isna(oi_delta_pct):
-        if oi_delta_pct > 0 and sp_prem > 0:
-            ctx = "🟢 Long Build"
-        elif oi_delta_pct > 0 and sp_prem < 0:
-            ctx = "🔴 Short Build"
-        elif oi_delta_pct < 0 and sp_prem > 0:
-            ctx = "🟡 Short Covering"
-        elif oi_delta_pct < 0 and sp_prem < 0:
-            ctx = "🟠 Long Liquidation"
-        else:
-            ctx = "⚪ Neutral"
-
-if not df.empty:
-    today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
-    
-    if not yesterday_df.empty:
-        last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-        prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
-        
-        if manual_values_valid:
-            final_vah, final_val, final_poc = input_vah, input_val, input_poc
-        else:
-            final_vah, final_val, final_poc = calculate_tpo(prev_day_df)
-    elif manual_values_valid:
-        final_vah, final_val, final_poc = input_vah, input_val, input_poc
-
-    latest_price = float(df['close'].iloc[-1])
-
-session_df = calculate_session_journey(df, final_vah, final_val)
-
-if not session_df.empty and not df.empty:
-    cycle_date_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    cycle_start = pd.Timestamp(cycle_date_str).tz_localize('Asia/Kolkata') + pd.Timedelta(hours=5, minutes=30)
-    now_ist = pd.Timestamp.now(tz='Asia/Kolkata')
-    
-    sessions_to_check = [
-        ("Asia (05:30-13:30)", 8),
-        ("Europe (13:30-17:30)", 12),
-        ("US Cash (17:30-01:30)", 20),
-        ("US Overnight (Current)", 24)
-    ]
-    
-    for s_name, s_offset in sessions_to_check:
-        s_end = cycle_start + pd.Timedelta(hours=s_offset)
-        if now_ist >= s_end:
-            if p_state["session_alert_log"].get(s_name) != cycle_date_str:
-                row = session_df[session_df['Session'] == s_name]
-                if not row.empty:
-                    r = row.iloc[0]
-                    alert_triggered = True
-                    alert_message += f"🔔 SESSION CLOSED: {s_name}<br>"
-                    alert_message += f"Close: ${r['Close']:,.0f} | Bias: {r['Macro Bias']} | {r['Micro Bias']}<br>"
-                    alert_message += f"H: ${r['High']:,.0f} | L: ${r['Low']:,.0f}<br>"
-                    alert_message += f"POC: ${r['POC']:,.0f} | VAH: ${r['VAH']:,.0f} | VAL: ${r['VAL']:,.0f}<br>"
-                    alert_message += f"Flow: {ctx}<br><br>"
-                    pending_session_alerts = p_state.get("pending_session_alerts", [])
-                    pending_session_alerts.append((s_name, cycle_date_str))
-                    p_state["pending_session_alerts"] = pending_session_alerts
-
-journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
-current_amt_state = 0
-current_amt_name = "UNKNOWN"
-journal_df_check = pd.DataFrame()
-candle_state_map = {}
-
-if journal_res is not None:
-    journal_df_check, _, candle_state_map = journal_res
-    if not journal_df_check.empty:
-        current_amt_state = int(journal_df_check.iloc[-1]['Code'])
-        current_amt_name = journal_df_check.iloc[-1]['State Name']
-
-options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, strike_ladder, is_chain_complete = fetch_delta_options()
-delta_status = "🟢 Connected" if not options_df.empty else "🔴 Failed"
-
-if loaded_expiry != "N/A" and loaded_expiry != p_state.get("session_start_expiry"):
-    p_state["session_start_straddle"] = None
-    p_state["session_start_expiry"] = loaded_expiry
-
-if expiry_dt:
-    time_remaining = expiry_dt - datetime.datetime.now(timezone.utc)
-    time_str = str(time_remaining).split('.')[0]
-    settlement_ist = expiry_dt.astimezone(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')
-
-if not options_df.empty and latest_price > 0:
-    options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * latest_price * dynamic_contract_size
-    options_df['GEX_Put'] = options_df['Gamma_Put'] * options_df['OI_Contracts_Put'] * latest_price * dynamic_contract_size
-    options_df['Dist_to_Spot'] = abs(options_df['Strike'] - latest_price)
-    
-    atm_strike = options_df.loc[options_df['Dist_to_Spot'].idxmin(), 'Strike']
-    atm_row = options_df[options_df['Strike'] == atm_strike].iloc[0]
-    
-    cb, ca, cm = atm_row['Bid_Call'], atm_row['Ask_Call'], atm_row['Mark_Call']
-    pb, pa, pm = atm_row['Bid_Put'], atm_row['Ask_Put'], atm_row['Mark_Put']
-    
-    checks_passed = True
-    if any(pd.isna(x) for x in [cb, ca, pb, pa]): 
-        checks_passed = False; straddle_reason = "Missing Bid/Ask"
-    elif cb <= 0 or ca <= 0 or pb <= 0 or pa <= 0: 
-        checks_passed = False; straddle_reason = "Bid/Ask <= 0"
-    elif cb > ca or pb > pa: 
-        checks_passed = False; straddle_reason = "Crossed Market (Bid > Ask)"
-    elif pd.isna(cm) or pd.isna(pm) or not (cb * (1-MARK_TOLERANCE_PCT) <= cm <= ca * (1+MARK_TOLERANCE_PCT)) or not (pb * (1-MARK_TOLERANCE_PCT) <= pm <= pa * (1+MARK_TOLERANCE_PCT)): 
-        checks_passed = False; straddle_reason = "Mark/Quote Inconsistency"
-    
-    call_ts = raw_chain_df[(raw_chain_df['Strike'] == atm_strike) & (raw_chain_df['Type'] == 'Call')]['Timestamp'].values
-    put_ts = raw_chain_df[(raw_chain_df['Strike'] == atm_strike) & (raw_chain_df['Type'] == 'Put')]['Timestamp'].values
-    
-    now_utc = datetime.datetime.now(timezone.utc)
-    if len(call_ts) > 0:
-        dt_c = parse_timestamp(call_ts[0])
-        if dt_c: atm_call_age = f"{(now_utc - dt_c).total_seconds():.0f}s"
-    if len(put_ts) > 0:
-        dt_p = parse_timestamp(put_ts[0])
-        if dt_p: atm_put_age = f"{(now_utc - dt_p).total_seconds():.0f}s"
-
-    if atm_call_age != "N/A" and atm_put_age != "N/A":
-        try:
-            max_age = max(float(atm_call_age.replace("s", "")), float(atm_put_age.replace("s", "")))
-            quote_freshness = "Fresh" if 0 <= max_age < 60 else "Stale"
-        except Exception:
-            quote_freshness = "Unverified"
-
-    if checks_passed:
-        straddle_price = cm + pm
-        straddle_valid = True
-        if p_state["session_start_straddle"] is None:
-            p_state["session_start_straddle"] = straddle_price
-    else:
-        straddle_valid = False
-        straddle_price = np.nan
-        quote_freshness = "Unverified"
-
-    lower_bound = latest_price * 0.90
-    upper_bound = latest_price * 1.10
-    filtered_options = options_df[(options_df['Strike'] >= lower_bound) & (options_df['Strike'] <= upper_bound)].copy()
-
-    if not filtered_options.empty:
-        temp_filt = filtered_options.fillna(0)
-        
-        if temp_filt['OI_USD_Call'].max() > 0: call_oi_wall = temp_filt.loc[temp_filt['OI_USD_Call'].idxmax()]
-        if temp_filt['OI_USD_Put'].max() > 0: put_oi_wall = temp_filt.loc[temp_filt['OI_USD_Put'].idxmax()]
-        if temp_filt['GEX_Call'].max() > 0: call_gamma_wall = temp_filt.loc[temp_filt['GEX_Call'].idxmax()]
-        if temp_filt['GEX_Put'].max() > 0: put_gamma_wall = temp_filt.loc[temp_filt['GEX_Put'].idxmax()]
-        
-        total_calls_usd = temp_filt['OI_USD_Call'].sum()
-        total_puts_usd = temp_filt['OI_USD_Put'].sum()
-        pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
-
-        # NEW: Calculate Volume PCR
-        total_calls_vol = temp_filt['Volume_Call'].sum()
-        total_puts_vol = temp_filt['Volume_Put'].sum()
-        pcr_volume = total_puts_vol / total_calls_vol if total_calls_vol > 0 else 0
-
-        if is_chain_complete:
-            all_strikes = options_df['Strike'].tolist()
-            all_call_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Call'].fillna(0)))
-            all_put_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Put'].fillna(0)))
-            pain_dict = {}
-            for settle in all_strikes:
-                total_pain = sum(
-                    (all_call_oi.get(k, 0) * (settle - k) if settle > k else 0) +
-                    (all_put_oi.get(k, 0) * (k - settle) if settle < k else 0)
-                    for k in all_strikes
-                )
-                pain_dict[settle] = total_pain
-            true_max_pain = min(pain_dict, key=pain_dict.get)
-        else:
-            true_max_pain = np.nan
-
-        if straddle_valid and raw_chain_df is not None and strike_ladder is not None:
-            near_call, mid_call, far_call = find_oi_clusters(strike_ladder, raw_chain_df, "Call", latest_price, straddle_price)
-            near_put, mid_put, far_put = find_oi_clusters(strike_ladder, raw_chain_df, "Put", latest_price, straddle_price)
-            
-            if 0 < pcr < 0.70: options_bias_score += 1
-            elif pcr > 1.20: options_bias_score -= 1
-            
-            call_iv_val = atm_row['IV_Call']
-            put_iv_val = atm_row['IV_Put']
-            if not pd.isna(call_iv_val) and not pd.isna(put_iv_val):
-                if call_iv_val > put_iv_val: options_bias_score += 1
-                elif put_iv_val > call_iv_val: options_bias_score -= 1
-                
-            all_calls = near_call + mid_call + far_call
-            all_puts = near_put + mid_put + far_put
-            if all_calls: nearest_call_dist = all_calls[0]['Dist']
-            if all_puts: nearest_put_dist = all_puts[0]['Dist']
-            
-            if nearest_call_dist is not None and nearest_put_dist is not None:
-                if nearest_call_dist < nearest_put_dist: options_bias_score -= 1
-                elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
-
-        current_inverted_status = False
-        gamma_unavailable = False
-        
-        if call_gamma_wall is not None and put_gamma_wall is not None:
-            if call_gamma_wall['Strike'] < put_gamma_wall['Strike']:
-                current_inverted_status = True
-        else:
-            gamma_unavailable = True
-                
-        if current_inverted_status != p_state.get("last_inverted_status", False):
-            if current_inverted_status: 
-                p_state["active_inverted_event"] = {
-                    "Time": datetime.datetime.now(IST_TZ).strftime("%H:%M"),
-                    "Close Time": "ACTIVE",
-                    "Status": "INVERTED",
-                    "Call Wall": call_gamma_wall['Strike'] if call_gamma_wall is not None else 0,
-                    "Put Wall": put_gamma_wall['Strike'] if put_gamma_wall is not None else 0,
-                    "Entry Price": latest_price,
-                    "High": latest_price,
-                    "Low": latest_price,
-                }
-            else: 
-                if p_state.get("active_inverted_event"):
-                    p_state["active_inverted_event"]["Close Time"] = datetime.datetime.now(IST_TZ).strftime("%H:%M")
-                    p_state["inverted_gamma_history"].append(p_state["active_inverted_event"])
-                    if len(p_state["inverted_gamma_history"]) > 10:
-                        p_state["inverted_gamma_history"].pop(0)
-                p_state["active_inverted_event"] = None
-            p_state["last_inverted_status"] = current_inverted_status
-        elif current_inverted_status and p_state.get("active_inverted_event"):
-            p_state["active_inverted_event"]["High"] = max(p_state["active_inverted_event"]["High"], latest_price)
-            p_state["active_inverted_event"]["Low"] = min(p_state["active_inverted_event"]["Low"], latest_price)
-
-        notification_put_wall = None
-        notification_candidates = filtered_options.copy()
-        required_cols = ['Strike', 'Gamma_Put', 'OI_Contracts_Put', 'GEX_Put']
-
-        if all(col in notification_candidates.columns for col in required_cols):
-            notification_candidates = notification_candidates.dropna(subset=required_cols)
-            notification_candidates = notification_candidates[
-                np.isfinite(notification_candidates['Strike']) &
-                np.isfinite(notification_candidates['Gamma_Put']) &
-                np.isfinite(notification_candidates['OI_Contracts_Put']) &
-                np.isfinite(notification_candidates['GEX_Put']) &
-                (notification_candidates['Gamma_Put'] > 0) &
-                (notification_candidates['OI_Contracts_Put'] > 0) &
-                (notification_candidates['GEX_Put'] > 0)
-            ]
-            if not notification_candidates.empty:
-                notification_put_wall = float(notification_candidates.loc[notification_candidates['GEX_Put'].idxmax(), 'Strike'])
-
-        now_utc_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
-        completed_candles = df[df['CloseTimeMs'].notna() & (df['CloseTimeMs'] <= now_utc_ms)]
-
-        if not completed_candles.empty:
-            completed_candle = completed_candles.iloc[-1]
-            completed_candle_time = int(completed_candle['CloseTimeMs'])
-            completed_candle_close = float(completed_candle['close'])
-
-            closed_amt_state = candle_state_map.get(completed_candle['Date'].strftime('%H:%M'))
-            if closed_amt_state is not None:
-                closed_amt_name = state_names.get(closed_amt_state, "UNKNOWN")
-                
-                if p_state["prev_amt_state"] != -1 and closed_amt_state != p_state["prev_amt_state"]:
-                    is_extreme_neg = (funding_rate is not None and funding_rate < -0.05)
-                    is_extreme_pos = (funding_rate is not None and funding_rate > 0.05)
-                    
-                    if closed_amt_state in [2, 3, 10, 11, 14]:
-                        if closed_amt_state in [2, 10]:
-                            if is_extreme_neg:
-                                alert_triggered = True
-                                alert_message += f"🚨 POTENTIAL SHORT SQUEEZE: Breakout confirmed ({closed_amt_name}) with EXTREME NEGATIVE Funding ({funding_rate:.3f}%)! | Flow: {ctx}<br>"
-                            else:
-                                alert_triggered = True
-                                alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Upside breakout) | Flow: {ctx}<br>"
-                        elif closed_amt_state in [3, 11]:
-                            if is_extreme_pos:
-                                alert_triggered = True
-                                alert_message += f"🚨 POTENTIAL LONG LIQUIDATION: Breakdown confirmed ({closed_amt_name}) with EXTREME POSITIVE Funding ({funding_rate:.3f}%)! | Flow: {ctx}<br>"
-                            else:
-                                alert_triggered = True
-                                alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} (Downside breakdown) | Flow: {ctx}<br>"
-                        else:
-                            alert_triggered = True
-                            alert_message += f"📖 AMT STATE SHIFT: {closed_amt_name} | Flow: {ctx}<br>"
-                            
-                p_state["prev_amt_state"] = closed_amt_state
-
-            if not p_state["last_closed_candle_time"]:
-                p_state["last_closed_candle_time"] = completed_candle_time
-                if notification_put_wall is not None:
-                    if completed_candle_close < notification_put_wall:
-                        p_state["put_gamma_break_state"] = "BREACHED"
-                        p_state["active_broken_put_wall"] = notification_put_wall
-                    else:
-                        p_state["put_gamma_break_state"] = "SAFE"
-                        p_state["active_broken_put_wall"] = 0.0
-                    p_state["gamma_wall_unavailable"] = False
-                else:
-                    p_state["gamma_wall_unavailable"] = True
-
-            elif p_state["gamma_wall_unavailable"]:
-                p_state["last_closed_candle_time"] = completed_candle_time
-                if notification_put_wall is not None:
-                    if completed_candle_close < notification_put_wall:
-                        p_state["put_gamma_break_state"] = "BREACHED"
-                        p_state["active_broken_put_wall"] = notification_put_wall
-                    else:
-                        p_state["put_gamma_break_state"] = "SAFE"
-                        p_state["active_broken_put_wall"] = 0.0
-                    p_state["gamma_wall_unavailable"] = False
-
-            elif completed_candle_time > p_state["last_closed_candle_time"]:
-                p_state["previous_candle_time"] = p_state["last_closed_candle_time"]
-                p_state["last_closed_candle_time"] = completed_candle_time
-                
-                if notification_put_wall is None:
-                    p_state["gamma_wall_unavailable"] = True
-                else:
-                    wall_strike = notification_put_wall
-                    if p_state["put_gamma_break_state"] == "SAFE":
-                        if completed_candle_close < wall_strike:
-                            alert_triggered = True
-                            alert_message += f"🚨 GAMMA WALL BREAK — 30M CLOSE CONFIRMED: Price closed at ${completed_candle_close:,.2f}, below Put Wall (${wall_strike:,.0f}). | Flow: {ctx}<br>"
-                            pending_gamma_breach = True
-                            pending_broken_wall = wall_strike
-                    elif p_state["put_gamma_break_state"] == "BREACHED":
-                        if completed_candle_close > wall_strike:
-                            p_state["put_gamma_break_state"] = "SAFE"
-                            p_state["active_broken_put_wall"] = 0.0
-
-        current_call_status = "PRESENT" if near_call else "N/A"
-        current_put_status = "PRESENT" if near_put else "N/A"
-        if not p_state["wall_status_log"]:
-            p_state["wall_status_log"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_call_status, "put": current_put_status})
-        else:
-            last_log = p_state["wall_status_log"][-1]
-            if last_log["call"] != current_call_status or last_log["put"] != current_put_status:
-                p_state["wall_status_log"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_call_status, "put": current_put_status})
-                if len(p_state["wall_status_log"]) > 10: p_state["wall_status_log"].pop(0)
-
-        current_wall_state = (call_oi_wall['Strike'] if call_oi_wall is not None else 0, put_oi_wall['Strike'] if put_oi_wall is not None else 0, true_max_pain)
-        if p_state["options_flow_history"]:
-            last_state = p_state["options_flow_history"][-1]
-            
-            if (last_state["call"] != current_wall_state[0] or 
-                last_state["put"] != current_wall_state[1] or 
-                str(last_state["mp"]) != str(current_wall_state[2])):
-                
-                p_state["options_flow_history"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_wall_state[0], "put": current_wall_state[1], "mp": current_wall_state[2]})
-                if len(p_state["options_flow_history"]) > 10: p_state["options_flow_history"].pop(0)
-        else:
-            p_state["options_flow_history"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_wall_state[0], "put": current_wall_state[1], "mp": current_wall_state[2]})
-
-        if straddle_valid and near_put and current_amt_state in [3, 11, 14]:
-            p_cluster = near_put[0]['VWAS'] if near_put else (mid_put[0]['VWAS'] if mid_put else 0)
-            if p_cluster > 0 and latest_price <= p_cluster and options_bias_score <= -1:
-                if p_state["last_alerted_trap_door"] != p_cluster:
-                    alert_triggered = True
-                    alert_message += f"🚨 TRAP DOOR: Price breaking below Put Cluster (${p_cluster:,.0f}) with Bearish Bias! | Flow: {ctx}<br>"
-                    p_state["last_alerted_trap_door"] = p_cluster
-                
-        if straddle_valid and near_call and current_amt_state in [2, 10]:
-            c_cluster = near_call[0]['VWAS'] if near_call else (mid_call[0]['VWAS'] if mid_call else 0)
-            if c_cluster > 0 and latest_price >= c_cluster and funding_rate is not None and funding_rate < -0.05:
-                if p_state["last_alerted_squeeze"] != c_cluster:
-                    alert_triggered = True
-                    alert_message += f"🚨 SQUEEZE: Price breaking above Call Cluster (${c_cluster:,.0f}) with Negative Funding! | Flow: {ctx}<br>"
-                    p_state["last_alerted_squeeze"] = c_cluster
-
-        if straddle_valid and pcr > 0.8 and pcr < 1.1 and not pd.isna(true_max_pain) and abs(latest_price - true_max_pain) < 100:
-            if p_state["last_alerted_max_pain"] != true_max_pain:
-                alert_triggered = True
-                alert_message += f"⚠️ GAMMA PIN: Price trapped near Max Pain (${true_max_pain:,.0f}). Avoid chopping. | Flow: {ctx}<br>"
-                p_state["last_alerted_max_pain"] = true_max_pain
-
-        if p_state["prev_pcr"] != 0.0:
-            if (p_state["prev_pcr"] >= 1.20 and pcr < 1.20) or (p_state["prev_pcr"] >= 0.30 and pcr < 0.30):
-                alert_triggered = True
-                alert_message += f"⚠️ PCR EXTREME CROSSED: OI PCR is now {pcr:.2f} | Flow: {ctx}<br>"
-        
-        if p_state["prev_max_pain"] != 0 and not pd.isna(true_max_pain) and abs(true_max_pain - p_state["prev_max_pain"]) >= 500:
-            alert_triggered = True
-            direction = "UP" if true_max_pain > p_state["prev_max_pain"] else "DOWN"
-            alert_message += f"🔄 MAX PAIN SHIFT {direction}: Moved from ${p_state['prev_max_pain']:,.0f} to ${true_max_pain:,.0f}! | Flow: {ctx}<br>"
-            
-        if p_state["prev_call_wall"] != 0 and call_oi_wall is not None and abs(call_oi_wall['Strike'] - p_state["prev_call_wall"]) >= 200:
-            alert_triggered = True
-            direction = "UP" if call_oi_wall['Strike'] > p_state["prev_call_wall"] else "DOWN"
-            alert_message += f"🚧 CALL OI WALL SHIFT {direction}: Moved from ${p_state['prev_call_wall']:,.0f} to ${call_oi_wall['Strike']:,.0f}! | Flow: {ctx}<br>"
-            
-        if p_state["prev_put_wall"] != 0 and put_oi_wall is not None and abs(put_oi_wall['Strike'] - p_state["prev_put_wall"]) >= 200:
-            alert_triggered = True
-            direction = "UP" if put_oi_wall['Strike'] > p_state["prev_put_wall"] else "DOWN"
-            alert_message += f"🚧 PUT OI WALL SHIFT {direction}: Moved from ${p_state['prev_put_wall']:,.0f} to ${put_oi_wall['Strike']:,.0f}! | Flow: {ctx}<br>"
-
-        if p_state["prev_price"] != 0.0 and call_gamma_wall is not None:
-            if p_state["prev_price"] < call_gamma_wall['Strike'] and latest_price >= call_gamma_wall['Strike']:
-                alert_triggered = True
-                alert_message += f"🔥 GAMMA BREAKOUT: Price crossed above Call Wall (${call_gamma_wall['Strike']:,.0f})! | Flow: {ctx}<br>"
-
-        p_state["prev_pcr"] = pcr
-        p_state["prev_max_pain"] = true_max_pain
-        if call_oi_wall is not None: p_state["prev_call_wall"] = call_oi_wall['Strike']
-        if put_oi_wall is not None: p_state["prev_put_wall"] = put_oi_wall['Strike']
-        p_state["prev_price"] = latest_price
-
-if not df.empty and (options_df.empty or filtered_options.empty or latest_price <= 0):
-    now_utc_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
-    completed_candles = df[df['CloseTimeMs'].notna() & (df['CloseTimeMs'] <= now_utc_ms)]
-    if not completed_candles.empty:
-        latest_completed_time = int(completed_candles.iloc[-1]['CloseTimeMs'])
-        if latest_completed_time > p_state["last_closed_candle_time"]:
-            p_state["last_closed_candle_time"] = latest_completed_time
-            p_state["gamma_wall_unavailable"] = True
-
-if alert_triggered:
-    timestamp = datetime.datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    p_state["alert_history"].insert(0, {"Time": timestamp, "Alert": alert_message.replace("<br>", " | ")})
-    if len(p_state["alert_history"]) > 50: p_state["alert_history"] = p_state["alert_history"][:50]
-    
-    clean_telegram_msg = alert_message.replace("<br>", "\n")
-    success = send_telegram_message(f"🚨 BTC TERMINAL ALERT 🚨\n\n{clean_telegram_msg}")
-    
-    if success:
-        if pending_gamma_breach:
-            p_state["put_gamma_break_state"] = "BREACHED"
-            p_state["active_broken_put_wall"] = pending_broken_wall
-            
-        pending_alerts = p_state.get("pending_session_alerts", [])
-        for s_name, c_date in pending_alerts:
-            p_state["session_alert_log"][s_name] = c_date
-        p_state["pending_session_alerts"] = []
-            
-        st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
-        components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
-    else:
-        if pending_gamma_breach:
-            p_state["last_closed_candle_time"] = p_state["previous_candle_time"]
-        if p_state["alert_history"]: p_state["alert_history"].pop(0)
-        
-        p_state["last_alerted_max_pain"] = None
-        p_state["last_alerted_trap_door"] = None
-        p_state["last_alerted_squeeze"] = None
-        
-        if pending_gamma_breach:
-            st.error("⚠️ TELEGRAM DELIVERY FAILED. Pending gamma alert will be retried on the next refresh.")
-        else:
-            st.error("⚠️ TELEGRAM DELIVERY FAILED. Gamma candle state was not rolled back.")
-
-# ==========================================
-# SECTION 5: RENDER UI TABS
-# ==========================================
-tab_dashboard, tab_history = st.tabs(["📊 Live Dashboard", "📜 Alert History"])
-
-with tab_history:
-    st.subheader("📜 Alert History Log")
-    st.caption("⚠️ This log persists across page reloads.")
-    history_data = p_state["alert_history"]
-    if history_data:
-        st.dataframe(pd.DataFrame(history_data), use_container_width=True, hide_index=True)
-    else:
-        st.info("No alerts have fired yet during this session.")
-
-with tab_dashboard:
-    if not df.empty:
-        st.subheader("🚦 Vital Signs")
-        v1, v2, v3, v4 = st.columns(4)
-        v1.metric("Current Price", f"${latest_price:,.2f}")
-        v2.metric("AMT State", f"{current_amt_name}", f"Code {current_amt_state}")
-        
-        if options_bias_score >= 2: b_color, b_text = "normal", "🟢 BULLISH"
-        elif options_bias_score <= -2: b_color, b_text = "inverse", "🔴 BEARISH"
-        else: b_color, b_text = "off", "⚪ NEUTRAL"
-        v3.metric("Options Bias", b_text, f"Score: {options_bias_score:+d}", delta_color=b_color)
-        
-        if funding_rate is not None:
-            f_color = "inverse" if funding_rate > 0.01 else "normal" if funding_rate < -0.01 else "off"
-            v4.metric("Funding Rate (8h)", f"{funding_rate:+.4f}%", "Ext Neg" if funding_rate < -0.05 else "Ext Pos" if funding_rate > 0.05 else "Neutral", delta_color=f_color)
-            if funding_rate > 0.15: st.warning("⚠️ EXTREME POSITIVE FUNDING: Crowded long-side positioning / elevated squeeze risk. (Informational only, not an entry/exit signal).")
-            elif funding_rate < -0.15: st.warning("⚠️ EXTREME NEGATIVE FUNDING: Crowded short-side positioning / elevated squeeze risk. (Informational only, not an entry/exit signal).")
-        else: v4.metric("Funding Rate", "N/A")
-            
-        st.markdown("---")
-
-        st.subheader("🧠 Tape Read & Confluence")
-        
-        tc1, tc2, tc3, tc4 = st.columns(4)
-        
-        if options_df.empty:
-            gamma_struct = "⚪ UNAVAILABLE"
-            gamma_color = "off"
-        else:
-            gamma_struct = "🚨 INVERTED" if current_inverted_status else "🟢 NORMAL"
-            gamma_color = "inverse" if current_inverted_status else "normal"
-            
-        tc1.metric("Gamma Structure", gamma_struct, "Trap Risk" if current_inverted_status else "Standard", delta_color=gamma_color)
-        
-        tc2.metric("Derivatives Flow", ctx)
-        
-        if pd.isna(final_vah) or pd.isna(final_val):
-            loc = "Value Area Unavailable"
-            loc_color = "off"
-        else:
-            loc = "Above VAH" if latest_price > final_vah else "Below VAL" if latest_price < final_val else "Inside VA"
-            loc_color = "normal" if loc == "Above VAH" else "inverse" if loc == "Below VAL" else "off"
-            
-        tc3.metric("Price Location", loc, f"${latest_price:,.0f}", delta_color=loc_color)
-        
-        tc4.metric("AMT State", current_amt_name, f"Code {current_amt_state}")
-        
-        verdict = ""
-        
-        if options_bias_score >= 2 and "Short Build" in ctx and loc == "Below VAL":
-            verdict = "⚠️ **TRADER'S TRAP**: Shorts building below value, BUT Options Bias is strongly Bullish. High risk of a violent short squeeze. Do NOT blindly short."
-        elif options_bias_score <= -2 and "Long Build" in ctx and loc == "Above VAH":
-            verdict = "⚠️ **TRADER'S TRAP**: Longs building above value, BUT Options Bias is strongly Bearish. High risk of a long liquidation. Do NOT blindly long."
-        elif current_inverted_status and "Short Build" in ctx:
-            verdict = "⚠️ **TRAP DOOR SETUP**: Shorts building into inverted gamma. Expect a violent fakeout/squeeze. Do NOT trust breakdowns."
-        elif current_inverted_status and "Long Build" in ctx:
-            verdict = "⚠️ **BULL TRAP SETUP**: Longs building into inverted gamma. Expect a violent fakeout/liquidation. Do NOT trust breakouts."
-        elif not current_inverted_status and "Short Build" in ctx and loc == "Below VAL":
-            verdict = "📉 **TREND CONTINUATION**: Bearish flow confirmed below value. Watch for acceptance lower."
-        elif not current_inverted_status and "Long Build" in ctx and loc == "Above VAH":
-            verdict = "📈 **TREND CONTINUATION**: Bullish flow confirmed above value. Watch for acceptance higher."
-        elif loc == "Inside VA":
-            verdict = "⚖️ **CHOP ZONE**: Price is inside value. Wait for the edges (VAH/VAL) to break before acting."
-        else:
-            verdict = "⏳ **WAIT FOR CONFLUENCE**: No high-probability setup currently."
-            
-        st.success(verdict)
-        st.markdown("---")
-
-        st.subheader("📈 Futures Context (Delta Perpetual)")
-        if oi_usd is not None:
-            fc1, fc2, fc3, fc4 = st.columns(4)
-            fc1.metric("Open Interest (USD)", f"${oi_usd/1e6:.2f}M")
-            
-            if pd.isna(oi_delta_pct):
-                fc2.metric("OI Delta (30m)", "N/A", "Insufficient History", delta_color="off")
-            else:
-                oi_d_color = "normal" if oi_delta_pct > 0 else "inverse" if oi_delta_pct < 0 else "off"
-                fc2.metric("OI Delta (30m)", f"{oi_delta_pct:+.2f}%", "Building" if oi_delta_pct > 0 else "Unwinding" if oi_delta_pct < 0 else "Stable", delta_color=oi_d_color)
-            
-            sp_color = "normal" if sp_prem > 0 else "inverse" if sp_prem < 0 else "off"
-            fc3.metric("Spot/Perp Premium", f"{sp_prem:+.3f}%", "Perp Premium" if sp_prem > 0 else "Perp Discount" if sp_prem < 0 else "Flat", delta_color=sp_color)
-            
-            fc4.metric("Derivatives Flow", ctx)
-        else:
-            st.warning("⚠️ Could not fetch Delta Perpetual data.")
-        st.markdown("---")
-
-        st.subheader("🗺️ AMT Map & Context")
-        if manual_values_valid: st.info("🟢 Reference Source: TRADINGVIEW MANUAL")
-        elif not pd.isna(final_vah): st.info("🔵 Reference Source: PYTHON CALCULATED")
-        else: st.warning("🔴 Reference Source: UNAVAILABLE")
-            
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Prior VAH", f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A")
-        c2.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
-        c3.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
-        
-        if not session_df.empty:
-            st.dataframe(session_df, use_container_width=True, hide_index=True, column_config={
-                "Session": st.column_config.TextColumn("Session"),
-                "Open": st.column_config.NumberColumn("Open", format="$%.0f"),
-                "High": st.column_config.NumberColumn("High", format="$%.0f"),
-                "Low": st.column_config.NumberColumn("Low", format="$%.0f"),
-                "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
-                "Macro Bias": st.column_config.TextColumn("Macro Bias (vs Prior)"),
-                "Micro Bias": st.column_config.TextColumn("Micro Bias (vs Session)"),
-                "POC": st.column_config.NumberColumn("POC", format="$%.0f"),
-                "VAH": st.column_config.NumberColumn("VAH", format="$%.0f"),
-                "VAL": st.column_config.NumberColumn("VAL", format="$%.0f"),
-            })
-        st.markdown("---")
-
-        if not options_df.empty and atm_row is not None:
-            st.subheader(f"📉 Options Snapshot (Expiry: {loaded_expiry})")
-            
-            o1, o2, o3, o4, o5 = st.columns(5)
-            
-            o1.metric("ATM Strike", f"${atm_strike:,.0f}")
-            
-            if straddle_valid:
-                straddle_delta = straddle_price - p_state["session_start_straddle"] if p_state["session_start_straddle"] else 0
-                straddle_delta_str = f"{straddle_delta:+,.0f}" if straddle_delta != 0 else "Unchanged"
-                o2.metric("ATM Straddle", f"${straddle_price:,.2f}", straddle_delta_str)
-            else:
-                o2.metric("ATM Straddle", "⚠️ INVALID", straddle_reason)
-                
-            o3.metric("Max Pain", f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else "N/A")
-            o4.metric("Settlement", settlement_ist)
-            o5.metric("Remaining", time_str)
-            
-            st.caption(f"Expiry Source: {expiry_source} | Quote Freshness: {quote_freshness} | Call Ticker Age: {atm_call_age} | Put Ticker Age: {atm_put_age}")
-            
-            atm_call_iv = atm_row['IV_Call']
-            atm_put_iv = atm_row['IV_Put']
-            if not pd.isna(atm_call_iv) and not pd.isna(atm_put_iv):
-                skew = atm_call_iv - atm_put_iv
-                st.caption(f"**ATM Call IV:** {atm_call_iv:.2f}% | **ATM Put IV:** {atm_put_iv:.2f}% | **Skew (Call - Put):** {skew:+.2f}%")
-            
-            st.markdown("---")
-
-        if not filtered_options.empty:
-            st.subheader("🎯 OI Concentrations & Walls")
-            cluster_rows = []
-            
-            c_near = near_call[0] if near_call else None
-            p_near = near_put[0] if near_put else None
-            cluster_rows.append({
-                "Tier": "📍 Near (<0.5x)",
-                "Call Strike": f"${c_near['VWAS']:,.0f}" if c_near else "N/A",
-                "Call OI": f"${c_near['OI_USD']/1e6:.2f}M" if c_near else "N/A",
-                "Call Dist": f"{c_near['Dist']:.1f}x" if c_near else "N/A",
-                "Put Strike": f"${p_near['VWAS']:,.0f}" if p_near else "N/A",
-                "Put OI": f"${p_near['OI_USD']/1e6:.2f}M" if p_near else "N/A",
-                "Put Dist": f"{p_near['Dist']:.1f}x" if p_near else "N/A",
-            })
-            
-            c_mid = mid_call[0] if mid_call else None
-            p_mid = mid_put[0] if mid_put else None
-            cluster_rows.append({
-                "Tier": "📍 Mid (0.5 - 1.0x)",
-                "Call Strike": f"${c_mid['VWAS']:,.0f}" if c_mid else "N/A",
-                "Call OI": f"${c_mid['OI_USD']/1e6:.2f}M" if c_mid else "N/A",
-                "Call Dist": f"{c_mid['Dist']:.1f}x" if c_mid else "N/A",
-                "Put Strike": f"${p_mid['VWAS']:,.0f}" if p_mid else "N/A",
-                "Put OI": f"${p_mid['OI_USD']/1e6:.2f}M" if p_mid else "N/A",
-                "Put Dist": f"{p_mid['Dist']:.1f}x" if p_mid else "N/A",
-            })
-            
-            c_far = far_call[0] if far_call else None
-            p_far = far_put[0] if far_put else None
-            cluster_rows.append({
-                "Tier": "🌍 Distant (>1.0x)",
-                "Call Strike": f"${c_far['VWAS']:,.0f}" if c_far else "N/A",
-                "Call OI": f"${c_far['OI_USD']/1e6:.2f}M" if c_far else "N/A",
-                "Call Dist": f"{c_far['Dist']:.1f}x" if c_far else "N/A",
-                "Put Strike": f"${p_far['VWAS']:,.0f}" if p_far else "N/A",
-                "Put OI": f"${p_far['OI_USD']/1e6:.2f}M" if p_far else "N/A",
-                "Put Dist": f"{p_far['Dist']:.1f}x" if p_far else "N/A",
-            })
-
-            st.dataframe(pd.DataFrame(cluster_rows), use_container_width=True, hide_index=True)
-            st.caption("Context only — not support, resistance or price targets. Normalized distance based on ATM Straddle.")
-
-            st.markdown("##### 📊 Context Metrics")
-            
-            w1, w2 = st.columns(2)
-            w1.metric("Local OI PCR (±10%)", f"{pcr:.2f}", "Put OI / Call OI (USD)")
-            w2.metric("Local Vol PCR (±10%)", f"{pcr_volume:.2f}", "Put Vol / Call Vol")
-            
-            w3, w4 = st.columns(2)
-            w3.metric("Local Gross Gamma (±10%)", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A", "Unsigned OI Estimation")
-            w4.metric("Local Structural Extreme (±10%)", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}" if call_oi_wall is not None and put_oi_wall is not None else "N/A")
-            
-            st.caption("ℹ️ Context only — not support, resistance or price targets. Gross Gamma estimated using unsigned OI.")
-            st.markdown("---")
-
-            display_inv_history = p_state["inverted_gamma_history"].copy()
-            if p_state.get("active_inverted_event"):
-                active_event = p_state["active_inverted_event"].copy()
-                active_event["Status"] = "ACTIVE"
-                display_inv_history.append(active_event)
-
-            if display_inv_history:
-                st.markdown("##### 📝 Inverted Gamma Journal (Research Only)")
-                inv_df = pd.DataFrame(display_inv_history)
-                cols = ["Time", "Close Time", "Status", "Call Wall", "Put Wall", "Entry Price", "High", "Low"]
-                inv_df = inv_df[[c for c in cols if c in inv_df.columns]]
-                
-                st.dataframe(inv_df, use_container_width=True, hide_index=True, column_config={
-                    "Time": st.column_config.TextColumn("Time"),
-                    "Close Time": st.column_config.TextColumn("Close Time"),
-                    "Status": st.column_config.TextColumn("Status"),
-                    "Call Wall": st.column_config.NumberColumn("Call Wall", format="$%.0f"),
-                    "Put Wall": st.column_config.NumberColumn("Put Wall", format="$%.0f"),
-                    "Entry Price": st.column_config.NumberColumn("Entry Price", format="$%.2f"),
-                    "High": st.column_config.NumberColumn("High", format="$%.2f"),
-                    "Low": st.column_config.NumberColumn("Low", format="$%.2f"),
-                })
-                st.markdown("---")
-
-        st.subheader("📖 PROJECT ECHO - State Journal")
-        if journal_res is not None:
-            journal_df, echo_used_manual, _ = journal_res
-            if not journal_df.empty:
-                if echo_used_manual: st.caption("Echo Reference: 🟢 TRADINGVIEW MANUAL")
-                else: st.caption("Echo Reference: 🔵 PYTHON CALCULATED")
-                st.dataframe(journal_df, use_container_width=True, hide_index=True, column_config={
-                    "Time": st.column_config.TextColumn("Time (IST)"),
-                    "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
-                    "Code": st.column_config.NumberColumn("Code"),
-                    "State Name": st.column_config.TextColumn("State Name"),
-                    "Dev VAH": st.column_config.NumberColumn("Dev VAH", format="$%.0f"),
-                    "Dev POC": st.column_config.NumberColumn("Dev POC", format="$%.0f"),
-                    "Dev VAL": st.column_config.NumberColumn("Dev VAL", format="$%.0f"),
-                })
-        st.markdown("---")
-
-        st.subheader("📋 Raw Options Data")
-        if not filtered_options.empty:
-            if 'Dist_to_Spot' in filtered_options.columns: filtered_options = filtered_options.drop(columns=['Dist_to_Spot'])
-            display_df = filtered_options[['Bid_Call', 'Ask_Call', 'OI_USD_Call', 'Volume_Call', 'Gamma_Call', 'IV_Call', 'Strike', 'IV_Put', 'Gamma_Put', 'Volume_Put', 'OI_USD_Put', 'Bid_Put', 'Ask_Put']].copy()
-            st.dataframe(display_df, use_container_width=True, hide_index=True, column_config={
-                "Bid_Call": st.column_config.NumberColumn("Call Bid", format="$%.2f"),
-                "Ask_Call": st.column_config.NumberColumn("Call Ask", format="$%.2f"),
-                "OI_USD_Call": st.column_config.NumberColumn("Call OI", format="$%,.0f"),
-                "Volume_Call": st.column_config.NumberColumn("Call Vol", format="$%,.0f"),
-                "Gamma_Call": st.column_config.NumberColumn("Call Gamma", format="%.8f"),
-                "IV_Call": st.column_config.NumberColumn("Call IV", format="%.2f%%"),
-                "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
-                "IV_Put": st.column_config.NumberColumn("Put IV", format="%.2f%%"),
-                "Gamma_Put": st.column_config.NumberColumn("Put Gamma", format="%.8f"),
-                "Volume_Put": st.column_config.NumberColumn("Put Vol", format="$%,.0f"),
-                "OI_USD_Put": st.column_config.NumberColumn("Put OI", format="$%,.0f"),
-                "Bid_Put": st.column_config.NumberColumn("Put Bid", format="$%.2f"),
-                "Ask_Put": st.column_config.NumberColumn("Put Ask", format="$%.2f"),
-            })
-            csv = display_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Options Data as CSV", data=csv, file_name=f"delta_options_{loaded_expiry}.csv", mime="text/csv")
-    else:
-        binance_status = "🔴 Failed"
-        b_text = "⚪ UNAVAILABLE"
-        st.warning("⚠️ Could not fetch AMT Data from Binance.")
-
-    # RENDER SNAPSHOT (HIDDEN IN SHARE MODE)
-    if not is_share_mode:
-        st.markdown("---")
-        
-        flow_text = ""
-        for entry in p_state["options_flow_history"][-5:]:
-            mp_text = f"{entry['mp']:.0f}" if pd.notna(entry["mp"]) else "N/A"
-            flow_text += f"{entry['time']} | C: {entry['call']:.0f} | P: {entry['put']:.0f} | MP: {mp_text}\n"
-
-        alert_text = ""
-        for entry in p_state["alert_history"][:5]:
-            alert_text += f"{entry['Time'][11:16]} | {entry['Alert'][:60]}...\n"
-
-        echo_text = ""
-        if not journal_df_check.empty:
-            for _, row in journal_df_check.tail(10).iterrows():
-                echo_text += f"{row['Time']} | ${row['Close']:,.0f} | {row['State Name']}\n"
-
-        wall_text = ""
-        for entry in p_state["wall_status_log"][-5:]:
-            wall_text += f"{entry['time']} | Call: {entry['call']} | Put: {entry['put']}\n"
-
-        inv_text = ""
-        display_inv_history = p_state["inverted_gamma_history"].copy()
-        if p_state.get("active_inverted_event"):
-            active_event = p_state["active_inverted_event"].copy()
-            active_event["Status"] = "ACTIVE"
-            display_inv_history.append(active_event)
-            
-        for entry in display_inv_history[-5:]:
-            inv_text += f"{entry['Time']} - {entry.get('Close Time', 'ACTIVE')} | {entry['Status']} | C: ${entry['Call Wall']:,.0f} / P: ${entry['Put Wall']:,.0f} | Entry: ${entry['Entry Price']:,.0f} | H: ${entry['High']:,.0f} / L: ${entry['Low']:,.0f}\n"
-
-        call_gamma_text = f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else "N/A"
-        put_gamma_text = f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else "N/A"
-        call_cluster_near = f"${near_call[0]['VWAS']:,.0f}" if near_call else "N/A"
-        put_cluster_near = f"${near_put[0]['VWAS']:,.0f}" if near_put else "N/A"
-        call_cluster_mid = f"${mid_call[0]['VWAS']:,.0f}" if mid_call else "N/A"
-        put_cluster_mid = f"${mid_put[0]['VWAS']:,.0f}" if mid_put else "N/A"
-        call_cluster_far = f"${far_call[0]['VWAS']:,.0f}" if far_call else "N/A"
-        put_cluster_far = f"${far_put[0]['VWAS']:,.0f}" if far_put else "N/A"
-        max_pain_text = f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else "N/A"
-        vah_text = f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A"
-        poc_text = f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A"
-        val_text = f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A"
-        funding_text = f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"
-        straddle_text = f"${straddle_price:,.2f}" if straddle_valid else f"INVALID ({straddle_reason})"
-
-        oi_delta_text = f"{oi_delta_pct:+.2f}%" if not pd.isna(oi_delta_pct) else "N/A (Insufficient 30m History)"
-        
-        atm_call_iv_text = f"{atm_row['IV_Call']:.2f}%" if atm_row is not None and not pd.isna(atm_row['IV_Call']) else "N/A"
-        atm_put_iv_text = f"{atm_row['IV_Put']:.2f}%" if atm_row is not None and not pd.isna(atm_row['IV_Put']) else "N/A"
-        skew_text = f"{atm_row['IV_Call'] - atm_row['IV_Put']:+.2f}%" if atm_row is not None and not pd.isna(atm_row['IV_Call']) and not pd.isna(atm_row['IV_Put']) else "N/A"
-
-        snapshot_text = f"""
-=== BTC TERMINAL SNAPSHOT ===
-Time: {datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')} IST
-
-[RESEARCH OBSERVATIONS — NOT USED FOR TRADE DECISIONS]
-
-[VITAL SIGNS]
-Price: ${latest_price:,.2f}
-AMT State: {current_amt_name} (Code {current_amt_state})
-Options Bias: {b_text} (Score: {options_bias_score:+d})
-Funding Rate: {funding_text}
-
-[TAPE READ & CONFLUENCE]
-Structure: {gamma_struct} | Flow: {ctx} | Location: {loc} | AMT: {current_amt_name}
-Verdict: {verdict}
-
-[FUTURES CONTEXT]
-OI (USD): {f"${oi_usd/1e6:.2f}M" if oi_usd is not None else "N/A"}
-OI Delta (30m): {oi_delta_text}
-Spot/Perp Premium: {f"{sp_prem:+.3f}%" if sp_prem is not None else "N/A"}
-Derivatives Flow: {ctx}
-
-[AMT MAP]
-Prior VAH: {vah_text} | Prior POC: {poc_text} | Prior VAL: {val_text}
-Source: {"TradingView Manual" if manual_values_valid else "Python Calculated"}
-
-[OPTIONS SNAPSHOT]
-Expiry: {loaded_expiry} | Time Left: {time_str}
-ATM Strike: ${atm_strike:,.0f}
-ATM Straddle: {straddle_text}
-ATM Call IV / Put IV: {atm_call_iv_text} / {atm_put_iv_text} (Skew: {skew_text})
-Max Pain: {max_pain_text}
-Local OI PCR: {pcr:.2f} | Local Vol PCR: {pcr_volume:.2f}
-Gamma Walls: Call {call_gamma_text} / Put {put_gamma_text}
-
-[OI CLUSTERS]
-Near-Term (<0.5x): Call {call_cluster_near} | Put {put_cluster_near}
-Mid-Term (0.5-1.0x): Call {call_cluster_mid} | Put {put_cluster_mid}
-Distant (>=1.0x): Call {call_cluster_far} | Put {put_cluster_far}
-
-[CLUSTER STATUS LOG (Passive Tracking)]
-{wall_text}
-
-[INVERTED GAMMA JOURNAL (Passive Tracking)]
-{inv_text}
-
-[OPTIONS FLOW JOURNAL (Last 5 Shifts)]
-{flow_text}
-
-[RECENT ALERTS (Last 5)]
-{alert_text}
-
-[PROJECT ECHO (Last 10 States)]
-{echo_text}
-
-[TRADE JOURNAL]
-{p_state["trade_journal"] if p_state["trade_journal"] else "Empty"}
+History is session-local, not permanent database storage.
 """
 
-        with st.expander("📋 Copy Dashboard Snapshot (Click to expand)"):
-            st.code(snapshot_text, language="text")
+import re
+import time
+import logging
 
-    if st.button("🔄 Refresh All Data"):
-        st.cache_data.clear()
-        st.rerun()
+from datetime import datetime, date, time as dt_time, timedelta
+from zoneinfo import ZoneInfo
 
-    st.markdown("---")
-    now = datetime.datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    st.caption(f"**System Health:** Binance {binance_status} | Delta {delta_status} | Last Fetched: {now}")
+import requests
+import pandas as pd
+import numpy as np
+import streamlit as st
 
-components.html("<script>setTimeout(function(){ window.parent.location.reload(); }, 180000);</script>", height=0, width=0)
+from streamlit_autorefresh import st_autorefresh
+
+
+# ============================================================
+# 1. APPLICATION CONFIGURATION
+# ============================================================
+
+st.set_page_config(
+    page_title="BTC AMT Research",
+    page_icon="₿",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+IST = ZoneInfo("Asia/Kolkata")
+
+BINANCE_BASE = "https://data-api.binance.vision"
+DELTA_BASE = "https://api.india.delta.exchange"
+
+BINANCE_KLINES_URL = f"{BINANCE_BASE}/api/v3/klines"
+DELTA_TICKERS_URL = f"{DELTA_BASE}/v2/tickers"
+DELTA_PRODUCTS_URL = f"{DELTA_BASE}/v2/products"
+
+TIMEFRAME = "30m"
+CANDLE_LIMIT = 1000
+
+TPO_ROW_SIZE = 50.0
+VALUE_AREA_PERCENT = 0.70
+
+REFRESH_INTERVAL_MS = 300000
+REQUEST_TIMEOUT = 20
+
+OPTIONS_EXPIRY_HOUR = 17
+OPTIONS_EXPIRY_MINUTE = 30
+
+AMT_CYCLE_HOUR = 5
+AMT_CYCLE_MINUTE = 30
+
+logging.basicConfig(level=logging.ERROR)
+
+
+# ============================================================
+# 2. CUSTOM STYLING
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+
+    .main {
+        background-color: #0e1117;
+    }
+
+    .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+    }
+
+    div[data-testid="stMetric"] {
+        background-color: #161b22;
+        border: 1px solid #30363d;
+        padding: 15px;
+        border-radius: 10px;
+    }
+
+    div[data-testid="stMetricLabel"] {
+        color: #aeb8c4;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #ffffff;
+    }
+
+    .section-header {
+        font-size: 19px;
+        font-weight: 600;
+        margin-top: 12px;
+        margin-bottom: 12px;
+    }
+
+    .info-text {
+        color: #9da7b3;
+        font-size: 12px;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+# ============================================================
+# 3. HTTP SESSION AND HELPERS
+# ============================================================
+
+@st.cache_resource
+def get_session():
+
+    session = requests.Session()
+
+    session.headers.update({
+        "Accept": "application/json",
+        "User-Agent": "BTC-AMT-Research-Dashboard/2.0"
+    })
+
+    return session
+
+
+SESSION = get_session()
+
+
+def api_get(url, params=None):
+
+    response = SESSION.get(
+        url,
+        params=params,
+        timeout=REQUEST_TIMEOUT
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    if isinstance(data, dict):
+
+        if data.get("success") is False:
+
+            raise RuntimeError(
+                str(data.get("error", "API returned unsuccessful response"))
+            )
+
+    return data
+
+
+def to_float(value, default=np.nan):
+
+    try:
+
+        if value is None:
+            return default
+
+        result = float(value)
+
+        if not np.isfinite(result):
+            return default
+
+        return result
+
+    except (ValueError, TypeError):
+
+        return default
+
+
+def get_result(data):
+
+    if isinstance(data, dict):
+        return data.get("result", [])
+
+    return data
+
+
+def finite(value):
+
+    return value is not None and np.isfinite(
+        to_float(value)
+    )
+
+
+def fmt_price(value):
+
+    return (
+        f"${float(value):,.2f}"
+        if finite(value)
+        else "Unavailable"
+    )
+
+
+def fmt_usd(value):
+
+    return (
+        f"${float(value):,.0f}"
+        if finite(value)
+        else "Unavailable"
+    )
+
+
+# ============================================================
+# 4. BINANCE OHLC DATA
+# ============================================================
+
+def fetch_binance_klines():
+
+    params = {
+        "symbol": "BTCUSDT",
+        "interval": TIMEFRAME,
+        "limit": CANDLE_LIMIT
+    }
+
+    data = api_get(
+        BINANCE_KLINES_URL,
+        params=params
+    )
+
+    if not isinstance(data, list) or not data:
+
+        raise RuntimeError(
+            "No Binance candle data returned."
+        )
+
+    columns = [
+        "open_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "close_time",
+        "quote_volume",
+        "trades",
+        "taker_buy_volume",
+        "taker_buy_quote_volume",
+        "ignore"
+    ]
+
+    df = pd.DataFrame(data, columns=columns)
+
+    numeric_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
+    ]
+
+    for column in numeric_columns:
+
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce"
+        )
+
+    df["open_time"] = pd.to_datetime(
+        df["open_time"],
+        unit="ms",
+        utc=True
+    ).dt.tz_convert(IST)
+
+    df["close_time"] = pd.to_datetime(
+        df["close_time"],
+        unit="ms",
+        utc=True
+    ).dt.tz_convert(IST)
+
+    df = df.dropna(
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ]
+    )
+
+    df = df.sort_values("open_time")
+
+    return df.reset_index(drop=True)
+
+
+# ============================================================
+# 5. DELTA PAGINATED DATA
+# ============================================================
+
+def fetch_paginated_delta(
+    url,
+    params,
+    page_size=1000,
+    max_pages=30
+):
+
+    results = []
+
+    current_params = params.copy()
+    current_params["page_size"] = page_size
+
+    cursor_history = set()
+
+    for page in range(max_pages):
+
+        data = api_get(
+            url,
+            params=current_params
+        )
+
+        page_results = get_result(data)
+
+        if isinstance(page_results, dict):
+            page_results = [page_results]
+
+        if not isinstance(page_results, list):
+            break
+
+        results.extend(page_results)
+
+        meta = (
+            data.get("meta", {})
+            if isinstance(data, dict)
+            else {}
+        )
+
+        next_cursor = meta.get("after")
+
+        if not next_cursor:
+            break
+
+        if next_cursor in cursor_history:
+            break
+
+        cursor_history.add(next_cursor)
+
+        current_params["after"] = next_cursor
+
+        time.sleep(0.15)
+
+    return results
+
+
+# ============================================================
+# 6. DELTA PRODUCTS
+# ============================================================
+
+def fetch_delta_products():
+
+    params = {
+        "states": "live",
+        "page_size": 1000
+    }
+
+    try:
+
+        return fetch_paginated_delta(
+            DELTA_PRODUCTS_URL,
+            params,
+            page_size=1000
+        )
+
+    except requests.HTTPError:
+
+        return fetch_paginated_delta(
+            DELTA_PRODUCTS_URL,
+            {
+                "states": "live",
+                "page_size": 500
+            },
+            page_size=500
+        )
+
+
+# ============================================================
+# 7. DELTA FUTURES
+# ============================================================
+
+def fetch_delta_futures():
+
+    params = {
+        "contract_types": "perpetual_futures"
+    }
+
+    data = api_get(
+        DELTA_TICKERS_URL,
+        params=params
+    )
+
+    tickers = get_result(data)
+
+    if isinstance(tickers, dict):
+        tickers = [tickers]
+
+    btc_ticker = None
+
+    for ticker in tickers:
+
+        if ticker.get("symbol") == "BTCUSD":
+
+            btc_ticker = ticker
+            break
+
+    if btc_ticker is None:
+
+        raise RuntimeError(
+            "BTCUSD perpetual ticker not found on Delta."
+        )
+
+    return {
+
+        "symbol": btc_ticker.get("symbol"),
+
+        "funding_rate": to_float(
+            btc_ticker.get("funding_rate")
+        ),
+
+        "mark_price": to_float(
+            btc_ticker.get("mark_price")
+        ),
+
+        "spot_price": to_float(
+            btc_ticker.get("spot_price")
+        ),
+
+        "oi_value_usd": to_float(
+            btc_ticker.get("oi_value_usd")
+        ),
+
+        "timestamp": btc_ticker.get("timestamp")
+
+    }
+
+
+# ============================================================
+# 8. OPTIONS EXPIRY PARSER
+# ============================================================
+
+def parse_option_symbol(symbol):
+
+    if not symbol:
+        return None
+
+    pattern = (
+        r"^(C|P)-BTC-"
+        r"([0-9]+(?:\.[0-9]+)?)-"
+        r"(\d{6})$"
+    )
+
+    match = re.match(pattern, symbol)
+
+    if not match:
+        return None
+
+    option_type = match.group(1)
+    strike = float(match.group(2))
+    expiry_text = match.group(3)
+
+    try:
+
+        expiry_date = datetime.strptime(
+            expiry_text,
+            "%d%m%y"
+        ).date()
+
+    except ValueError:
+
+        return None
+
+    return {
+        "symbol": symbol,
+        "option_type": option_type,
+        "strike": strike,
+        "expiry_date": expiry_date
+    }
+
+
+def get_options_expiry_datetime(expiry_date):
+
+    return datetime.combine(
+        expiry_date,
+        dt_time(
+            OPTIONS_EXPIRY_HOUR,
+            OPTIONS_EXPIRY_MINUTE
+        ),
+        tzinfo=IST
+    )
+
+
+def get_nearest_expiry(products, tickers, now_ist):
+
+    expiry_dates = set()
+
+    for product in products:
+
+        parsed = parse_option_symbol(
+            product.get("symbol", "")
+        )
+
+        if parsed:
+            expiry_dates.add(parsed["expiry_date"])
+
+    for ticker in tickers:
+
+        parsed = parse_option_symbol(
+            ticker.get("symbol", "")
+        )
+
+        if parsed:
+            expiry_dates.add(parsed["expiry_date"])
+
+    valid_expiries = []
+
+    for expiry in expiry_dates:
+
+        expiry_datetime = get_options_expiry_datetime(
+            expiry
+        )
+
+        if expiry_datetime > now_ist:
+            valid_expiries.append(expiry)
+
+    if not valid_expiries:
+        return None
+
+    return min(valid_expiries)
+
+
+# ============================================================
+# 9. DELTA OPTIONS CHAIN
+# ============================================================
+
+def fetch_delta_options():
+
+    products = fetch_delta_products()
+
+    params = {
+        "contract_types": "call_options,put_options",
+        "page_size": 1000
+    }
+
+    tickers = fetch_paginated_delta(
+        DELTA_TICKERS_URL,
+        params,
+        page_size=1000
+    )
+
+    now_ist = datetime.now(IST)
+
+    nearest_expiry = get_nearest_expiry(
+        products,
+        tickers,
+        now_ist
+    )
+
+    if nearest_expiry is None:
+
+        raise RuntimeError(
+            "No upcoming BTC options expiry found."
+        )
+
+    option_rows = []
+
+    for ticker in tickers:
+
+        parsed = parse_option_symbol(
+            ticker.get("symbol", "")
+        )
+
+        if not parsed:
+            continue
+
+        if parsed["expiry_date"] != nearest_expiry:
+            continue
+
+        quotes = ticker.get("quotes") or {}
+        greeks = ticker.get("greeks") or {}
+
+        bid = to_float(
+            quotes.get("best_bid")
+        )
+
+        ask = to_float(
+            quotes.get("best_ask")
+        )
+
+        mark = to_float(
+            ticker.get("mark_price")
+        )
+
+        last = to_float(
+            ticker.get("close")
+        )
+
+        if (
+            finite(bid)
+            and finite(ask)
+            and bid > 0
+            and ask >= bid
+        ):
+
+            mid_price = (bid + ask) / 2
+
+        elif finite(mark) and mark > 0:
+
+            mid_price = mark
+
+        elif finite(last) and last > 0:
+
+            mid_price = last
+
+        else:
+
+            mid_price = np.nan
+
+        option_rows.append({
+
+            "symbol": parsed["symbol"],
+
+            "option_type": parsed["option_type"],
+
+            "strike": parsed["strike"],
+
+            "expiry_date": parsed["expiry_date"],
+
+            "oi_usd": to_float(
+                ticker.get("oi_value_usd"),
+                default=0.0
+            ),
+
+            "gamma": to_float(
+                greeks.get("gamma")
+            ),
+
+            "bid": bid,
+
+            "ask": ask,
+
+            "mark_price": mark,
+
+            "option_price": mid_price,
+
+            "spot_price": to_float(
+                ticker.get("spot_price")
+            )
+
+        })
+
+    options_df = pd.DataFrame(option_rows)
+
+    if options_df.empty:
+
+        raise RuntimeError(
+            "No option tickers found for nearest expiry."
+        )
+
+    return nearest_expiry, options_df
+
+
+# ============================================================
+# 10. PRIMARY BTC UTC DAILY AMT CYCLE
+# ============================================================
+
+def get_current_cycle_start(now=None):
+
+    """
+    Primary BTC profile boundary:
+
+    00:00 UTC = 05:30 IST
+
+    Cycle runs from 05:30 IST to 05:30 IST
+    the following calendar day.
+    """
+
+    if now is None:
+        now = datetime.now(IST)
+
+    boundary = now.replace(
+        hour=AMT_CYCLE_HOUR,
+        minute=AMT_CYCLE_MINUTE,
+        second=0,
+        microsecond=0
+    )
+
+    if now < boundary:
+        boundary -= timedelta(days=1)
+
+    return boundary
+
+
+def get_cycle_candles(df, cycle_start):
+
+    cycle_end = cycle_start + timedelta(days=1)
+
+    cycle_df = df[
+        (df["open_time"] >= cycle_start) &
+        (df["open_time"] < cycle_end)
+    ].copy()
+
+    return cycle_df.reset_index(drop=True)
+
+
+# ============================================================
+# 11. TPO PRICE ROWS
+# ============================================================
+
+def get_price_rows(
+    low,
+    high,
+    row_size=TPO_ROW_SIZE
+):
+
+    lower = int(np.floor(low / row_size))
+    upper = int(np.floor(high / row_size))
+
+    return list(range(lower, upper + 1))
+
+
+def row_price(
+    row,
+    row_size=TPO_ROW_SIZE
+):
+
+    return row * row_size + row_size / 2
+
+
+# ============================================================
+# 12. TPO PROFILE AND 70% VALUE AREA
+# ============================================================
+
+def calculate_tpo_profile(
+    cycle_df,
+    row_size=TPO_ROW_SIZE,
+    value_area_percent=VALUE_AREA_PERCENT
+):
+
+    if cycle_df.empty:
+        return None
+
+    tpo_counts = {}
+
+    profile_low = cycle_df["low"].min()
+    profile_high = cycle_df["high"].max()
+
+    for _, candle in cycle_df.iterrows():
+
+        rows = get_price_rows(
+            candle["low"],
+            candle["high"],
+            row_size
+        )
+
+        for row in rows:
+
+            tpo_counts[row] = (
+                tpo_counts.get(row, 0) + 1
+            )
+
+    if not tpo_counts:
+        return None
+
+    rows = sorted(tpo_counts.keys())
+
+    max_tpo = max(tpo_counts.values())
+
+    candidates = [
+        row
+        for row, count in tpo_counts.items()
+        if count == max_tpo
+    ]
+
+    profile_midpoint = (
+        profile_low + profile_high
+    ) / 2
+
+    midpoint_row = profile_midpoint / row_size
+
+    poc_row = min(
+        candidates,
+        key=lambda row: (
+            abs(row - midpoint_row),
+            row
+        )
+    )
+
+    total_tpo = sum(tpo_counts.values())
+
+    target_tpo = (
+        total_tpo * value_area_percent
+    )
+
+    included_rows = {poc_row}
+
+    accumulated = tpo_counts[poc_row]
+
+    lower_row = poc_row - 1
+    upper_row = poc_row + 1
+
+    while accumulated < target_tpo:
+
+        lower_count = tpo_counts.get(
+            lower_row,
+            0
+        )
+
+        upper_count = tpo_counts.get(
+            upper_row,
+            0
+        )
+
+        if lower_count == 0 and upper_count == 0:
+            break
+
+        if lower_count > upper_count:
+
+            included_rows.add(lower_row)
+            accumulated += lower_count
+            lower_row -= 1
+
+        elif upper_count > lower_count:
+
+            included_rows.add(upper_row)
+            accumulated += upper_count
+            upper_row += 1
+
+        else:
+
+            lower_distance = abs(
+                row_price(lower_row, row_size)
+                - profile_midpoint
+            )
+
+            upper_distance = abs(
+                row_price(upper_row, row_size)
+                - profile_midpoint
+            )
+
+            if lower_distance <= upper_distance:
+
+                included_rows.add(lower_row)
+                accumulated += lower_count
+                lower_row -= 1
+
+            else:
+
+                included_rows.add(upper_row)
+                accumulated += upper_count
+                upper_row += 1
+
+    value_area_low_row = min(included_rows)
+    value_area_high_row = max(included_rows)
+
+    profile_table = []
+
+    for row in rows:
+
+        profile_table.append({
+
+            "Price Level": row_price(
+                row,
+                row_size
+            ),
+
+            "TPO Count": tpo_counts[row],
+
+            "In Value Area": (
+                row in included_rows
+            ),
+
+            "POC": row == poc_row
+
+        })
+
+    return {
+
+        "poc": row_price(
+            poc_row,
+            row_size
+        ),
+
+        "vah": row_price(
+            value_area_high_row,
+            row_size
+        ),
+
+        "val": row_price(
+            value_area_low_row,
+            row_size
+        ),
+
+        "tpo_counts": tpo_counts,
+
+        "table": pd.DataFrame(
+            profile_table
+        ),
+
+        "total_tpo": total_tpo
+
+    }
+
+
+# ============================================================
+# 13. OHLCV VOLUME PROFILE APPROXIMATION
+# ============================================================
+
+def calculate_volume_profile(
+    cycle_df,
+    row_size=TPO_ROW_SIZE
+):
+
+    if cycle_df.empty:
+        return None
+
+    volume_distribution = {}
+
+    for _, candle in cycle_df.iterrows():
+
+        rows = get_price_rows(
+            candle["low"],
+            candle["high"],
+            row_size
+        )
+
+        if not rows:
+            continue
+
+        allocated_volume = (
+            candle["volume"] / len(rows)
+        )
+
+        for row in rows:
+
+            volume_distribution[row] = (
+                volume_distribution.get(row, 0.0)
+                + allocated_volume
+            )
+
+    if not volume_distribution:
+        return None
+
+    poc_row = max(
+        volume_distribution,
+        key=volume_distribution.get
+    )
+
+    result = pd.DataFrame([
+
+        {
+            "Price Level": row_price(
+                row,
+                row_size
+            ),
+
+            "Estimated Volume": volume,
+
+            "POC": row == poc_row
+
+        }
+
+        for row, volume in sorted(
+            volume_distribution.items()
+        )
+
+    ])
+
+    return {
+
+        "poc": row_price(
+            poc_row,
+            row_size
+        ),
+
+        "table": result
+
+    }
+
+
+# ============================================================
+# 14. INITIAL BALANCE
+# ============================================================
+
+def calculate_initial_balance(
+    cycle_df,
+    cycle_start
+):
+
+    """
+    First two 30-minute candles of the UTC daily cycle:
+
+    00:00 UTC = 05:30 IST
+    00:30 UTC = 06:00 IST
+
+    Initial Balance completes at 06:30 IST.
+    """
+
+    ib_start = cycle_start
+
+    ib_end = cycle_start + timedelta(hours=1)
+
+    ib_df = cycle_df[
+        (cycle_df["open_time"] >= ib_start) &
+        (cycle_df["open_time"] < ib_end)
+    ]
+
+    if len(ib_df) < 2:
+
+        return {
+
+            "high": np.nan,
+            "low": np.nan,
+            "complete": False
+
+        }
+
+    return {
+
+        "high": ib_df["high"].max(),
+
+        "low": ib_df["low"].min(),
+
+        "complete": True
+
+    }
+
+
+# ============================================================
+# 15. SINGLE PRINTS
+# ============================================================
+
+def calculate_single_prints(
+    cycle_df,
+    row_size=TPO_ROW_SIZE
+):
+
+    if cycle_df.empty:
+
+        return pd.DataFrame(
+            columns=[
+                "Price Level",
+                "Candle Count"
+            ]
+        )
+
+    candle_counts = {}
+
+    for _, candle in cycle_df.iterrows():
+
+        rows = set(
+            get_price_rows(
+                candle["low"],
+                candle["high"],
+                row_size
+            )
+        )
+
+        for row in rows:
+
+            candle_counts[row] = (
+                candle_counts.get(row, 0) + 1
+            )
+
+    single_rows = [
+        row
+        for row, count in candle_counts.items()
+        if count == 1
+    ]
+
+    return pd.DataFrame([
+
+        {
+            "Price Level": row_price(
+                row,
+                row_size
+            ),
+
+            "Candle Count": candle_counts[row]
+
+        }
+
+        for row in sorted(single_rows)
+
+    ])
+
+
+# ============================================================
+# 16. OPTIONS ANALYTICS
+# ============================================================
+
+def calculate_options_metrics(
+    options_df,
+    current_price
+):
+
+    if options_df.empty:
+        return None
+
+    calls = options_df[
+        options_df["option_type"] == "C"
+    ].copy()
+
+    puts = options_df[
+        options_df["option_type"] == "P"
+    ].copy()
+
+    all_strikes = sorted(
+        options_df["strike"].unique()
+    )
+
+    if not all_strikes:
+        return None
+
+    atm_strike = min(
+        all_strikes,
+        key=lambda strike: abs(
+            strike - current_price
+        )
+    )
+
+    atm_calls = calls[
+        calls["strike"] == atm_strike
+    ]
+
+    atm_puts = puts[
+        puts["strike"] == atm_strike
+    ]
+
+    call_price = np.nan
+    put_price = np.nan
+
+    if not atm_calls.empty:
+        call_price = atm_calls.iloc[0]["option_price"]
+
+    if not atm_puts.empty:
+        put_price = atm_puts.iloc[0]["option_price"]
+
+    straddle = np.nan
+
+    if (
+        finite(call_price)
+        and finite(put_price)
+    ):
+
+        straddle = call_price + put_price
+
+    call_wall = None
+    put_wall = None
+
+    if not calls.empty:
+
+        call_wall = calls.loc[
+            calls["oi_usd"].idxmax()
+        ]
+
+    if not puts.empty:
+
+        put_wall = puts.loc[
+            puts["oi_usd"].idxmax()
+        ]
+
+    return {
+
+        "atm_strike": atm_strike,
+
+        "call_price": call_price,
+
+        "put_price": put_price,
+
+        "straddle": straddle,
+
+        "call_wall": call_wall,
+
+        "put_wall": put_wall,
+
+        "calls": calls,
+
+        "puts": puts
+
+    }
+
+
+# ============================================================
+# 17. OPTIONS EXPIRY COUNTDOWN
+# ============================================================
+
+def expiry_countdown(
+    expiry_date,
+    now=None
+):
+
+    if now is None:
+        now = datetime.now(IST)
+
+    expiry_datetime = get_options_expiry_datetime(
+        expiry_date
+    )
+
+    remaining = expiry_datetime - now
+
+    if remaining.total_seconds() <= 0:
+        return "Expired"
+
+    total_seconds = int(
+        remaining.total_seconds()
+    )
+
+    days, remainder = divmod(
+        total_seconds,
+        86400
+    )
+
+    hours, remainder = divmod(
+        remainder,
+        3600
+    )
+
+    minutes, seconds = divmod(
+        remainder,
+        60
+    )
+
+    return (
+        f"{days}d {hours}h "
+        f"{minutes}m {seconds}s"
+    )
+
+
+# ============================================================
+# 18. DATA FETCH CONTROLLER
+# ============================================================
+
+def fetch_all_data():
+
+    results = {}
+
+    errors = []
+
+    successful_fetch_times = []
+
+    try:
+
+        results["candles"] = fetch_binance_klines()
+
+        successful_fetch_times.append(
+            datetime.now(IST)
+        )
+
+    except Exception as exc:
+
+        errors.append(
+            f"Binance OHLC: {exc}"
+        )
+
+        results["candles"] = None
+
+    try:
+
+        results["futures"] = fetch_delta_futures()
+
+        successful_fetch_times.append(
+            datetime.now(IST)
+        )
+
+    except Exception as exc:
+
+        errors.append(
+            f"Delta Futures: {exc}"
+        )
+
+        results["futures"] = None
+
+    try:
+
+        expiry, options = fetch_delta_options()
+
+        results["expiry"] = expiry
+        results["options"] = options
+
+        successful_fetch_times.append(
+            datetime.now(IST)
+        )
+
+    except Exception as exc:
+
+        errors.append(
+            f"Delta Options: {exc}"
+        )
+
+        results["expiry"] = None
+        results["options"] = None
+
+    results["errors"] = errors
+
+    results["last_successful_fetch"] = (
+        max(successful_fetch_times)
+        if successful_fetch_times
+        else None
+    )
+
+    return results
+
+
+# ============================================================
+# 19. AUTOMATIC HISTORY AND MARKET ASSESSMENT
+# ============================================================
+
+def row_value(row, key):
+
+    if row is None:
+        return np.nan
+
+    try:
+        return to_float(row.get(key))
+
+    except Exception:
+        return np.nan
+
+
+def make_market_snapshot(
+    now_ist,
+    current_price,
+    tpo,
+    ib,
+    futures_data,
+    option_metrics,
+    expiry
+):
+
+    call_wall = (
+        option_metrics.get("call_wall")
+        if option_metrics else None
+    )
+
+    put_wall = (
+        option_metrics.get("put_wall")
+        if option_metrics else None
+    )
+
+    premium = np.nan
+
+    if (
+        futures_data
+        and finite(futures_data.get("mark_price"))
+        and finite(futures_data.get("spot_price"))
+    ):
+
+        spot = float(
+            futures_data["spot_price"]
+        )
+
+        if spot:
+
+            premium = (
+                (
+                    float(futures_data["mark_price"])
+                    - spot
+                ) / spot
+            ) * 100
+
+    return {
+
+        "timestamp": now_ist.isoformat(),
+
+        "cycle": get_current_cycle_start(
+            now_ist
+        ).strftime("%Y-%m-%d %H:%M"),
+
+        "price": to_float(current_price),
+
+        "poc": (
+            to_float(tpo.get("poc"))
+            if tpo else np.nan
+        ),
+
+        "vah": (
+            to_float(tpo.get("vah"))
+            if tpo else np.nan
+        ),
+
+        "val": (
+            to_float(tpo.get("val"))
+            if tpo else np.nan
+        ),
+
+        "ib_high": (
+            to_float(ib.get("high"))
+            if ib else np.nan
+        ),
+
+        "ib_low": (
+            to_float(ib.get("low"))
+            if ib else np.nan
+        ),
+
+        "ib_complete": (
+            bool(ib.get("complete"))
+            if ib else False
+        ),
+
+        "oi_usd": (
+            to_float(
+                futures_data.get("oi_value_usd")
+            )
+            if futures_data else np.nan
+        ),
+
+        "funding": (
+            to_float(
+                futures_data.get("funding_rate")
+            )
+            if futures_data else np.nan
+        ),
+
+        "premium_pct": premium,
+
+        "atm_strike": (
+            to_float(
+                option_metrics.get("atm_strike")
+            )
+            if option_metrics else np.nan
+        ),
+
+        "straddle": (
+            to_float(
+                option_metrics.get("straddle")
+            )
+            if option_metrics else np.nan
+        ),
+
+        "call_wall_strike": row_value(
+            call_wall,
+            "strike"
+        ),
+
+        "call_wall_oi": row_value(
+            call_wall,
+            "oi_usd"
+        ),
+
+        "put_wall_strike": row_value(
+            put_wall,
+            "strike"
+        ),
+
+        "put_wall_oi": row_value(
+            put_wall,
+            "oi_usd"
+        ),
+
+        "expiry": (
+            expiry.isoformat()
+            if expiry else None
+        )
+
+    }
+
+
+def add_snapshot_to_history(snapshot):
+
+    """
+    Stores approximately one snapshot every five minutes.
+
+    Streamlit session state survives normal Streamlit reruns.
+    It is not permanent database storage.
+    """
+
+    if "btc_amt_history" not in st.session_state:
+
+        st.session_state["btc_amt_history"] = []
+
+    history = st.session_state["btc_amt_history"]
+
+    current_time = datetime.fromisoformat(
+        snapshot["timestamp"]
+    )
+
+    if not history:
+
+        history.append(snapshot)
+
+    else:
+
+        last_time = datetime.fromisoformat(
+            history[-1]["timestamp"]
+        )
+
+        elapsed = (
+            current_time - last_time
+        ).total_seconds()
+
+        if elapsed >= 240:
+
+            history.append(snapshot)
+
+        elif elapsed < 0:
+
+            history.clear()
+            history.append(snapshot)
+
+    cutoff = current_time - timedelta(days=7)
+
+    history[:] = [
+
+        item
+
+        for item in history
+
+        if datetime.fromisoformat(
+            item["timestamp"]
+        ) >= cutoff
+
+    ]
+
+    if len(history) > 2200:
+
+        del history[:-2200]
+
+    return history
+
+
+def find_comparison_snapshot(
+    history,
+    now_ist,
+    minutes,
+    tolerance=12
+):
+
+    target = now_ist - timedelta(
+        minutes=minutes
+    )
+
+    candidates = []
+
+    for item in history:
+
+        stamp = datetime.fromisoformat(
+            item["timestamp"]
+        )
+
+        age_minutes = (
+            now_ist - stamp
+        ).total_seconds() / 60
+
+        if (
+            age_minutes > 0
+            and abs(
+                (stamp - target).total_seconds()
+            ) <= tolerance * 60
+        ):
+
+            candidates.append((
+                abs(
+                    (stamp - target).total_seconds()
+                ),
+                item
+            ))
+
+    if not candidates:
+        return None
+
+    return min(
+        candidates,
+        key=lambda pair: pair[0]
+    )[1]
+
+
+def delta_text(
+    current,
+    previous,
+    suffix="",
+    money=False
+):
+
+    if not (
+        finite(current)
+        and finite(previous)
+    ):
+
+        return "Not enough historical readings"
+
+    change = float(current) - float(previous)
+
+    if money:
+
+        if previous:
+
+            percentage = (
+                change / float(previous)
+            ) * 100
+
+            return (
+                f"{change:+,.0f} USD "
+                f"({percentage:+.2f}%)"
+            )
+
+        return f"{change:+,.0f} USD"
+
+    return f"{change:+.2f}{suffix}"
+
+
+# ============================================================
+# 20. COMBINED MARKET BIAS
+# ============================================================
+
+def assess_market_bias(
+    snapshot,
+    history,
+    now_ist
+):
+
+    price = snapshot["price"]
+
+    poc = snapshot["poc"]
+    vah = snapshot["vah"]
+    val = snapshot["val"]
+
+    bullish = []
+    bearish = []
+    neutral = []
+
+    # --------------------------------------------------------
+    # A. PRIMARY AUCTION LOCATION
+    # --------------------------------------------------------
+
+    auction_location = "Unavailable"
+
+    if all(
+        finite(x)
+        for x in (price, poc, vah, val)
+    ):
+
+        if price > vah:
+
+            auction_location = "Above developing value"
+
+            bullish.append(
+                "Price is above developing VAH."
+            )
+
+        elif price < val:
+
+            auction_location = "Below developing value"
+
+            bearish.append(
+                "Price is below developing VAL."
+            )
+
+        else:
+
+            auction_location = "Inside developing value"
+
+            neutral.append(
+                "Price is inside developing value; "
+                "auction remains rotational unless acceptance changes."
+            )
+
+        # POC position is retained as context.
+        # It is NOT counted as a second independent
+        # directional confirmation.
+
+        if price > poc:
+
+            neutral.append(
+                "Price is above developing POC."
+            )
+
+        elif price < poc:
+
+            neutral.append(
+                "Price is below developing POC."
+            )
+
+    # --------------------------------------------------------
+    # B. HISTORICAL REFERENCES
+    # --------------------------------------------------------
+
+    prior_30m = find_comparison_snapshot(
+        history,
+        now_ist,
+        30
+    )
+
+    prior_1h = find_comparison_snapshot(
+        history,
+        now_ist,
+        60
+    )
+
+    prior_4h = find_comparison_snapshot(
+        history,
+        now_ist,
+        240
+    )
+
+    reference = prior_1h or prior_30m
+
+    price_change = np.nan
+    oi_change = np.nan
+
+    if reference:
+
+        if finite(price) and finite(
+            reference.get("price")
+        ):
+
+            price_change = (
+                price - reference["price"]
+            )
+
+        if finite(snapshot["oi_usd"]) and finite(
+            reference.get("oi_usd")
+        ):
+
+            oi_change = (
+                snapshot["oi_usd"]
+                - reference["oi_usd"]
+            )
+
+    # --------------------------------------------------------
+    # C. FUTURES OI CONTEXT
+    # --------------------------------------------------------
+
+    oi_context = (
+        "Insufficient history to classify "
+        "OI build-up or reduction."
+    )
+
+    if (
+        finite(price_change)
+        and finite(oi_change)
+    ):
+
+        if price_change > 0 and oi_change > 0:
+
+            oi_context = (
+                "Price and OI both increased: "
+                "participation expanded alongside the rise."
+            )
+
+            bullish.append(
+                "Futures OI increased alongside rising price."
+            )
+
+        elif price_change > 0 and oi_change < 0:
+
+            oi_context = (
+                "Price rose while OI fell: "
+                "position reduction or short covering is possible."
+            )
+
+            neutral.append(
+                "Rising price with falling OI may be "
+                "short covering rather than fresh participation."
+            )
+
+        elif price_change < 0 and oi_change > 0:
+
+            oi_context = (
+                "Price fell while OI increased: "
+                "participation expanded alongside the decline."
+            )
+
+            bearish.append(
+                "Futures OI increased alongside falling price."
+            )
+
+        elif price_change < 0 and oi_change < 0:
+
+            oi_context = (
+                "Price and OI both fell: "
+                "position reduction or long liquidation is possible."
+            )
+
+            neutral.append(
+                "Falling price with falling OI may reflect "
+                "liquidation rather than fresh short participation."
+            )
+
+        else:
+
+            oi_context = (
+                "Price/OI changes are mixed or nearly unchanged."
+            )
+
+    # --------------------------------------------------------
+    # D. DEVELOPING POC MIGRATION
+    # --------------------------------------------------------
+
+    if (
+        reference
+        and reference.get("cycle") == snapshot.get("cycle")
+    ):
+
+        old_poc = reference.get("poc")
+
+        if finite(poc) and finite(old_poc):
+
+            if poc > old_poc:
+
+                neutral.append(
+                    "Developing POC has migrated higher "
+                    "since the comparison reading."
+                )
+
+            elif poc < old_poc:
+
+                neutral.append(
+                    "Developing POC has migrated lower "
+                    "since the comparison reading."
+                )
+
+    # --------------------------------------------------------
+    # E. FUNDING AND PREMIUM
+    # --------------------------------------------------------
+
+    funding = snapshot.get("funding")
+
+    if finite(funding):
+
+        neutral.append(
+            f"Funding is {float(funding):+.5f}% "
+            "as supplied by Delta; positioning context only."
+        )
+
+    if finite(snapshot.get("premium_pct")):
+
+        neutral.append(
+            "Perpetual mark premium/discount versus spot is "
+            f"{snapshot['premium_pct']:+.4f}%."
+        )
+
+    # --------------------------------------------------------
+    # F. OPTIONS OI CONCENTRATIONS
+    # --------------------------------------------------------
+
+    if (
+        finite(snapshot.get("call_wall_strike"))
+        and finite(snapshot.get("put_wall_strike"))
+    ):
+
+        neutral.append(
+            "Nearest-expiry largest OI concentrations: "
+            f"call {snapshot['call_wall_strike']:,.0f}, "
+            f"put {snapshot['put_wall_strike']:,.0f}; "
+            "these do not establish dealer direction "
+            "or defended levels."
+        )
+
+    # --------------------------------------------------------
+    # G. BIAS CLASSIFICATION (UPDATED PER CHATGPT AUDIT)
+    # --------------------------------------------------------
+
+    bull_score = len(bullish)
+    bear_score = len(bearish)
+
+    if bull_score > 0 and bear_score == 0:
+        bias = "Bullish evidence only"
+    elif bear_score > 0 and bull_score == 0:
+        bias = "Bearish evidence only"
+    elif bull_score == 0 and bear_score == 0:
+        bias = "Neutral / insufficient directional evidence"
+    else:
+        bias = "Mixed / conflicting"
+
+    dominant = max(
+        bull_score,
+        bear_score
+    )
+
+    difference = abs(
+        bull_score - bear_score
+    )
+
+    if dominant >= 4 and difference >= 3:
+
+        confidence = "Moderate"
+
+    elif dominant >= 3 and difference >= 2:
+
+        confidence = "Low–Moderate"
+
+    else:
+
+        confidence = "Low"
+
+    if not reference and bias in (
+        "Bullish evidence only",
+        "Bearish evidence only"
+    ):
+
+        confidence = "Low"
+
+    # --------------------------------------------------------
+    # H. HISTORICAL COMPARISON TABLE
+    # --------------------------------------------------------
+
+    comparisons = {}
+
+    for label, minutes in (
+        ("30m", 30),
+        ("1h", 60),
+        ("4h", 240)
+    ):
+
+        old = find_comparison_snapshot(
+            history,
+            now_ist,
+            minutes
+        )
+
+        if old:
+
+            comparisons[label] = {
+
+                "time": old["timestamp"],
+
+                "price": delta_text(
+                    snapshot["price"],
+                    old.get("price"),
+                    money=True
+                ),
+
+                "oi": delta_text(
+                    snapshot["oi_usd"],
+                    old.get("oi_usd"),
+                    money=True
+                ),
+
+                "poc": delta_text(
+                    snapshot["poc"],
+                    old.get("poc"),
+                    money=True
+                )
+
+            }
+
+        else:
+
+            comparisons[label] = None
+
+    return {
+
+        "bias": bias,
+
+        "confidence": confidence,
+
+        "bullish": bullish,
+
+        "bearish": bearish,
+
+        "neutral": neutral,
+
+        "oi_context": oi_context,
+
+        "auction_location": auction_location,
+
+        "comparisons": comparisons,
+
+        "history_count": len(history),
+
+        "price_change_reference": price_change,
+
+        "oi_change_reference": oi_change,
+
+        "reference_label": (
+            "1h"
+            if prior_1h
+            else "30m"
+            if prior_30m
+            else "none"
+        ),
+
+        "prior_4h": prior_4h
+
+    }
+
+
+# ============================================================
+# 21. COPY-READY MARKET REPORT
+# ============================================================
+
+def build_copy_report(
+    snapshot,
+    assessment,
+    options_metrics,
+    initial_balance,
+    single_prints,
+    cycle_df,
+    now_ist
+):
+
+    lines = [
+
+        "BTC AMT + FUTURES + OPTIONS MARKET REPORT",
+
+        f"Generated: {now_ist.strftime('%d-%m-%Y %H:%M:%S IST')}",
+
+        f"Primary BTC AMT cycle: {snapshot.get('cycle')} IST "
+        "(05:30 to 05:30)",
+
+        "Cycle basis: 00:00 UTC daily boundary",
+
+        "Options expiry reference: 17:30 IST",
+
+        f"Bias: {assessment['bias']} | "
+        f"Confidence: {assessment['confidence']}",
+
+        "",
+
+        "1) AMT STRUCTURE",
+
+        f"Price (Binance latest candle close): "
+        f"{fmt_price(snapshot.get('price'))}",
+
+        f"Developing POC: "
+        f"{fmt_price(snapshot.get('poc'))}",
+
+        f"VAH: {fmt_price(snapshot.get('vah'))} | "
+        f"VAL: {fmt_price(snapshot.get('val'))}",
+
+        f"Price location: {assessment['auction_location']}",
+
+        f"IB High: {fmt_price(snapshot.get('ib_high'))} | "
+        f"IB Low: {fmt_price(snapshot.get('ib_low'))} | "
+        f"Complete: {snapshot.get('ib_complete')}",
+
+        f"30m candles in current cycle: {len(cycle_df)}",
+
+        f"Single-print price rows: {len(single_prints)}",
+
+        "Volume profile: OHLCV range-distributed approximation, "
+        "not trade-level volume-at-price.",
+
+        "",
+
+        "2) FUTURES PARTICIPATION (DELTA BTC PERPETUAL)",
+
+        f"Open interest: {fmt_usd(snapshot.get('oi_usd'))}",
+
+        (
+            f"Funding rate: {snapshot.get('funding'):.6f}%"
+            if finite(snapshot.get("funding"))
+            else "Funding rate: Unavailable"
+        ),
+
+        (
+            f"Perpetual mark premium/discount vs spot: "
+            f"{snapshot.get('premium_pct'):+.5f}%"
+            if finite(snapshot.get("premium_pct"))
+            else "Perpetual premium/discount: Unavailable"
+        ),
+
+        f"OI interpretation: {assessment['oi_context']}",
+
+        "",
+
+        "3) OPTIONS POSITIONING (NEAREST EXPIRY)",
+
+        f"Expiry: {snapshot.get('expiry') or 'Unavailable'} "
+        "(17:30 IST contract reference)",
+
+        f"ATM strike: {fmt_price(snapshot.get('atm_strike'))}",
+
+        f"ATM straddle premium: {fmt_price(snapshot.get('straddle'))}",
+
+        f"Largest call OI: strike "
+        f"{fmt_price(snapshot.get('call_wall_strike'))}, "
+        f"OI {fmt_usd(snapshot.get('call_wall_oi'))}",
+
+        f"Largest put OI: strike "
+        f"{fmt_price(snapshot.get('put_wall_strike'))}, "
+        f"OI {fmt_usd(snapshot.get('put_wall_oi'))}",
+
+        "Options OI concentrations are not guaranteed "
+        "support/resistance; gamma is not dealer net gamma exposure.",
+
+        "",
+
+        "4) AUTOMATIC COMBINED ASSESSMENT",
+
+        f"Bias: {assessment['bias']}",
+
+        f"Confidence: {assessment['confidence']}",
+
+        "Bullish evidence:"
+
+    ]
+
+    lines += (
+        [f"- {item}" for item in assessment["bullish"]]
+        or ["- None identified"]
+    )
+
+    lines.append("Bearish evidence:")
+
+    lines += (
+        [f"- {item}" for item in assessment["bearish"]]
+        or ["- None identified"]
+    )
+
+    lines.append("Context / cautions:")
+
+    lines += (
+        [f"- {item}" for item in assessment["neutral"]]
+        or ["- None"]
+    )
+
+    lines += [
+        "",
+        "5) AUTOMATIC HISTORICAL COMPARISON"
+    ]
+
+    for label in ("30m", "1h", "4h"):
+
+        comp = assessment["comparisons"].get(label)
+
+        if comp:
+
+            lines.append(
+                f"{label}: Price {comp['price']} | "
+                f"OI {comp['oi']} | "
+                f"POC {comp['poc']} "
+                f"(reference {comp['time']})"
+            )
+
+        else:
+
+            lines.append(
+                f"{label}: Not enough stored readings yet."
+            )
+
+    lines += [
+
+        "",
+
+        f"Stored readings in this app session: "
+        f"{assessment['history_count']}",
+
+        "History is session-local and may reset after "
+        "session expiry or server restart.",
+
+        "A single OI snapshot cannot establish "
+        "OI build-up or reduction.",
+
+        "Please assess observed facts separately from "
+        "interpretation. Do not treat OI walls, funding "
+        "or gamma as standalone directional proof."
+
+    ]
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# 22. DASHBOARD HEADER
+# ============================================================
+
+now = datetime.now(IST)
+
+cycle_start = get_current_cycle_start(now)
+
+cycle_end = cycle_start + timedelta(days=1)
+
+st.title("₿ BTC Auction Market Observer")
+
+st.caption(
+    "AMT | Price Action | Futures Participation | Options Positioning"
+)
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+
+    st.metric(
+        "Primary BTC AMT Cycle",
+        "05:30 → 05:30 IST"
+    )
+
+with col2:
+
+    st.metric(
+        "Primary Timeframe",
+        "30 Minutes"
+    )
+
+with col3:
+
+    st.metric(
+        "TPO Row Size",
+        "$50"
+    )
+
+st.caption(
+    f"Current UTC daily cycle: "
+    f"{cycle_start.strftime('%d %b %Y %H:%M')} "
+    f"to "
+    f"{cycle_end.strftime('%d %b %Y %H:%M')} IST"
+)
+
+st.caption(
+    "00:00 UTC daily boundary | "
+    "Options expiry remains independently referenced to 17:30 IST."
+)
+
+st.divider()
+
+
+# ============================================================
+# 23. FETCH MARKET DATA
+# ============================================================
+
+with st.spinner("Fetching public market data..."):
+
+    market_data = fetch_all_data()
+
+candles = market_data["candles"]
+
+futures = market_data["futures"]
+
+options_df = market_data["options"]
+
+expiry_date = market_data["expiry"]
+
+for error in market_data["errors"]:
+
+    st.warning(error)
+
+if candles is None:
+
+    st.error(
+        "Binance candle data is unavailable. "
+        "AMT calculations cannot be completed."
+    )
+
+    st.stop()
+
+
+# ============================================================
+# 24. CALCULATE CURRENT AMT CYCLE
+# ============================================================
+
+cycle_df = get_cycle_candles(
+    candles,
+    cycle_start
+)
+
+current_price = float(
+    candles.iloc[-1]["close"]
+)
+
+tpo_profile = calculate_tpo_profile(
+    cycle_df
+)
+
+volume_profile = calculate_volume_profile(
+    cycle_df
+)
+
+initial_balance = calculate_initial_balance(
+    cycle_df,
+    cycle_start
+)
+
+single_prints = calculate_single_prints(
+    cycle_df
+)
+
+
+# ============================================================
+# 25. OPTIONS CALCULATIONS
+# ============================================================
+
+options_metrics = None
+
+if options_df is not None:
+
+    options_metrics = calculate_options_metrics(
+        options_df,
+        current_price
+    )
+
+
+# ============================================================
+# 26. AUTOMATIC SNAPSHOT AND BIAS
+# ============================================================
+
+bias_snapshot = make_market_snapshot(
+    now,
+    current_price,
+    tpo_profile,
+    initial_balance,
+    futures,
+    options_metrics,
+    expiry_date
+)
+
+bias_history = add_snapshot_to_history(
+    bias_snapshot
+)
+
+bias_assessment = assess_market_bias(
+    bias_snapshot,
+    bias_history,
+    now
+)
+
+
+# ============================================================
+# 27. DASHBOARD TABS
+# ============================================================
+
+tab_amt, tab_futures, tab_options, tab_bias = st.tabs([
+
+    "AMT Structure",
+
+    "Futures Participation",
+
+    "Options Positioning",
+
+    "Market Bias & Copy Report"
+
+])
+
+
+# ============================================================
+# TAB 1: AMT STRUCTURE
+# ============================================================
+
+with tab_amt:
+
+    st.subheader("BTC Auction Structure")
+
+    st.metric(
+        "Current BTC Price (Binance BTCUSDT)",
+        f"${current_price:,.2f}"
+    )
+
+    st.caption(
+        f"30-minute candles available in current cycle: "
+        f"{len(cycle_df)}"
+    )
+
+    st.divider()
+
+    st.markdown(
+        '<div class="section-header">Developing TPO Profile</div>',
+        unsafe_allow_html=True
+    )
+
+    if tpo_profile is not None:
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.metric(
+            "Developing POC",
+            f"${tpo_profile['poc']:,.2f}"
+        )
+
+        c2.metric(
+            "VAH",
+            f"${tpo_profile['vah']:,.2f}"
+        )
+
+        c3.metric(
+            "VAL",
+            f"${tpo_profile['val']:,.2f}"
+        )
+
+        st.caption(
+            f"70% TPO Value Area | "
+            f"Total TPO observations: "
+            f"{tpo_profile['total_tpo']}"
+        )
+
+        with st.expander(
+            "View TPO Price Distribution"
+        ):
+
+            tpo_table = tpo_profile["table"].copy()
+
+            tpo_table = tpo_table.sort_values(
+                "Price Level",
+                ascending=False
+            )
+
+            st.dataframe(
+                tpo_table,
+                use_container_width=True,
+                hide_index=True
+            )
+
+    else:
+
+        st.warning(
+            "Insufficient candles for TPO calculation."
+        )
+
+    st.divider()
+
+    st.markdown(
+        '<div class="section-header">Initial Balance</div>',
+        unsafe_allow_html=True
+    )
+
+    ib1, ib2 = st.columns(2)
+
+    if initial_balance["complete"]:
+
+        ib1.metric(
+            "Initial Balance High",
+            f"${initial_balance['high']:,.2f}"
+        )
+
+        ib2.metric(
+            "Initial Balance Low",
+            f"${initial_balance['low']:,.2f}"
+        )
+
+    else:
+
+        ib1.metric(
+            "Initial Balance High",
+            "Pending"
+        )
+
+        ib2.metric(
+            "Initial Balance Low",
+            "Pending"
+        )
+
+        st.info(
+            "IB requires both the 05:30 and 06:00 "
+            "IST candles of the current UTC daily cycle."
+        )
+
+    st.divider()
+
+    st.markdown(
+        '<div class="section-header">Single Prints</div>',
+        unsafe_allow_html=True
+    )
+
+    if not single_prints.empty:
+
+        st.dataframe(
+            single_prints.sort_values(
+                "Price Level",
+                ascending=False
+            ),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.caption(
+            "Price rows touched by exactly one "
+            "30-minute candle in the current cycle."
+        )
+
+    else:
+
+        st.info(
+            "No single-print levels identified."
+        )
+
+    st.divider()
+
+    st.markdown(
+        '<div class="section-header">'
+        'Volume Profile (OHLCV Approximation)'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    if volume_profile is not None:
+
+        st.metric(
+            "Estimated Volume POC",
+            f"${volume_profile['poc']:,.2f}"
+        )
+
+        st.dataframe(
+            volume_profile["table"].sort_values(
+                "Price Level",
+                ascending=False
+            ),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.caption(
+            "Candle volume is equally allocated across "
+            "the $50 rows touched by each candle. "
+            "This is not trade-level volume-at-price."
+        )
+
+    else:
+
+        st.info(
+            "Volume Profile unavailable."
+        )
+
+
+# ============================================================
+# TAB 2: FUTURES PARTICIPATION
+# ============================================================
+
+with tab_futures:
+
+    st.subheader("Delta BTC Perpetual Futures")
+
+    if futures is not None:
+
+        oi = futures["oi_value_usd"]
+        funding = futures["funding_rate"]
+        mark_price = futures["mark_price"]
+        spot_price = futures["spot_price"]
+
+        col1, col2 = st.columns(2)
+
+        col1.metric(
+            "Total OI (USD)",
+            (
+                f"${oi:,.2f}"
+                if finite(oi)
+                else "Unavailable"
+            )
+        )
+
+        col2.metric(
+            "Current Funding Rate",
+            (
+                f"{funding:.4f}%"
+                if finite(funding)
+                else "Unavailable"
+            )
+        )
+
+        st.divider()
+
+        st.markdown(
+            '<div class="section-header">'
+            'Spot / Perpetual Premium'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        if (
+            finite(mark_price)
+            and finite(spot_price)
+            and spot_price != 0
+        ):
+
+            premium = (
+                (mark_price - spot_price)
+                / spot_price
+            ) * 100
+
+            p1, p2, p3 = st.columns(3)
+
+            p1.metric(
+                "Perpetual Mark Price",
+                f"${mark_price:,.2f}"
+            )
+
+            p2.metric(
+                "Spot Price",
+                f"${spot_price:,.2f}"
+            )
+
+            p3.metric(
+                "Spot / Perp Premium",
+                f"{premium:+.5f}%"
+            )
+
+        else:
+
+            st.warning(
+                "Spot or perpetual price unavailable."
+            )
+
+        st.divider()
+
+        st.markdown(
+            '<div class="section-header">'
+            'Participation Interpretation Reference'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        interpretation = pd.DataFrame([
+
+            {
+                "Price": "Rising",
+                "OI": "Rising",
+                "Context": "New participation with upward movement"
+            },
+
+            {
+                "Price": "Rising",
+                "OI": "Falling",
+                "Context": "Possible short covering / position reduction"
+            },
+
+            {
+                "Price": "Falling",
+                "OI": "Rising",
+                "Context": "New participation with downward movement"
+            },
+
+            {
+                "Price": "Falling",
+                "OI": "Falling",
+                "Context": "Possible long liquidation / position reduction"
+            },
+
+            {
+                "Price": "Sideways",
+                "OI": "Rising",
+                "Context": "Position build-up during balance"
+            },
+
+            {
+                "Price": "Sideways",
+                "OI": "Falling",
+                "Context": "Position reduction during balance"
+            }
+
+        ])
+
+        st.dataframe(
+            interpretation,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.caption(
+            "OI is aggregate open contract value. "
+            "It does not independently identify "
+            "whether buyers or sellers initiated positions."
+        )
+
+    else:
+
+        st.warning(
+            "Delta perpetual futures data unavailable."
+        )
+
+
+# ============================================================
+# TAB 3: OPTIONS POSITIONING
+# ============================================================
+
+with tab_options:
+
+    st.subheader("Delta BTC Options Positioning")
+
+    if (
+        options_metrics is not None
+        and expiry_date is not None
+    ):
+
+        st.markdown(
+            '<div class="section-header">'
+            'Nearest Options Expiry'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        now_options = datetime.now(IST)
+
+        countdown = expiry_countdown(
+            expiry_date,
+            now_options
+        )
+
+        c1, c2 = st.columns(2)
+
+        c1.metric(
+            "Nearest Expiry Date",
+            expiry_date.strftime("%d %B %Y")
+        )
+
+        c2.metric(
+            "Time Remaining to 17:30 IST",
+            countdown
+        )
+
+        st.caption(
+            "Options expiry reference: 17:30 IST. "
+            "This is independent of the BTC AMT cycle."
+        )
+
+        st.divider()
+
+        st.markdown(
+            '<div class="section-header">'
+            'ATM Strike and Straddle'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        atm1, atm2 = st.columns(2)
+
+        atm1.metric(
+            "ATM Strike",
+            f"${options_metrics['atm_strike']:,.2f}"
+        )
+
+        straddle = options_metrics["straddle"]
+
+        atm2.metric(
+            "ATM Straddle Price",
+            (
+                f"${straddle:,.2f}"
+                if finite(straddle)
+                else "Unavailable"
+            )
+        )
+
+        st.caption(
+            "Straddle = ATM call premium + ATM put premium. "
+            "Premium uses bid/ask midpoint where available, "
+            "otherwise mark price or last close."
+        )
+
+        st.divider()
+
+        st.markdown(
+            '<div class="section-header">'
+            'Largest Call OI Wall'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        call_wall = options_metrics["call_wall"]
+
+        if call_wall is not None:
+
+            call1, call2 = st.columns(2)
+
+            call1.metric(
+                "Call Strike",
+                f"${call_wall['strike']:,.2f}"
+            )
+
+            call2.metric(
+                "Call OI (USD)",
+                f"${call_wall['oi_usd']:,.2f}"
+            )
+
+        else:
+
+            st.info("Call OI data unavailable.")
+
+        st.divider()
+
+        st.markdown(
+            '<div class="section-header">'
+            'Largest Put OI Wall'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        put_wall = options_metrics["put_wall"]
+
+        if put_wall is not None:
+
+            put1, put2 = st.columns(2)
+
+            put1.metric(
+                "Put Strike",
+                f"${put_wall['strike']:,.2f}"
+            )
+
+            put2.metric(
+                "Put OI (USD)",
+                f"${put_wall['oi_usd']:,.2f}"
+            )
+
+        else:
+
+            st.info("Put OI data unavailable.")
+
+        st.divider()
+
+        st.markdown(
+            '<div class="section-header">'
+            'Nearest Expiry Options Chain'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        display_columns = [
+            "symbol",
+            "option_type",
+            "strike",
+            "oi_usd",
+            "gamma",
+            "bid",
+            "ask",
+            "option_price"
+        ]
+
+        display_df = options_df[
+            display_columns
+        ].copy()
+
+        display_df.columns = [
+            "Symbol",
+            "Type",
+            "Strike",
+            "OI USD",
+            "Gamma",
+            "Bid",
+            "Ask",
+            "Premium"
+        ]
+
+        display_df = display_df.sort_values(
+            ["Strike", "Type"]
+        )
+
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.caption(
+            "Gamma is displayed as supplied by Delta. "
+            "It is not an estimate of dealer net gamma exposure."
+        )
+
+    else:
+
+        st.warning(
+            "Options positioning data is currently unavailable."
+        )
+
+
+# ============================================================
+# TAB 4: MARKET BIAS AND COPY REPORT
+# ============================================================
+
+with tab_bias:
+
+    st.subheader(
+        "Automatic Combined Market Assessment"
+    )
+
+    st.caption(
+        "Assessment combines AMT structure with Delta futures "
+        "and nearest-expiry options context. Historical comparisons "
+        "are collected automatically during this app session."
+    )
+
+    b1, b2, b3 = st.columns(3)
+
+    b1.metric(
+        "Combined Bias",
+        bias_assessment["bias"]
+    )
+
+    b2.metric(
+        "Confidence",
+        bias_assessment["confidence"]
+    )
+
+    b3.metric(
+        "Stored Readings",
+        str(bias_assessment["history_count"])
+    )
+
+    st.markdown(
+        "#### Auction and participation evidence"
+    )
+
+    left, right = st.columns(2)
+
+    with left:
+
+        st.markdown("**Bullish evidence**")
+
+        if bias_assessment["bullish"]:
+
+            for item in bias_assessment["bullish"]:
+
+                st.write(f"• {item}")
+
+        else:
+
+            st.write(
+                "No bullish evidence identified."
+            )
+
+        st.markdown("**Bearish evidence**")
+
+        if bias_assessment["bearish"]:
+
+            for item in bias_assessment["bearish"]:
+
+                st.write(f"• {item}")
+
+        else:
+
+            st.write(
+                "No bearish evidence identified."
+            )
+
+    with right:
+
+        st.markdown("**Context and cautions**")
+
+        if bias_assessment["neutral"]:
+
+            for item in bias_assessment["neutral"]:
+
+                st.write(f"• {item}")
+
+        else:
+
+            st.write(
+                "No additional context available."
+            )
+
+        st.markdown(
+            "**Futures OI interpretation**"
+        )
+
+        st.write(
+            bias_assessment["oi_context"]
+        )
+
+    st.divider()
+
+    st.markdown(
+        "#### Automatic historical comparison"
+    )
+
+    comparison_rows = []
+
+    for label in ("30m", "1h", "4h"):
+
+        item = bias_assessment["comparisons"].get(
+            label
+        )
+
+        comparison_rows.append({
+
+            "Lookback": label,
+
+            "Price change": (
+                item["price"]
+                if item else "Collecting readings"
+            ),
+
+            "OI change": (
+                item["oi"]
+                if item else "Collecting readings"
+            ),
+
+            "POC change": (
+                item["poc"]
+                if item else "Collecting readings"
+            ),
+
+            "Reference time": (
+                item["time"]
+                if item else "—"
+            )
+
+        })
+
+    st.dataframe(
+        pd.DataFrame(comparison_rows),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.caption(
+        "The dashboard stores a reading approximately every "
+        "five minutes. 30-minute, 1-hour and 4-hour comparisons "
+        "become available after enough readings accumulate."
+    )
+
+    report_text = build_copy_report(
+        bias_snapshot,
+        bias_assessment,
+        options_metrics,
+        initial_balance,
+        single_prints,
+        cycle_df,
+        now
+    )
+
+    st.divider()
+
+    st.markdown(
+        "#### Copy-ready report"
+    )
+
+    st.caption(
+        "Use the copy icon on the report block, "
+        "then paste it into ChatGPT."
+    )
+
+    st.code(
+        report_text,
+        language="text"
+    )
+
+    with st.expander(
+        "History and data-quality notes"
+    ):
+
+        st.write(
+            "Primary AMT profile uses the UTC calendar-day boundary "
+            "(00:00 UTC / 05:30 IST). Options expiry remains a "
+            "separate 17:30 IST contract reference."
+        )
+
+        st.write(
+            "History is held in Streamlit session state. It "
+            "accumulates during normal app reruns, but is not "
+            "durable storage and may reset after session expiry, "
+            "server restart, or a new browser session."
+        )
+
+        st.write(
+            "The bias is a structured interpretation, not a "
+            "prediction. Developing TPO uses 30-minute candle "
+            "ranges. The volume profile is an OHLCV approximation."
+        )
+
+        st.write(
+            "Options OI concentrations are not confirmed "
+            "support/resistance. Delta gamma is not dealer net "
+            "gamma exposure."
+        )
+
+        st.write(
+            "The current code uses Binance's latest candle close, "
+            "which may be an in-progress 30-minute candle. "
+            "Automatic history records the displayed reading."
+        )
+
+
+# ============================================================
+# 28. DATA STATUS
+# ============================================================
+
+st.divider()
+
+st.markdown(
+    "### Data Status"
+)
+
+status1, status2, status3 = st.columns(3)
+
+with status1:
+
+    st.metric(
+        "Binance OHLC",
+        "Available"
+        if candles is not None
+        else "Unavailable"
+    )
+
+with status2:
+
+    st.metric(
+        "Delta Futures",
+        "Available"
+        if futures is not None
+        else "Unavailable"
+    )
+
+with status3:
+
+    st.metric(
+        "Delta Options",
+        "Available"
+        if options_df is not None
+        else "Unavailable"
+    )
+
+last_fetch = market_data["last_successful_fetch"]
+
+if last_fetch is not None:
+
+    st.caption(
+        "Last successful data fetch: "
+        + last_fetch.strftime(
+            "%d-%m-%Y %H:%M:%S %Z"
+        )
+    )
+
+else:
+
+    st.warning(
+        "No successful API fetch was completed."
+    )
+
+st.caption(
+    "BTC AMT Research | Public market data | "
+    "Visual research only | Not an execution system"
+)
+
+
+# ============================================================
+# 29. AUTOMATIC REFRESH
+# ============================================================
+
+# This triggers a Streamlit rerun instead of a full
+# browser-page reload. Session state can therefore
+# continue accumulating readings during the session.
+
+st_autorefresh(
+    interval=REFRESH_INTERVAL_MS,
+    key="btc_amt_auto_refresh"
+)
