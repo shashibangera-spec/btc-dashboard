@@ -24,7 +24,6 @@ IST_TZ = timezone(timedelta(hours=5, minutes=30))
 qp = st.query_params
 is_share_mode = qp.get("share", "false").lower() == "true"
 
-# FIX: Moved state_names to global scope so alerts can access it
 state_names = {
     0: "BUILDING", 1: "DEVELOPMENT", 2: "DISCOVERY ABOVE", 3: "DISCOVERY BELOW",
     4: "ACCEPTANCE UP", 5: "ACCEPTANCE DOWN", 6: "POC BREAK ABOVE",
@@ -65,6 +64,7 @@ def get_persistent_state():
         "last_alerted_max_pain": None,
         "last_alerted_trap_door": None,
         "last_alerted_squeeze": None,
+        "pending_session_alerts": [],
     }
 
 p_state = get_persistent_state()
@@ -84,6 +84,7 @@ p_state.setdefault("session_start_expiry", None)
 p_state.setdefault("last_alerted_max_pain", None)
 p_state.setdefault("last_alerted_trap_door", None)
 p_state.setdefault("last_alerted_squeeze", None)
+p_state.setdefault("pending_session_alerts", [])
 
 # ==========================================
 # TELEGRAM
@@ -866,10 +867,11 @@ if not options_df.empty and latest_price > 0:
         dt_p = parse_timestamp(put_ts[0])
         if dt_p: atm_put_age = f"{(now_utc - dt_p).total_seconds():.0f}s"
 
+    # FIX #11: Future-dated timestamps cannot be labelled Fresh
     if atm_call_age != "N/A" and atm_put_age != "N/A":
         try:
             max_age = max(float(atm_call_age.replace("s", "")), float(atm_put_age.replace("s", "")))
-            quote_freshness = "Fresh" if max_age < 60 else "Stale"
+            quote_freshness = "Fresh" if 0 <= max_age < 60 else "Stale"
         except Exception:
             quote_freshness = "Unverified"
 
