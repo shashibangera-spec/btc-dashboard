@@ -14,12 +14,10 @@ Timezone: Asia/Kolkata
 
 Public endpoints only. No authentication required.
 
-IMPORTANT:
-Volume Profile is an OHLCV range-distributed approximation.
-True trade-level volume-at-price requires trade-level data.
-
 History is stored on the server (st.cache_resource), not the browser session. 
 It persists even when the laptop is closed, as long as the server is kept awake.
+
+A CSV download button is included to manually save history for long-term backtesting.
 """
 
 import re
@@ -3001,6 +2999,21 @@ with tab_bias:
         "five minutes. 30-minute, 1-hour and 4-hour comparisons "
         "become available after enough readings accumulate."
     )
+
+    # --- NEW: CSV EXPORT BUTTON ---
+    if bias_history:
+        history_df = pd.DataFrame(bias_history)
+        csv = history_df.to_csv(index=False).encode('utf-8')
+        
+        st.download_button(
+            label="📥 Download Full History as CSV",
+            data=csv,
+            file_name=f"btc_amt_history_{now.strftime('%Y-%m-%d_%H-%M')}.csv",
+            mime="text/csv",
+            help="Download the full snapshot history collected so far."
+        )
+    else:
+        st.info("No history collected yet to download.")
 
     report_text = build_copy_report(
         bias_snapshot,
