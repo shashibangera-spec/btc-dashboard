@@ -37,6 +37,7 @@ def get_persistent_state():
         "prev_amt_state": -1,
         "prev_price": 0.0,
         "session_start_straddle": None,
+        "session_start_expiry": None, # FIX #6
         "alert_history": [],
         "options_flow_history": [],
         "wall_status_log": [],
@@ -66,6 +67,7 @@ p_state.setdefault("active_inverted_event", None)
 p_state.setdefault("last_inverted_status", False)
 p_state.setdefault("session_alert_log", {})
 p_state.setdefault("futures_oi_history", [])
+p_state.setdefault("session_start_expiry", None) # FIX #6
 
 # ==========================================
 # TELEGRAM
@@ -142,6 +144,9 @@ final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 
 alert_triggered = False
 alert_message = ""
+
+# FIX #7: Initialize globally
+current_inverted_status = False
 
 # ==========================================
 # SECTION 1: BINANCE DATA & AMT
@@ -718,7 +723,7 @@ pending_broken_wall = 0.0
 # Fetch Futures Context
 funding_rate, mark_price, oi_usd, sp_prem = fetch_futures_context()
 
-# Calculate 30M OI Delta % and Derivatives Flow Context
+# FIX #2: Calculate 30M OI Delta % with strict tolerance
 oi_delta_pct = 0.0
 ctx = "⚪ Neutral"
 if oi_usd is not None:
@@ -731,10 +736,14 @@ if oi_usd is not None:
     if len(p_state["futures_oi_history"]) >= 2:
         target_time = now_utc_ts - 1800
         closest_entry = min(p_state["futures_oi_history"], key=lambda x: abs(x["time"] - target_time))
-        if closest_entry["oi"] > 0:
+        
+        # Only calculate if the closest entry is within 5 minutes (300 seconds) of the target time
+        if abs(closest_entry["time"] - target_time) <= 300 and closest_entry["oi"] > 0:
             oi_delta_pct = ((oi_usd - closest_entry["oi"]) / closest_entry["oi"]) * 100
+        else:
+            oi_delta_pct = np.nan
 
-    if sp_prem is not None:
+    if sp_prem is not None and not pd.isna(oi_delta_pct):
         if oi_delta_pct > 0 and sp_prem > 0:
             ctx = "🟢 Long Build"
         elif oi_delta_pct > 0 and sp_prem < 0:
@@ -806,6 +815,11 @@ if journal_res is not None:
 options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, strike_ladder, is_chain_complete = fetch_delta_options()
 delta_status = "🟢 Connected" if not options_df.empty else "🔴 Failed"
 
+# FIX #6: Reset straddle on new expiry
+if loaded_expiry != "N/A" and loaded_expiry != p_state.get("session_start_expiry"):
+    p_state["session_start_straddle"] = None
+    p_state["session_start_expiry"] = loaded_expiry
+
 if expiry_dt:
     time_remaining = expiry_dt - datetime.datetime.now(timezone.utc)
     time_str = str(time_remaining).split('.')[0]
@@ -842,6 +856,14 @@ if not options_df.empty and latest_price > 0:
     if len(put_ts) > 0:
         dt_p = parse_timestamp(put_ts[0])
         if dt_p: atm_put_age = f"{(now_utc - dt_p).total_seconds():.0f}s"
+
+    # FIX #4: Calculate quote freshness
+    if atm_call_age != "N/A" and atm_put_age != "N/A":
+        try:
+            max_age = max(float(atm_call_age.replace("s", "")), float(atm_put_age.replace("s", "")))
+            quote_freshness = "Fresh" if max_age < 60 else "Stale"
+        except Exception:
+            quote_freshness = "Unverified"
 
     if checks_passed:
         straddle_price = cm + pm
@@ -1035,6 +1057,7 @@ if not options_df.empty and latest_price > 0:
                             p_state["put_gamma_break_state"] = "SAFE"
                             p_state["active_broken_put_wall"] = 0.0
 
+        # FIX #5: Rename Wall Status Log to Cluster Status Log
         current_call_status = "PRESENT" if near_call else "N/A"
         current_put_status = "PRESENT" if near_put else "N/A"
         if not p_state["wall_status_log"]:
@@ -1182,15 +1205,20 @@ with tab_dashboard:
         
         tc2.metric("Derivatives Flow", ctx)
         
-        loc = "Above VAH" if latest_price > final_vah else "Below VAL" if latest_price < final_val else "Inside VA"
-        loc_color = "normal" if loc == "Above VAH" else "inverse" if loc == "Below VAL" else "off"
+        # FIX #9: Handle unavailable VA levels
+        if pd.isna(final_vah) or pd.isna(final_val):
+            loc = "Value Area Unavailable"
+            loc_color = "off"
+        else:
+            loc = "Above VAH" if latest_price > final_vah else "Below VAL" if latest_price < final_val else "Inside VA"
+            loc_color = "normal" if loc == "Above VAH" else "inverse" if loc == "Below VAL" else "off"
+            
         tc3.metric("Price Location", loc, f"${latest_price:,.0f}", delta_color=loc_color)
         
         tc4.metric("AMT State", current_amt_name, f"Code {current_amt_state}")
         
         verdict = ""
         
-        # NEW DIVERGENCE LOGIC
         if options_bias_score >= 2 and "Short Build" in ctx and loc == "Below VAL":
             verdict = "⚠️ **TRADER'S TRAP**: Shorts building below value, BUT Options Bias is strongly Bullish. High risk of a violent short squeeze. Do NOT blindly short."
         elif options_bias_score <= -2 and "Long Build" in ctx and loc == "Above VAH":
@@ -1216,8 +1244,12 @@ with tab_dashboard:
             fc1, fc2, fc3, fc4 = st.columns(4)
             fc1.metric("Open Interest (USD)", f"${oi_usd/1e6:.2f}M")
             
-            oi_d_color = "normal" if oi_delta_pct > 0 else "inverse" if oi_delta_pct < 0 else "off"
-            fc2.metric("OI Delta (30m)", f"{oi_delta_pct:+.2f}%", "Building" if oi_delta_pct > 0 else "Unwinding" if oi_delta_pct < 0 else "Stable", delta_color=oi_d_color)
+            # FIX #2: Display N/A if 30m history is insufficient
+            if pd.isna(oi_delta_pct):
+                fc2.metric("OI Delta (30m)", "N/A", "Insufficient History", delta_color="off")
+            else:
+                oi_d_color = "normal" if oi_delta_pct > 0 else "inverse" if oi_delta_pct < 0 else "off"
+                fc2.metric("OI Delta (30m)", f"{oi_delta_pct:+.2f}%", "Building" if oi_delta_pct > 0 else "Unwinding" if oi_delta_pct < 0 else "Stable", delta_color=oi_d_color)
             
             sp_color = "normal" if sp_prem > 0 else "inverse" if sp_prem < 0 else "off"
             fc3.metric("Spot/Perp Premium", f"{sp_prem:+.3f}%", "Perp Premium" if sp_prem > 0 else "Perp Discount" if sp_prem < 0 else "Flat", delta_color=sp_color)
@@ -1313,8 +1345,10 @@ with tab_dashboard:
             st.markdown("##### 📊 Context Metrics")
             w1, w2, w3 = st.columns(3)
             w1.metric("Local OI PCR (±10%)", f"{pcr:.2f}", "Put OI / Call OI (USD)")
-            w2.metric("Gross Gamma Concentration", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A", "Unsigned OI Estimation")
-            w3.metric("Structural Extreme (OI)", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}" if call_oi_wall is not None and put_oi_wall is not None else "N/A")
+            
+            # FIX #10: Clarify local window names
+            w2.metric("Local Gross Gamma (±10%)", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A", "Unsigned OI Estimation")
+            w3.metric("Local Structural Extreme (±10%)", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}" if call_oi_wall is not None and put_oi_wall is not None else "N/A")
             st.caption("ℹ️ Context only — not support, resistance or price targets. Gross Gamma estimated using unsigned OI.")
             st.markdown("---")
 
@@ -1401,6 +1435,7 @@ with tab_dashboard:
             for _, row in journal_df_check.tail(10).iterrows():
                 echo_text += f"{row['Time']} | ${row['Close']:,.0f} | {row['State Name']}\n"
 
+        # FIX #5: Rename in Snapshot
         wall_text = ""
         for entry in p_state["wall_status_log"][-5:]:
             wall_text += f"{entry['time']} | Call: {entry['call']} | Put: {entry['put']}\n"
@@ -1430,6 +1465,8 @@ with tab_dashboard:
         funding_text = f"{funding_rate:+.4f}%" if funding_rate is not None else "N/A"
         straddle_text = f"${straddle_price:,.2f}" if straddle_valid else f"INVALID ({straddle_reason})"
 
+        oi_delta_text = f"{oi_delta_pct:+.2f}%" if not pd.isna(oi_delta_pct) else "N/A (Insufficient 30m History)"
+
         snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
 Time: {datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')} IST
@@ -1448,7 +1485,7 @@ Verdict: {verdict}
 
 [FUTURES CONTEXT]
 OI (USD): {f"${oi_usd/1e6:.2f}M" if oi_usd is not None else "N/A"}
-OI Delta (30m): {f"{oi_delta_pct:+.2f}%" if oi_usd is not None else "N/A"}
+OI Delta (30m): {oi_delta_text}
 Spot/Perp Premium: {f"{sp_prem:+.3f}%" if sp_prem is not None else "N/A"}
 Derivatives Flow: {ctx}
 
@@ -1468,7 +1505,7 @@ Near-Term (<0.5x): Call {call_cluster_near} | Put {put_cluster_near}
 Mid-Term (0.5-1.0x): Call {call_cluster_mid} | Put {put_cluster_mid}
 Distant (>=1.0x): Call {call_cluster_far} | Put {put_cluster_far}
 
-[WALL STATUS LOG (Passive Tracking)]
+[CLUSTER STATUS LOG (Passive Tracking)]
 {wall_text}
 
 [INVERTED GAMMA JOURNAL (Passive Tracking)]
