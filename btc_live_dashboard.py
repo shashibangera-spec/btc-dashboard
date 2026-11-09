@@ -209,7 +209,6 @@ def fetch_futures_context():
         res = requests.get(url, timeout=10).json()
         for ticker in res.get("result", []):
             if ticker.get("symbol") == "BTCUSD":
-                # FIX: Removed the * 100 multiplier. Delta returns 0.01 for 0.01%.
                 funding_rate = float(ticker.get("funding_rate", 0)) 
                 mark_price = float(ticker.get("mark_price", 0))
                 spot_price = float(ticker.get("spot_price", 0))
@@ -665,7 +664,6 @@ def fetch_delta_options():
                 oi_usd = float(ticker.get("oi_value_usd")) if ticker.get("oi_value_usd") is not None else None
                 oi_contracts = float(ticker.get("oi_contracts") or ticker.get("oi")) if (ticker.get("oi_contracts") or ticker.get("oi")) is not None else None
                 
-                # NEW: Extract Volume
                 volume = float(ticker.get("volume", 0)) if ticker.get("volume") is not None else 0.0
                 
                 quotes = ticker.get("quotes", {})
@@ -905,7 +903,6 @@ if not options_df.empty and latest_price > 0:
         total_puts_usd = temp_filt['OI_USD_Put'].sum()
         pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
 
-        # NEW: Calculate Volume PCR
         total_calls_vol = temp_filt['Volume_Call'].sum()
         total_puts_vol = temp_filt['Volume_Put'].sum()
         pcr_volume = total_puts_vol / total_calls_vol if total_calls_vol > 0 else 0
@@ -1201,14 +1198,39 @@ if alert_triggered:
 # ==========================================
 # SECTION 5: RENDER UI TABS
 # ==========================================
-tab_dashboard, tab_history = st.tabs(["📊 Live Dashboard", "📜 Alert History"])
+tab_dashboard, tab_history = st.tabs(["📊 Live Dashboard", "📜 Alert History & Export"])
 
 with tab_history:
     st.subheader("📜 Alert History Log")
-    st.caption("⚠️ This log persists across page reloads.")
+    st.caption("⚠️ This log persists across page reloads. Use the export button below to save it permanently.")
+    
     history_data = p_state["alert_history"]
     if history_data:
         st.dataframe(pd.DataFrame(history_data), use_container_width=True, hide_index=True)
+        
+        # NEW: CSV EXPORT BUTTONS
+        col1, col2 = st.columns(2)
+        with col1:
+            alert_df = pd.DataFrame(history_data)
+            alert_csv = alert_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Alert History (CSV)",
+                data=alert_csv,
+                file_name=f"alert_history_{datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d')}.csv",
+                mime="text/csv",
+                help="Save this to your laptop to keep a permanent record of all alerts."
+            )
+        with col2:
+            if p_state["inverted_gamma_history"]:
+                inv_df = pd.DataFrame(p_state["inverted_gamma_history"])
+                inv_csv = inv_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Inverted Gamma Journal (CSV)",
+                    data=inv_csv,
+                    file_name=f"inverted_gamma_{datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d')}.csv",
+                    mime="text/csv",
+                    help="Save this to backtest the fakeout volatility events."
+                )
     else:
         st.info("No alerts have fired yet during this session.")
 
