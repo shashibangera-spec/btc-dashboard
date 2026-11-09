@@ -18,7 +18,8 @@ IMPORTANT:
 Volume Profile is an OHLCV range-distributed approximation.
 True trade-level volume-at-price requires trade-level data.
 
-History is session-local, not permanent database storage.
+History is stored on the server (st.cache_resource), not the browser session. 
+It persists even when the laptop is closed, as long as the server is kept awake.
 """
 
 import re
@@ -73,6 +74,13 @@ AMT_CYCLE_MINUTE = 30
 
 logging.basicConfig(level=logging.ERROR)
 
+# ============================================================
+# SERVER-SIDE HISTORY STORAGE
+# ============================================================
+@st.cache_resource
+def get_history():
+    """Stores history on the server, so it survives browser closure."""
+    return []
 
 # ============================================================
 # 2. CUSTOM STYLING
@@ -1476,16 +1484,10 @@ def add_snapshot_to_history(snapshot):
 
     """
     Stores approximately one snapshot every five minutes.
-
-    Streamlit session state survives normal Streamlit reruns.
-    It is not permanent database storage.
+    Uses server-side cache_resource so it survives browser closure.
     """
 
-    if "btc_amt_history" not in st.session_state:
-
-        st.session_state["btc_amt_history"] = []
-
-    history = st.session_state["btc_amt_history"]
+    history = get_history()
 
     current_time = datetime.fromisoformat(
         snapshot["timestamp"]
@@ -1516,6 +1518,7 @@ def add_snapshot_to_history(snapshot):
 
     cutoff = current_time - timedelta(days=7)
 
+    # Remove items older than 7 days
     history[:] = [
 
         item
@@ -1864,7 +1867,7 @@ def assess_market_bias(
         )
 
     # --------------------------------------------------------
-    # G. BIAS CLASSIFICATION (UPDATED PER CHATGPT AUDIT)
+    # G. BIAS CLASSIFICATION
     # --------------------------------------------------------
 
     bull_score = len(bullish)
@@ -2150,11 +2153,10 @@ def build_copy_report(
 
         "",
 
-        f"Stored readings in this app session: "
+        f"Stored readings in server memory: "
         f"{assessment['history_count']}",
 
-        "History is session-local and may reset after "
-        "session expiry or server restart.",
+        "History is stored on the server and survives browser closure.",
 
         "A single OI snapshot cannot establish "
         "OI build-up or reduction.",
@@ -3037,10 +3039,8 @@ with tab_bias:
         )
 
         st.write(
-            "History is held in Streamlit session state. It "
-            "accumulates during normal app reruns, but is not "
-            "durable storage and may reset after session expiry, "
-            "server restart, or a new browser session."
+            "History is stored on the server (st.cache_resource). "
+            "It survives browser closure as long as the server is awake."
         )
 
         st.write(
