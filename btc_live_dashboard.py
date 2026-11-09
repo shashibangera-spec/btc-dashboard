@@ -1328,7 +1328,6 @@ with tab_dashboard:
         if not options_df.empty and atm_row is not None:
             st.subheader(f"📉 Options Snapshot (Expiry: {loaded_expiry})")
             
-            # 5 Columns now
             o1, o2, o3, o4, o5 = st.columns(5)
             
             o1.metric("ATM Strike", f"${atm_strike:,.0f}")
@@ -1346,7 +1345,6 @@ with tab_dashboard:
             
             st.caption(f"Expiry Source: {expiry_source} | Quote Freshness: {quote_freshness} | Call Ticker Age: {atm_call_age} | Put Ticker Age: {atm_put_age}")
             
-            # IV Skew Display
             atm_call_iv = atm_row['IV_Call']
             atm_put_iv = atm_row['IV_Put']
             if not pd.isna(atm_call_iv) and not pd.isna(atm_put_iv):
@@ -1400,12 +1398,14 @@ with tab_dashboard:
 
             st.markdown("##### 📊 Context Metrics")
             
-            # 4 Columns now for Volume PCR
-            w1, w2, w3, w4 = st.columns(4)
+            w1, w2 = st.columns(2)
             w1.metric("Local OI PCR (±10%)", f"{pcr:.2f}", "Put OI / Call OI (USD)")
             w2.metric("Local Vol PCR (±10%)", f"{pcr_volume:.2f}", "Put Vol / Call Vol")
+            
+            w3, w4 = st.columns(2)
             w3.metric("Local Gross Gamma (±10%)", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A", "Unsigned OI Estimation")
             w4.metric("Local Structural Extreme (±10%)", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}" if call_oi_wall is not None and put_oi_wall is not None else "N/A")
+            
             st.caption("ℹ️ Context only — not support, resistance or price targets. Gross Gamma estimated using unsigned OI.")
             st.markdown("---")
 
