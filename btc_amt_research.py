@@ -1,9 +1,15 @@
+
 """
 BTC AMT RESEARCH DASHBOARD
 AMT + Price Action + Futures OI + Options Positioning
 
-Primary venue: Delta Exchange India
-Primary expiry cycle: 17:30 IST to 17:30 IST
+PRIMARY BTC AMT CYCLE:
+00:00 UTC to 00:00 UTC
+05:30 IST to 05:30 IST
+
+DELTA OPTIONS EXPIRY:
+17:30 IST (independent contract expiry reference)
+
 Primary timeframe: 30 minutes
 Timezone: Asia/Kolkata
 
@@ -12,11 +18,14 @@ Public endpoints only. No authentication required.
 IMPORTANT:
 Volume Profile is an OHLCV range-distributed approximation.
 True trade-level volume-at-price requires trade-level data.
+
+History is session-local, not permanent database storage.
 """
 
 import re
 import time
 import logging
+
 from datetime import datetime, date, time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -24,7 +33,8 @@ import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
-import streamlit.components.v1 as components
+
+from streamlit_autorefresh import st_autorefresh
 
 
 # ============================================================
@@ -44,7 +54,6 @@ BINANCE_BASE = "https://data-api.binance.vision"
 DELTA_BASE = "https://api.india.delta.exchange"
 
 BINANCE_KLINES_URL = f"{BINANCE_BASE}/api/v3/klines"
-
 DELTA_TICKERS_URL = f"{DELTA_BASE}/v2/tickers"
 DELTA_PRODUCTS_URL = f"{DELTA_BASE}/v2/products"
 
@@ -55,8 +64,13 @@ TPO_ROW_SIZE = 50.0
 VALUE_AREA_PERCENT = 0.70
 
 REFRESH_INTERVAL_MS = 300000
-
 REQUEST_TIMEOUT = 20
+
+OPTIONS_EXPIRY_HOUR = 17
+OPTIONS_EXPIRY_MINUTE = 30
+
+AMT_CYCLE_HOUR = 5
+AMT_CYCLE_MINUTE = 30
 
 logging.basicConfig(level=logging.ERROR)
 
@@ -112,7 +126,7 @@ st.markdown(
 
 
 # ============================================================
-# 3. HTTP SESSION
+# 3. HTTP SESSION AND HELPERS
 # ============================================================
 
 @st.cache_resource
@@ -122,7 +136,7 @@ def get_session():
 
     session.headers.update({
         "Accept": "application/json",
-        "User-Agent": "BTC-AMT-Research-Dashboard/1.0"
+        "User-Agent": "BTC-AMT-Research-Dashboard/2.0"
     })
 
     return session
@@ -176,10 +190,34 @@ def to_float(value, default=np.nan):
 def get_result(data):
 
     if isinstance(data, dict):
-
         return data.get("result", [])
 
     return data
+
+
+def finite(value):
+
+    return value is not None and np.isfinite(
+        to_float(value)
+    )
+
+
+def fmt_price(value):
+
+    return (
+        f"${float(value):,.2f}"
+        if finite(value)
+        else "Unavailable"
+    )
+
+
+def fmt_usd(value):
+
+    return (
+        f"${float(value):,.0f}"
+        if finite(value)
+        else "Unavailable"
+    )
 
 
 # ============================================================
@@ -201,7 +239,9 @@ def fetch_binance_klines():
 
     if not isinstance(data, list) or not data:
 
-        raise RuntimeError("No Binance candle data returned.")
+        raise RuntimeError(
+            "No Binance candle data returned."
+        )
 
     columns = [
         "open_time",
@@ -248,7 +288,13 @@ def fetch_binance_klines():
     ).dt.tz_convert(IST)
 
     df = df.dropna(
-        subset=["open", "high", "low", "close", "volume"]
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ]
     )
 
     df = df.sort_values("open_time")
@@ -257,7 +303,7 @@ def fetch_binance_klines():
 
 
 # ============================================================
-# 5. DELTA PAGINATED DATA RETRIEVAL
+# 5. DELTA PAGINATED DATA
 # ============================================================
 
 def fetch_paginated_delta(
@@ -266,18 +312,10 @@ def fetch_paginated_delta(
     page_size=1000,
     max_pages=30
 ):
-    """
-    Fetches Delta API pages using meta.after.
-
-    Some Delta endpoints, including tickers, may return
-    all matching records in one response without pagination
-    metadata. The loop stops when meta.after is absent.
-    """
 
     results = []
 
     current_params = params.copy()
-
     current_params["page_size"] = page_size
 
     cursor_history = set()
@@ -292,25 +330,25 @@ def fetch_paginated_delta(
         page_results = get_result(data)
 
         if isinstance(page_results, dict):
-
             page_results = [page_results]
 
         if not isinstance(page_results, list):
-
             break
 
         results.extend(page_results)
 
-        meta = data.get("meta", {}) if isinstance(data, dict) else {}
+        meta = (
+            data.get("meta", {})
+            if isinstance(data, dict)
+            else {}
+        )
 
         next_cursor = meta.get("after")
 
         if not next_cursor:
-
             break
 
         if next_cursor in cursor_history:
-
             break
 
         cursor_history.add(next_cursor)
@@ -343,9 +381,6 @@ def fetch_delta_products():
 
     except requests.HTTPError:
 
-        # Some API configurations may reject page_size=1000.
-        # Retry using a smaller page size and continue pagination.
-
         return fetch_paginated_delta(
             DELTA_PRODUCTS_URL,
             {
@@ -357,7 +392,7 @@ def fetch_delta_products():
 
 
 # ============================================================
-# 7. DELTA FUTURES DATA
+# 7. DELTA FUTURES
 # ============================================================
 
 def fetch_delta_futures():
@@ -374,7 +409,6 @@ def fetch_delta_futures():
     tickers = get_result(data)
 
     if isinstance(tickers, dict):
-
         tickers = [tickers]
 
     btc_ticker = None
@@ -384,7 +418,6 @@ def fetch_delta_futures():
         if ticker.get("symbol") == "BTCUSD":
 
             btc_ticker = ticker
-
             break
 
     if btc_ticker is None:
@@ -394,6 +427,7 @@ def fetch_delta_futures():
         )
 
     return {
+
         "symbol": btc_ticker.get("symbol"),
 
         "funding_rate": to_float(
@@ -413,26 +447,17 @@ def fetch_delta_futures():
         ),
 
         "timestamp": btc_ticker.get("timestamp")
+
     }
 
 
 # ============================================================
-# 8. OPTION EXPIRY PARSER
+# 8. OPTIONS EXPIRY PARSER
 # ============================================================
 
 def parse_option_symbol(symbol):
 
-    """
-    Expected symbol structure:
-
-    C-BTC-90000-091126
-    P-BTC-90000-091126
-
-    Expiry format: DDMMYY
-    """
-
     if not symbol:
-
         return None
 
     pattern = (
@@ -444,13 +469,10 @@ def parse_option_symbol(symbol):
     match = re.match(pattern, symbol)
 
     if not match:
-
         return None
 
     option_type = match.group(1)
-
     strike = float(match.group(2))
-
     expiry_text = match.group(3)
 
     try:
@@ -472,52 +494,52 @@ def parse_option_symbol(symbol):
     }
 
 
+def get_options_expiry_datetime(expiry_date):
+
+    return datetime.combine(
+        expiry_date,
+        dt_time(
+            OPTIONS_EXPIRY_HOUR,
+            OPTIONS_EXPIRY_MINUTE
+        ),
+        tzinfo=IST
+    )
+
+
 def get_nearest_expiry(products, tickers, now_ist):
-
-    """
-    Finds the nearest non-expired BTC options expiry.
-
-    Product symbols and ticker symbols are both inspected.
-    """
 
     expiry_dates = set()
 
     for product in products:
 
-        symbol = product.get("symbol", "")
-
-        parsed = parse_option_symbol(symbol)
+        parsed = parse_option_symbol(
+            product.get("symbol", "")
+        )
 
         if parsed:
-
             expiry_dates.add(parsed["expiry_date"])
 
     for ticker in tickers:
 
-        symbol = ticker.get("symbol", "")
-
-        parsed = parse_option_symbol(symbol)
+        parsed = parse_option_symbol(
+            ticker.get("symbol", "")
+        )
 
         if parsed:
-
             expiry_dates.add(parsed["expiry_date"])
 
     valid_expiries = []
 
     for expiry in expiry_dates:
 
-        expiry_datetime = datetime.combine(
-            expiry,
-            dt_time(17, 30),
-            tzinfo=IST
+        expiry_datetime = get_options_expiry_datetime(
+            expiry
         )
 
         if expiry_datetime > now_ist:
-
             valid_expiries.append(expiry)
 
     if not valid_expiries:
-
         return None
 
     return min(valid_expiries)
@@ -565,15 +587,12 @@ def fetch_delta_options():
         )
 
         if not parsed:
-
             continue
 
         if parsed["expiry_date"] != nearest_expiry:
-
             continue
 
         quotes = ticker.get("quotes") or {}
-
         greeks = ticker.get("greeks") or {}
 
         bid = to_float(
@@ -592,15 +611,20 @@ def fetch_delta_options():
             ticker.get("close")
         )
 
-        if np.isfinite(bid) and np.isfinite(ask) and bid > 0 and ask >= bid:
+        if (
+            finite(bid)
+            and finite(ask)
+            and bid > 0
+            and ask >= bid
+        ):
 
             mid_price = (bid + ask) / 2
 
-        elif np.isfinite(mark) and mark > 0:
+        elif finite(mark) and mark > 0:
 
             mid_price = mark
 
-        elif np.isfinite(last) and last > 0:
+        elif finite(last) and last > 0:
 
             mid_price = last
 
@@ -653,24 +677,31 @@ def fetch_delta_options():
 
 
 # ============================================================
-# 10. PRIMARY 17:30 IST DAILY CYCLE
+# 10. PRIMARY BTC UTC DAILY AMT CYCLE
 # ============================================================
 
 def get_current_cycle_start(now=None):
 
-    if now is None:
+    """
+    Primary BTC profile boundary:
 
+    00:00 UTC = 05:30 IST
+
+    Cycle runs from 05:30 IST to 05:30 IST
+    the following calendar day.
+    """
+
+    if now is None:
         now = datetime.now(IST)
 
     boundary = now.replace(
-        hour=17,
-        minute=30,
+        hour=AMT_CYCLE_HOUR,
+        minute=AMT_CYCLE_MINUTE,
         second=0,
         microsecond=0
     )
 
     if now < boundary:
-
         boundary -= timedelta(days=1)
 
     return boundary
@@ -692,16 +723,22 @@ def get_cycle_candles(df, cycle_start):
 # 11. TPO PRICE ROWS
 # ============================================================
 
-def get_price_rows(low, high, row_size=TPO_ROW_SIZE):
+def get_price_rows(
+    low,
+    high,
+    row_size=TPO_ROW_SIZE
+):
 
     lower = int(np.floor(low / row_size))
-
     upper = int(np.floor(high / row_size))
 
     return list(range(lower, upper + 1))
 
 
-def row_price(row, row_size=TPO_ROW_SIZE):
+def row_price(
+    row,
+    row_size=TPO_ROW_SIZE
+):
 
     return row * row_size + row_size / 2
 
@@ -717,13 +754,11 @@ def calculate_tpo_profile(
 ):
 
     if cycle_df.empty:
-
         return None
 
     tpo_counts = {}
 
     profile_low = cycle_df["low"].min()
-
     profile_high = cycle_df["high"].max()
 
     for _, candle in cycle_df.iterrows():
@@ -741,7 +776,6 @@ def calculate_tpo_profile(
             )
 
     if not tpo_counts:
-
         return None
 
     rows = sorted(tpo_counts.keys())
@@ -753,8 +787,6 @@ def calculate_tpo_profile(
         for row, count in tpo_counts.items()
         if count == max_tpo
     ]
-
-    # Midpoint tie-breaker for POC.
 
     profile_midpoint = (
         profile_low + profile_high
@@ -772,14 +804,15 @@ def calculate_tpo_profile(
 
     total_tpo = sum(tpo_counts.values())
 
-    target_tpo = total_tpo * value_area_percent
+    target_tpo = (
+        total_tpo * value_area_percent
+    )
 
     included_rows = {poc_row}
 
     accumulated = tpo_counts[poc_row]
 
     lower_row = poc_row - 1
-
     upper_row = poc_row + 1
 
     while accumulated < target_tpo:
@@ -795,59 +828,45 @@ def calculate_tpo_profile(
         )
 
         if lower_count == 0 and upper_count == 0:
-
             break
 
         if lower_count > upper_count:
 
             included_rows.add(lower_row)
-
             accumulated += lower_count
-
             lower_row -= 1
 
         elif upper_count > lower_count:
 
             included_rows.add(upper_row)
-
             accumulated += upper_count
-
             upper_row += 1
 
         else:
 
-            # Equal-count tie-breaker:
-            # Choose the row closer to the overall
-            # profile midpoint.
-
             lower_distance = abs(
-                row_price(lower_row, row_size) -
-                profile_midpoint
+                row_price(lower_row, row_size)
+                - profile_midpoint
             )
 
             upper_distance = abs(
-                row_price(upper_row, row_size) -
-                profile_midpoint
+                row_price(upper_row, row_size)
+                - profile_midpoint
             )
 
             if lower_distance <= upper_distance:
 
                 included_rows.add(lower_row)
-
                 accumulated += lower_count
-
                 lower_row -= 1
 
             else:
 
                 included_rows.add(upper_row)
-
                 accumulated += upper_count
-
                 upper_row += 1
 
     value_area_low_row = min(included_rows)
-
     value_area_high_row = max(included_rows)
 
     profile_table = []
@@ -856,11 +875,16 @@ def calculate_tpo_profile(
 
         profile_table.append({
 
-            "Price Level": row_price(row, row_size),
+            "Price Level": row_price(
+                row,
+                row_size
+            ),
 
             "TPO Count": tpo_counts[row],
 
-            "In Value Area": row in included_rows,
+            "In Value Area": (
+                row in included_rows
+            ),
 
             "POC": row == poc_row
 
@@ -868,7 +892,10 @@ def calculate_tpo_profile(
 
     return {
 
-        "poc": row_price(poc_row, row_size),
+        "poc": row_price(
+            poc_row,
+            row_size
+        ),
 
         "vah": row_price(
             value_area_high_row,
@@ -882,7 +909,9 @@ def calculate_tpo_profile(
 
         "tpo_counts": tpo_counts,
 
-        "table": pd.DataFrame(profile_table),
+        "table": pd.DataFrame(
+            profile_table
+        ),
 
         "total_tpo": total_tpo
 
@@ -898,16 +927,7 @@ def calculate_volume_profile(
     row_size=TPO_ROW_SIZE
 ):
 
-    """
-    Distributes each 30m candle's volume equally
-    among all $50 price rows touched by its range.
-
-    This is an OHLCV approximation, not actual
-    trade-level volume-at-price.
-    """
-
     if cycle_df.empty:
-
         return None
 
     volume_distribution = {}
@@ -921,7 +941,6 @@ def calculate_volume_profile(
         )
 
         if not rows:
-
             continue
 
         allocated_volume = (
@@ -936,7 +955,6 @@ def calculate_volume_profile(
             )
 
     if not volume_distribution:
-
         return None
 
     poc_row = max(
@@ -947,7 +965,10 @@ def calculate_volume_profile(
     result = pd.DataFrame([
 
         {
-            "Price Level": row_price(row, row_size),
+            "Price Level": row_price(
+                row,
+                row_size
+            ),
 
             "Estimated Volume": volume,
 
@@ -963,7 +984,10 @@ def calculate_volume_profile(
 
     return {
 
-        "poc": row_price(poc_row, row_size),
+        "poc": row_price(
+            poc_row,
+            row_size
+        ),
 
         "table": result
 
@@ -980,12 +1004,12 @@ def calculate_initial_balance(
 ):
 
     """
-    Initial Balance uses:
+    First two 30-minute candles of the UTC daily cycle:
 
-    17:30 candle
-    18:00 candle
+    00:00 UTC = 05:30 IST
+    00:30 UTC = 06:00 IST
 
-    IST.
+    Initial Balance completes at 06:30 IST.
     """
 
     ib_start = cycle_start
@@ -1002,9 +1026,7 @@ def calculate_initial_balance(
         return {
 
             "high": np.nan,
-
             "low": np.nan,
-
             "complete": False
 
         }
@@ -1028,11 +1050,6 @@ def calculate_single_prints(
     cycle_df,
     row_size=TPO_ROW_SIZE
 ):
-
-    """
-    A single-print price row is touched by
-    exactly one 30-minute candle in the cycle.
-    """
 
     if cycle_df.empty:
 
@@ -1062,19 +1079,18 @@ def calculate_single_prints(
             )
 
     single_rows = [
-
         row
-
         for row, count in candle_counts.items()
-
         if count == 1
-
     ]
 
-    result = pd.DataFrame([
+    return pd.DataFrame([
 
         {
-            "Price Level": row_price(row, row_size),
+            "Price Level": row_price(
+                row,
+                row_size
+            ),
 
             "Candle Count": candle_counts[row]
 
@@ -1083,8 +1099,6 @@ def calculate_single_prints(
         for row in sorted(single_rows)
 
     ])
-
-    return result
 
 
 # ============================================================
@@ -1097,7 +1111,6 @@ def calculate_options_metrics(
 ):
 
     if options_df.empty:
-
         return None
 
     calls = options_df[
@@ -1113,7 +1126,6 @@ def calculate_options_metrics(
     )
 
     if not all_strikes:
-
         return None
 
     atm_strike = min(
@@ -1132,25 +1144,24 @@ def calculate_options_metrics(
     ]
 
     call_price = np.nan
-
     put_price = np.nan
 
     if not atm_calls.empty:
-
         call_price = atm_calls.iloc[0]["option_price"]
 
     if not atm_puts.empty:
-
         put_price = atm_puts.iloc[0]["option_price"]
 
     straddle = np.nan
 
-    if np.isfinite(call_price) and np.isfinite(put_price):
+    if (
+        finite(call_price)
+        and finite(put_price)
+    ):
 
         straddle = call_price + put_price
 
     call_wall = None
-
     put_wall = None
 
     if not calls.empty:
@@ -1187,25 +1198,24 @@ def calculate_options_metrics(
 
 
 # ============================================================
-# 17. EXPIRY COUNTDOWN
+# 17. OPTIONS EXPIRY COUNTDOWN
 # ============================================================
 
-def expiry_countdown(expiry_date, now=None):
+def expiry_countdown(
+    expiry_date,
+    now=None
+):
 
     if now is None:
-
         now = datetime.now(IST)
 
-    expiry_datetime = datetime.combine(
-        expiry_date,
-        dt_time(17, 30),
-        tzinfo=IST
+    expiry_datetime = get_options_expiry_datetime(
+        expiry_date
     )
 
     remaining = expiry_datetime - now
 
     if remaining.total_seconds() <= 0:
-
         return "Expired"
 
     total_seconds = int(
@@ -1245,8 +1255,6 @@ def fetch_all_data():
 
     successful_fetch_times = []
 
-    # Binance candles
-
     try:
 
         results["candles"] = fetch_binance_klines()
@@ -1262,8 +1270,6 @@ def fetch_all_data():
         )
 
         results["candles"] = None
-
-    # Delta perpetual futures
 
     try:
 
@@ -1281,14 +1287,11 @@ def fetch_all_data():
 
         results["futures"] = None
 
-    # Delta options
-
     try:
 
         expiry, options = fetch_delta_options()
 
         results["expiry"] = expiry
-
         results["options"] = options
 
         successful_fetch_times.append(
@@ -1302,7 +1305,6 @@ def fetch_all_data():
         )
 
         results["expiry"] = None
-
         results["options"] = None
 
     results["errors"] = errors
@@ -1317,14 +1319,866 @@ def fetch_all_data():
 
 
 # ============================================================
-# 19. DASHBOARD HEADER
+# 19. AUTOMATIC HISTORY AND MARKET ASSESSMENT
 # ============================================================
 
-st.title("₿ BTC Auction Market Observer")
+def row_value(row, key):
 
-st.caption(
-    "AMT | Price Action | Futures Participation | Options Positioning"
-)
+    if row is None:
+        return np.nan
+
+    try:
+        return to_float(row.get(key))
+
+    except Exception:
+        return np.nan
+
+
+def make_market_snapshot(
+    now_ist,
+    current_price,
+    tpo,
+    ib,
+    futures_data,
+    option_metrics,
+    expiry
+):
+
+    call_wall = (
+        option_metrics.get("call_wall")
+        if option_metrics else None
+    )
+
+    put_wall = (
+        option_metrics.get("put_wall")
+        if option_metrics else None
+    )
+
+    premium = np.nan
+
+    if (
+        futures_data
+        and finite(futures_data.get("mark_price"))
+        and finite(futures_data.get("spot_price"))
+    ):
+
+        spot = float(
+            futures_data["spot_price"]
+        )
+
+        if spot:
+
+            premium = (
+                (
+                    float(futures_data["mark_price"])
+                    - spot
+                ) / spot
+            ) * 100
+
+    return {
+
+        "timestamp": now_ist.isoformat(),
+
+        "cycle": get_current_cycle_start(
+            now_ist
+        ).strftime("%Y-%m-%d %H:%M"),
+
+        "price": to_float(current_price),
+
+        "poc": (
+            to_float(tpo.get("poc"))
+            if tpo else np.nan
+        ),
+
+        "vah": (
+            to_float(tpo.get("vah"))
+            if tpo else np.nan
+        ),
+
+        "val": (
+            to_float(tpo.get("val"))
+            if tpo else np.nan
+        ),
+
+        "ib_high": (
+            to_float(ib.get("high"))
+            if ib else np.nan
+        ),
+
+        "ib_low": (
+            to_float(ib.get("low"))
+            if ib else np.nan
+        ),
+
+        "ib_complete": (
+            bool(ib.get("complete"))
+            if ib else False
+        ),
+
+        "oi_usd": (
+            to_float(
+                futures_data.get("oi_value_usd")
+            )
+            if futures_data else np.nan
+        ),
+
+        "funding": (
+            to_float(
+                futures_data.get("funding_rate")
+            )
+            if futures_data else np.nan
+        ),
+
+        "premium_pct": premium,
+
+        "atm_strike": (
+            to_float(
+                option_metrics.get("atm_strike")
+            )
+            if option_metrics else np.nan
+        ),
+
+        "straddle": (
+            to_float(
+                option_metrics.get("straddle")
+            )
+            if option_metrics else np.nan
+        ),
+
+        "call_wall_strike": row_value(
+            call_wall,
+            "strike"
+        ),
+
+        "call_wall_oi": row_value(
+            call_wall,
+            "oi_usd"
+        ),
+
+        "put_wall_strike": row_value(
+            put_wall,
+            "strike"
+        ),
+
+        "put_wall_oi": row_value(
+            put_wall,
+            "oi_usd"
+        ),
+
+        "expiry": (
+            expiry.isoformat()
+            if expiry else None
+        )
+
+    }
+
+
+def add_snapshot_to_history(snapshot):
+
+    """
+    Stores approximately one snapshot every five minutes.
+
+    Streamlit session state survives normal Streamlit reruns.
+    It is not permanent database storage.
+    """
+
+    if "btc_amt_history" not in st.session_state:
+
+        st.session_state["btc_amt_history"] = []
+
+    history = st.session_state["btc_amt_history"]
+
+    current_time = datetime.fromisoformat(
+        snapshot["timestamp"]
+    )
+
+    if not history:
+
+        history.append(snapshot)
+
+    else:
+
+        last_time = datetime.fromisoformat(
+            history[-1]["timestamp"]
+        )
+
+        elapsed = (
+            current_time - last_time
+        ).total_seconds()
+
+        if elapsed >= 240:
+
+            history.append(snapshot)
+
+        elif elapsed < 0:
+
+            history.clear()
+            history.append(snapshot)
+
+    cutoff = current_time - timedelta(days=7)
+
+    history[:] = [
+
+        item
+
+        for item in history
+
+        if datetime.fromisoformat(
+            item["timestamp"]
+        ) >= cutoff
+
+    ]
+
+    if len(history) > 2200:
+
+        del history[:-2200]
+
+    return history
+
+
+def find_comparison_snapshot(
+    history,
+    now_ist,
+    minutes,
+    tolerance=12
+):
+
+    target = now_ist - timedelta(
+        minutes=minutes
+    )
+
+    candidates = []
+
+    for item in history:
+
+        stamp = datetime.fromisoformat(
+            item["timestamp"]
+        )
+
+        age_minutes = (
+            now_ist - stamp
+        ).total_seconds() / 60
+
+        if (
+            age_minutes > 0
+            and abs(
+                (stamp - target).total_seconds()
+            ) <= tolerance * 60
+        ):
+
+            candidates.append((
+                abs(
+                    (stamp - target).total_seconds()
+                ),
+                item
+            ))
+
+    if not candidates:
+        return None
+
+    return min(
+        candidates,
+        key=lambda pair: pair[0]
+    )[1]
+
+
+def delta_text(
+    current,
+    previous,
+    suffix="",
+    money=False
+):
+
+    if not (
+        finite(current)
+        and finite(previous)
+    ):
+
+        return "Not enough historical readings"
+
+    change = float(current) - float(previous)
+
+    if money:
+
+        if previous:
+
+            percentage = (
+                change / float(previous)
+            ) * 100
+
+            return (
+                f"{change:+,.0f} USD "
+                f"({percentage:+.2f}%)"
+            )
+
+        return f"{change:+,.0f} USD"
+
+    return f"{change:+.2f}{suffix}"
+
+
+# ============================================================
+# 20. COMBINED MARKET BIAS
+# ============================================================
+
+def assess_market_bias(
+    snapshot,
+    history,
+    now_ist
+):
+
+    price = snapshot["price"]
+
+    poc = snapshot["poc"]
+    vah = snapshot["vah"]
+    val = snapshot["val"]
+
+    bullish = []
+    bearish = []
+    neutral = []
+
+    # --------------------------------------------------------
+    # A. PRIMARY AUCTION LOCATION
+    # --------------------------------------------------------
+
+    auction_location = "Unavailable"
+
+    if all(
+        finite(x)
+        for x in (price, poc, vah, val)
+    ):
+
+        if price > vah:
+
+            auction_location = "Above developing value"
+
+            bullish.append(
+                "Price is above developing VAH."
+            )
+
+        elif price < val:
+
+            auction_location = "Below developing value"
+
+            bearish.append(
+                "Price is below developing VAL."
+            )
+
+        else:
+
+            auction_location = "Inside developing value"
+
+            neutral.append(
+                "Price is inside developing value; "
+                "auction remains rotational unless acceptance changes."
+            )
+
+        # POC position is retained as context.
+        # It is NOT counted as a second independent
+        # directional confirmation.
+
+        if price > poc:
+
+            neutral.append(
+                "Price is above developing POC."
+            )
+
+        elif price < poc:
+
+            neutral.append(
+                "Price is below developing POC."
+            )
+
+    # --------------------------------------------------------
+    # B. HISTORICAL REFERENCES
+    # --------------------------------------------------------
+
+    prior_30m = find_comparison_snapshot(
+        history,
+        now_ist,
+        30
+    )
+
+    prior_1h = find_comparison_snapshot(
+        history,
+        now_ist,
+        60
+    )
+
+    prior_4h = find_comparison_snapshot(
+        history,
+        now_ist,
+        240
+    )
+
+    reference = prior_1h or prior_30m
+
+    price_change = np.nan
+    oi_change = np.nan
+
+    if reference:
+
+        if finite(price) and finite(
+            reference.get("price")
+        ):
+
+            price_change = (
+                price - reference["price"]
+            )
+
+        if finite(snapshot["oi_usd"]) and finite(
+            reference.get("oi_usd")
+        ):
+
+            oi_change = (
+                snapshot["oi_usd"]
+                - reference["oi_usd"]
+            )
+
+    # --------------------------------------------------------
+    # C. FUTURES OI CONTEXT
+    # --------------------------------------------------------
+
+    oi_context = (
+        "Insufficient history to classify "
+        "OI build-up or reduction."
+    )
+
+    if (
+        finite(price_change)
+        and finite(oi_change)
+    ):
+
+        if price_change > 0 and oi_change > 0:
+
+            oi_context = (
+                "Price and OI both increased: "
+                "participation expanded alongside the rise."
+            )
+
+            bullish.append(
+                "Futures OI increased alongside rising price."
+            )
+
+        elif price_change > 0 and oi_change < 0:
+
+            oi_context = (
+                "Price rose while OI fell: "
+                "position reduction or short covering is possible."
+            )
+
+            neutral.append(
+                "Rising price with falling OI may be "
+                "short covering rather than fresh participation."
+            )
+
+        elif price_change < 0 and oi_change > 0:
+
+            oi_context = (
+                "Price fell while OI increased: "
+                "participation expanded alongside the decline."
+            )
+
+            bearish.append(
+                "Futures OI increased alongside falling price."
+            )
+
+        elif price_change < 0 and oi_change < 0:
+
+            oi_context = (
+                "Price and OI both fell: "
+                "position reduction or long liquidation is possible."
+            )
+
+            neutral.append(
+                "Falling price with falling OI may reflect "
+                "liquidation rather than fresh short participation."
+            )
+
+        else:
+
+            oi_context = (
+                "Price/OI changes are mixed or nearly unchanged."
+            )
+
+    # --------------------------------------------------------
+    # D. DEVELOPING POC MIGRATION
+    # --------------------------------------------------------
+
+    if (
+        reference
+        and reference.get("cycle") == snapshot.get("cycle")
+    ):
+
+        old_poc = reference.get("poc")
+
+        if finite(poc) and finite(old_poc):
+
+            if poc > old_poc:
+
+                neutral.append(
+                    "Developing POC has migrated higher "
+                    "since the comparison reading."
+                )
+
+            elif poc < old_poc:
+
+                neutral.append(
+                    "Developing POC has migrated lower "
+                    "since the comparison reading."
+                )
+
+    # --------------------------------------------------------
+    # E. FUNDING AND PREMIUM
+    # --------------------------------------------------------
+
+    funding = snapshot.get("funding")
+
+    if finite(funding):
+
+        neutral.append(
+            f"Funding is {float(funding):+.5f}% "
+            "as supplied by Delta; positioning context only."
+        )
+
+    if finite(snapshot.get("premium_pct")):
+
+        neutral.append(
+            "Perpetual mark premium/discount versus spot is "
+            f"{snapshot['premium_pct']:+.4f}%."
+        )
+
+    # --------------------------------------------------------
+    # F. OPTIONS OI CONCENTRATIONS
+    # --------------------------------------------------------
+
+    if (
+        finite(snapshot.get("call_wall_strike"))
+        and finite(snapshot.get("put_wall_strike"))
+    ):
+
+        neutral.append(
+            "Nearest-expiry largest OI concentrations: "
+            f"call {snapshot['call_wall_strike']:,.0f}, "
+            f"put {snapshot['put_wall_strike']:,.0f}; "
+            "these do not establish dealer direction "
+            "or defended levels."
+        )
+
+    # --------------------------------------------------------
+    # G. BIAS CLASSIFICATION
+    # --------------------------------------------------------
+
+    bull_score = len(bullish)
+    bear_score = len(bearish)
+
+    if bull_score >= bear_score + 2:
+
+        bias = "Bullish"
+
+    elif bear_score >= bull_score + 2:
+
+        bias = "Bearish"
+
+    elif bull_score == 0 and bear_score == 0:
+
+        bias = "Neutral / rotational"
+
+    else:
+
+        bias = "Mixed / conflicting"
+
+    dominant = max(
+        bull_score,
+        bear_score
+    )
+
+    difference = abs(
+        bull_score - bear_score
+    )
+
+    if dominant >= 4 and difference >= 3:
+
+        confidence = "Moderate"
+
+    elif dominant >= 3 and difference >= 2:
+
+        confidence = "Low–Moderate"
+
+    else:
+
+        confidence = "Low"
+
+    if not reference and bias in (
+        "Bullish",
+        "Bearish"
+    ):
+
+        confidence = "Low"
+
+    # --------------------------------------------------------
+    # H. HISTORICAL COMPARISON TABLE
+    # --------------------------------------------------------
+
+    comparisons = {}
+
+    for label, minutes in (
+        ("30m", 30),
+        ("1h", 60),
+        ("4h", 240)
+    ):
+
+        old = find_comparison_snapshot(
+            history,
+            now_ist,
+            minutes
+        )
+
+        if old:
+
+            comparisons[label] = {
+
+                "time": old["timestamp"],
+
+                "price": delta_text(
+                    snapshot["price"],
+                    old.get("price"),
+                    money=True
+                ),
+
+                "oi": delta_text(
+                    snapshot["oi_usd"],
+                    old.get("oi_usd"),
+                    money=True
+                ),
+
+                "poc": delta_text(
+                    snapshot["poc"],
+                    old.get("poc"),
+                    money=True
+                )
+
+            }
+
+        else:
+
+            comparisons[label] = None
+
+    return {
+
+        "bias": bias,
+
+        "confidence": confidence,
+
+        "bullish": bullish,
+
+        "bearish": bearish,
+
+        "neutral": neutral,
+
+        "oi_context": oi_context,
+
+        "auction_location": auction_location,
+
+        "comparisons": comparisons,
+
+        "history_count": len(history),
+
+        "price_change_reference": price_change,
+
+        "oi_change_reference": oi_change,
+
+        "reference_label": (
+            "1h"
+            if prior_1h
+            else "30m"
+            if prior_30m
+            else "none"
+        ),
+
+        "prior_4h": prior_4h
+
+    }
+
+
+# ============================================================
+# 21. COPY-READY MARKET REPORT
+# ============================================================
+
+def build_copy_report(
+    snapshot,
+    assessment,
+    options_metrics,
+    initial_balance,
+    single_prints,
+    cycle_df,
+    now_ist
+):
+
+    lines = [
+
+        "BTC AMT + FUTURES + OPTIONS MARKET REPORT",
+
+        f"Generated: {now_ist.strftime('%d-%m-%Y %H:%M:%S IST')}",
+
+        f"Primary BTC AMT cycle: {snapshot.get('cycle')} IST "
+        "(05:30 to 05:30)",
+
+        "Cycle basis: 00:00 UTC daily boundary",
+
+        "Options expiry reference: 17:30 IST",
+
+        f"Bias: {assessment['bias']} | "
+        f"Confidence: {assessment['confidence']}",
+
+        "",
+
+        "1) AMT STRUCTURE",
+
+        f"Price (Binance latest candle close): "
+        f"{fmt_price(snapshot.get('price'))}",
+
+        f"Developing POC: "
+        f"{fmt_price(snapshot.get('poc'))}",
+
+        f"VAH: {fmt_price(snapshot.get('vah'))} | "
+        f"VAL: {fmt_price(snapshot.get('val'))}",
+
+        f"Price location: {assessment['auction_location']}",
+
+        f"IB High: {fmt_price(snapshot.get('ib_high'))} | "
+        f"IB Low: {fmt_price(snapshot.get('ib_low'))} | "
+        f"Complete: {snapshot.get('ib_complete')}",
+
+        f"30m candles in current cycle: {len(cycle_df)}",
+
+        f"Single-print price rows: {len(single_prints)}",
+
+        "Volume profile: OHLCV range-distributed approximation, "
+        "not trade-level volume-at-price.",
+
+        "",
+
+        "2) FUTURES PARTICIPATION (DELTA BTC PERPETUAL)",
+
+        f"Open interest: {fmt_usd(snapshot.get('oi_usd'))}",
+
+        (
+            f"Funding rate: {snapshot.get('funding'):.6f}%"
+            if finite(snapshot.get("funding"))
+            else "Funding rate: Unavailable"
+        ),
+
+        (
+            f"Perpetual mark premium/discount vs spot: "
+            f"{snapshot.get('premium_pct'):+.5f}%"
+            if finite(snapshot.get("premium_pct"))
+            else "Perpetual premium/discount: Unavailable"
+        ),
+
+        f"OI interpretation: {assessment['oi_context']}",
+
+        "",
+
+        "3) OPTIONS POSITIONING (NEAREST EXPIRY)",
+
+        f"Expiry: {snapshot.get('expiry') or 'Unavailable'} "
+        "(17:30 IST contract reference)",
+
+        f"ATM strike: {fmt_price(snapshot.get('atm_strike'))}",
+
+        f"ATM straddle premium: {fmt_price(snapshot.get('straddle'))}",
+
+        f"Largest call OI: strike "
+        f"{fmt_price(snapshot.get('call_wall_strike'))}, "
+        f"OI {fmt_usd(snapshot.get('call_wall_oi'))}",
+
+        f"Largest put OI: strike "
+        f"{fmt_price(snapshot.get('put_wall_strike'))}, "
+        f"OI {fmt_usd(snapshot.get('put_wall_oi'))}",
+
+        "Options OI concentrations are not guaranteed "
+        "support/resistance; gamma is not dealer net gamma exposure.",
+
+        "",
+
+        "4) AUTOMATIC COMBINED ASSESSMENT",
+
+        f"Bias: {assessment['bias']}",
+
+        f"Confidence: {assessment['confidence']}",
+
+        "Bullish evidence:"
+
+    ]
+
+    lines += (
+        [f"- {item}" for item in assessment["bullish"]]
+        or ["- None identified"]
+    )
+
+    lines.append("Bearish evidence:")
+
+    lines += (
+        [f"- {item}" for item in assessment["bearish"]]
+        or ["- None identified"]
+    )
+
+    lines.append("Context / cautions:")
+
+    lines += (
+        [f"- {item}" for item in assessment["neutral"]]
+        or ["- None"]
+    )
+
+    lines += [
+        "",
+        "5) AUTOMATIC HISTORICAL COMPARISON"
+    ]
+
+    for label in ("30m", "1h", "4h"):
+
+        comp = assessment["comparisons"].get(label)
+
+        if comp:
+
+            lines.append(
+                f"{label}: Price {comp['price']} | "
+                f"OI {comp['oi']} | "
+                f"POC {comp['poc']} "
+                f"(reference {comp['time']})"
+            )
+
+        else:
+
+            lines.append(
+                f"{label}: Not enough stored readings yet."
+            )
+
+    lines += [
+
+        "",
+
+        f"Stored readings in this app session: "
+        f"{assessment['history_count']}",
+
+        "History is session-local and may reset after "
+        "session expiry or server restart.",
+
+        "A single OI snapshot cannot establish "
+        "OI build-up or reduction.",
+
+        "Please assess observed facts separately from "
+        "interpretation. Do not treat OI walls, funding "
+        "or gamma as standalone directional proof."
+
+    ]
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# 22. DASHBOARD HEADER
+# ============================================================
 
 now = datetime.now(IST)
 
@@ -1332,13 +2186,19 @@ cycle_start = get_current_cycle_start(now)
 
 cycle_end = cycle_start + timedelta(days=1)
 
+st.title("₿ BTC Auction Market Observer")
+
+st.caption(
+    "AMT | Price Action | Futures Participation | Options Positioning"
+)
+
 col1, col2, col3 = st.columns(3)
 
 with col1:
 
     st.metric(
-        "Primary Cycle",
-        "17:30 → 17:30 IST"
+        "Primary BTC AMT Cycle",
+        "05:30 → 05:30 IST"
     )
 
 with col2:
@@ -1356,17 +2216,22 @@ with col3:
     )
 
 st.caption(
-    f"Current Cycle: "
+    f"Current UTC daily cycle: "
     f"{cycle_start.strftime('%d %b %Y %H:%M')} "
     f"to "
     f"{cycle_end.strftime('%d %b %Y %H:%M')} IST"
+)
+
+st.caption(
+    "00:00 UTC daily boundary | "
+    "Options expiry remains independently referenced to 17:30 IST."
 )
 
 st.divider()
 
 
 # ============================================================
-# 20. FETCH MARKET DATA
+# 23. FETCH MARKET DATA
 # ============================================================
 
 with st.spinner("Fetching public market data..."):
@@ -1380,8 +2245,6 @@ futures = market_data["futures"]
 options_df = market_data["options"]
 
 expiry_date = market_data["expiry"]
-
-# Show API errors without terminating the application.
 
 for error in market_data["errors"]:
 
@@ -1398,7 +2261,7 @@ if candles is None:
 
 
 # ============================================================
-# 21. CALCULATE CURRENT AMT CYCLE
+# 24. CALCULATE CURRENT AMT CYCLE
 # ============================================================
 
 cycle_df = get_cycle_candles(
@@ -1429,7 +2292,7 @@ single_prints = calculate_single_prints(
 
 
 # ============================================================
-# 22. OPTIONS CALCULATIONS
+# 25. OPTIONS CALCULATIONS
 # ============================================================
 
 options_metrics = None
@@ -1443,313 +2306,9 @@ if options_df is not None:
 
 
 # ============================================================
-# 22A. AUTOMATIC HISTORY, MARKET BIAS AND COPY REPORT
+# 26. AUTOMATIC SNAPSHOT AND BIAS
 # ============================================================
 
-def _finite(value):
-    try:
-        return value is not None and np.isfinite(float(value))
-    except (TypeError, ValueError):
-        return False
-
-
-def _fmt_price(value):
-    return f"${float(value):,.2f}" if _finite(value) else "Unavailable"
-
-
-def _fmt_usd(value):
-    return f"${float(value):,.0f}" if _finite(value) else "Unavailable"
-
-
-def _row_value(row, key):
-    if row is None:
-        return np.nan
-    try:
-        return to_float(row.get(key))
-    except Exception:
-        return np.nan
-
-
-def make_market_snapshot(now_ist, current_price, tpo, ib, futures_data,
-                         option_metrics, expiry):
-    call_wall = option_metrics.get("call_wall") if option_metrics else None
-    put_wall = option_metrics.get("put_wall") if option_metrics else None
-
-    premium = np.nan
-    if futures_data and _finite(futures_data.get("mark_price")) and _finite(futures_data.get("spot_price")):
-        spot = float(futures_data["spot_price"])
-        if spot:
-            premium = (float(futures_data["mark_price"]) - spot) / spot * 100
-
-    return {
-        "timestamp": now_ist.isoformat(),
-        "cycle": get_current_cycle_start(now_ist).strftime("%Y-%m-%d %H:%M"),
-        "price": to_float(current_price),
-        "poc": to_float(tpo.get("poc")) if tpo else np.nan,
-        "vah": to_float(tpo.get("vah")) if tpo else np.nan,
-        "val": to_float(tpo.get("val")) if tpo else np.nan,
-        "ib_high": to_float(ib.get("high")) if ib else np.nan,
-        "ib_low": to_float(ib.get("low")) if ib else np.nan,
-        "ib_complete": bool(ib.get("complete")) if ib else False,
-        "oi_usd": to_float(futures_data.get("oi_value_usd")) if futures_data else np.nan,
-        "funding": to_float(futures_data.get("funding_rate")) if futures_data else np.nan,
-        "premium_pct": premium,
-        "atm_strike": to_float(option_metrics.get("atm_strike")) if option_metrics else np.nan,
-        "straddle": to_float(option_metrics.get("straddle")) if option_metrics else np.nan,
-        "call_wall_strike": _row_value(call_wall, "strike"),
-        "call_wall_oi": _row_value(call_wall, "oi_usd"),
-        "put_wall_strike": _row_value(put_wall, "strike"),
-        "put_wall_oi": _row_value(put_wall, "oi_usd"),
-        "expiry": expiry.isoformat() if expiry else None,
-    }
-
-
-def add_snapshot_to_history(snapshot):
-    """Session-local rolling history; one sample approximately every 5 minutes."""
-    if "btc_amt_history" not in st.session_state:
-        st.session_state["btc_amt_history"] = []
-
-    history = st.session_state["btc_amt_history"]
-    current_time = datetime.fromisoformat(snapshot["timestamp"])
-
-    if not history:
-        history.append(snapshot)
-    else:
-        last_time = datetime.fromisoformat(history[-1]["timestamp"])
-        elapsed = (current_time - last_time).total_seconds()
-        # Avoid duplicate samples on incidental Streamlit reruns.
-        if elapsed >= 240:
-            history.append(snapshot)
-        elif elapsed < 0:
-            history.clear()
-            history.append(snapshot)
-
-    # Keep up to 7 days of 5-minute samples.
-    cutoff = current_time - timedelta(days=7)
-    history[:] = [
-        item for item in history
-        if datetime.fromisoformat(item["timestamp"]) >= cutoff
-    ]
-    if len(history) > 2200:
-        del history[:-2200]
-
-    return history
-
-
-def find_comparison_snapshot(history, now_ist, minutes, tolerance=12):
-    target = now_ist - timedelta(minutes=minutes)
-    candidates = []
-    for item in history:
-        stamp = datetime.fromisoformat(item["timestamp"])
-        age_minutes = (now_ist - stamp).total_seconds() / 60
-        if age_minutes > 0 and abs((stamp - target).total_seconds()) <= tolerance * 60:
-            candidates.append((abs((stamp - target).total_seconds()), item))
-    return min(candidates, key=lambda pair: pair[0])[1] if candidates else None
-
-
-def delta_text(current, previous, suffix="", money=False):
-    if not (_finite(current) and _finite(previous)):
-        return "Not enough historical readings"
-    change = float(current) - float(previous)
-    if money:
-        return f"{change:+,.0f} USD ({change / float(previous) * 100:+.2f}%)" if previous else f"{change:+,.0f} USD"
-    return f"{change:+.2f}{suffix}"
-
-
-def assess_market_bias(snapshot, history, now_ist):
-    price = snapshot["price"]
-    poc, vah, val = snapshot["poc"], snapshot["vah"], snapshot["val"]
-    bullish, bearish = [], []
-    neutral = []
-
-    if all(_finite(x) for x in (price, poc, vah, val)):
-        if price > vah:
-            bullish.append("Price is above developing value (above VAH).")
-        elif price < val:
-            bearish.append("Price is below developing value (below VAL).")
-        else:
-            neutral.append("Price is inside developing value; auction remains rotational unless acceptance changes.")
-
-        if price > poc:
-            bullish.append("Price is above developing POC.")
-        elif price < poc:
-            bearish.append("Price is below developing POC.")
-
-    prior_1h = find_comparison_snapshot(history, now_ist, 60)
-    prior_4h = find_comparison_snapshot(history, now_ist, 240)
-    prior_30m = find_comparison_snapshot(history, now_ist, 30)
-
-    reference = prior_1h or prior_30m
-    price_change = np.nan
-    oi_change = np.nan
-    if reference:
-        if _finite(price) and _finite(reference.get("price")):
-            price_change = price - reference["price"]
-        if _finite(snapshot["oi_usd"]) and _finite(reference.get("oi_usd")):
-            oi_change = snapshot["oi_usd"] - reference["oi_usd"]
-
-    oi_context = "Insufficient history to classify OI build-up or reduction."
-    if _finite(price_change) and _finite(oi_change):
-        if price_change > 0 and oi_change > 0:
-            oi_context = "Price and OI both increased: participation expanded alongside the rise."
-            bullish.append("Futures OI increased alongside rising price.")
-        elif price_change > 0 and oi_change < 0:
-            oi_context = "Price rose while OI fell: position reduction / short covering is possible."
-            neutral.append("Rising price with falling OI may be short covering rather than fresh participation.")
-        elif price_change < 0 and oi_change > 0:
-            oi_context = "Price and OI both decreased/increased respectively: participation expanded alongside the decline."
-            bearish.append("Futures OI increased alongside falling price.")
-        elif price_change < 0 and oi_change < 0:
-            oi_context = "Price and OI both fell: position reduction / long liquidation is possible."
-            neutral.append("Falling price with falling OI may reflect liquidation rather than fresh short participation.")
-        else:
-            oi_context = "Price/OI changes are mixed or nearly unchanged."
-
-    # Developing POC migration is only assessed against a same-cycle prior sample.
-    if reference and reference.get("cycle") == snapshot.get("cycle"):
-        old_poc = reference.get("poc")
-        if _finite(poc) and _finite(old_poc):
-            if poc > old_poc:
-                bullish.append("Developing POC has migrated higher since the comparison reading.")
-            elif poc < old_poc:
-                bearish.append("Developing POC has migrated lower since the comparison reading.")
-
-    funding = snapshot.get("funding")
-    if _finite(funding):
-        neutral.append(
-            f"Funding is {float(funding):+.5f}% as supplied by Delta; treat it as positioning context, not directional proof."
-        )
-
-    if _finite(snapshot.get("premium_pct")):
-        premium = snapshot["premium_pct"]
-        neutral.append(
-            f"Perpetual mark premium/discount versus spot is {premium:+.4f}%."
-        )
-
-    # OI walls are concentrations only; they are not automatically support/resistance.
-    if _finite(snapshot.get("call_wall_strike")) and _finite(snapshot.get("put_wall_strike")):
-        neutral.append(
-            f"Nearest-expiry largest OI concentrations: call {snapshot['call_wall_strike']:,.0f}, "
-            f"put {snapshot['put_wall_strike']:,.0f}; these do not establish dealer direction or defended levels."
-        )
-
-    bull_score, bear_score = len(bullish), len(bearish)
-    if bull_score >= bear_score + 2:
-        bias = "Bullish"
-    elif bear_score >= bull_score + 2:
-        bias = "Bearish"
-    elif bull_score == 0 and bear_score == 0:
-        bias = "Neutral / rotational"
-    else:
-        bias = "Mixed / conflicting"
-
-    dominant = max(bull_score, bear_score)
-    if dominant >= 4 and abs(bull_score - bear_score) >= 3:
-        confidence = "Moderate"
-    elif dominant >= 3 and abs(bull_score - bear_score) >= 2:
-        confidence = "Low–Moderate"
-    else:
-        confidence = "Low"
-
-    # A directional reading without OI history is deliberately capped.
-    if not reference and bias in ("Bullish", "Bearish"):
-        confidence = "Low"
-
-    comparisons = {}
-    for label, mins in (("30m", 30), ("1h", 60), ("4h", 240)):
-        old = find_comparison_snapshot(history, now_ist, mins)
-        if old:
-            comparisons[label] = {
-                "time": old["timestamp"],
-                "price": delta_text(snapshot["price"], old.get("price"), money=True),
-                "oi": delta_text(snapshot["oi_usd"], old.get("oi_usd"), money=True),
-                "poc": delta_text(snapshot["poc"], old.get("poc"), money=True),
-            }
-        else:
-            comparisons[label] = None
-
-    return {
-        "bias": bias,
-        "confidence": confidence,
-        "bullish": bullish,
-        "bearish": bearish,
-        "neutral": neutral,
-        "oi_context": oi_context,
-        "comparisons": comparisons,
-        "history_count": len(history),
-        "price_change_reference": price_change,
-        "oi_change_reference": oi_change,
-        "reference_label": "1h" if prior_1h else ("30m" if prior_30m else "none"),
-        "prior_4h": prior_4h,
-    }
-
-
-def build_copy_report(snapshot, assessment, options_metrics, initial_balance,
-                      single_prints, cycle_df, now_ist):
-    def valfmt(v):
-        return _fmt_price(v)
-
-    lines = [
-        "BTC AMT + FUTURES + OPTIONS MARKET REPORT",
-        f"Generated: {now_ist.strftime('%d-%m-%Y %H:%M:%S IST')}",
-        f"Primary cycle: {snapshot.get('cycle')} IST (17:30 to 17:30)",
-        f"Bias: {assessment['bias']} | Confidence: {assessment['confidence']}",
-        "",
-        "1) AMT STRUCTURE",
-        f"Price (Binance latest candle close): {valfmt(snapshot.get('price'))}",
-        f"Developing POC: {valfmt(snapshot.get('poc'))}",
-        f"VAH: {valfmt(snapshot.get('vah'))} | VAL: {valfmt(snapshot.get('val'))}",
-        f"Price location: " + (
-            "Above VAH" if all(_finite(snapshot.get(k)) for k in ("price", "vah")) and snapshot["price"] > snapshot["vah"]
-            else "Below VAL" if all(_finite(snapshot.get(k)) for k in ("price", "val")) and snapshot["price"] < snapshot["val"]
-            else "Inside value / unavailable"
-        ),
-        f"IB High: {valfmt(snapshot.get('ib_high'))} | IB Low: {valfmt(snapshot.get('ib_low'))} | Complete: {snapshot.get('ib_complete')}",
-        f"30m candles in current cycle: {len(cycle_df)}",
-        f"Single-print price rows: {len(single_prints)}",
-        "Volume profile: OHLCV range-distributed approximation, not trade-level volume-at-price.",
-        "",
-        "2) FUTURES PARTICIPATION (DELTA BTC PERPETUAL)",
-        f"Open interest: {_fmt_usd(snapshot.get('oi_usd'))}",
-        f"Funding rate (raw API display convention): {snapshot.get('funding'):.6f}%" if _finite(snapshot.get("funding")) else "Funding rate: Unavailable",
-        f"Perpetual mark premium/discount vs spot: {snapshot.get('premium_pct'):+.5f}%" if _finite(snapshot.get("premium_pct")) else "Perpetual premium/discount: Unavailable",
-        f"OI interpretation: {assessment['oi_context']}",
-        "",
-        "3) OPTIONS POSITIONING (NEAREST EXPIRY)",
-        f"Expiry: {snapshot.get('expiry') or 'Unavailable'} (17:30 IST reference)",
-        f"ATM strike: {valfmt(snapshot.get('atm_strike'))}",
-        f"ATM straddle premium: {valfmt(snapshot.get('straddle'))}",
-        f"Largest call OI: strike {valfmt(snapshot.get('call_wall_strike'))}, OI {_fmt_usd(snapshot.get('call_wall_oi'))}",
-        f"Largest put OI: strike {valfmt(snapshot.get('put_wall_strike'))}, OI {_fmt_usd(snapshot.get('put_wall_oi'))}",
-        "Options OI concentrations are not guaranteed support/resistance; gamma shown by Delta is not dealer net gamma exposure.",
-        "",
-        "4) AUTOMATIC COMBINED ASSESSMENT",
-        f"Bias: {assessment['bias']}",
-        f"Confidence: {assessment['confidence']}",
-        "Bullish evidence:",
-    ]
-    lines += [f"- {x}" for x in assessment["bullish"]] or ["- None identified"]
-    lines.append("Bearish evidence:")
-    lines += [f"- {x}" for x in assessment["bearish"]] or ["- None identified"]
-    lines.append("Context / cautions:")
-    lines += [f"- {x}" for x in assessment["neutral"]] or ["- None"]
-    lines += ["", "5) AUTOMATIC HISTORICAL COMPARISON"]
-    for label in ("30m", "1h", "4h"):
-        comp = assessment["comparisons"].get(label)
-        if comp:
-            lines.append(f"{label}: Price {comp['price']} | OI {comp['oi']} | POC {comp['poc']} (reference {comp['time']})")
-        else:
-            lines.append(f"{label}: Not enough stored readings yet.")
-    lines += [
-        "",
-        f"Stored readings in this app session: {assessment['history_count']}",
-        "Important: OI change comparisons use stored readings from this running app session. A single snapshot cannot establish OI build-up/unwind.",
-        "Please assess observed facts separately from interpretation; do not treat OI walls, funding or gamma as standalone directional proof."
-    ]
-    return "\n".join(lines)
-
-
-# Capture one automatic reading approximately every five minutes.
 bias_snapshot = make_market_snapshot(
     now,
     current_price,
@@ -1759,15 +2318,20 @@ bias_snapshot = make_market_snapshot(
     options_metrics,
     expiry_date
 )
-bias_history = add_snapshot_to_history(bias_snapshot)
+
+bias_history = add_snapshot_to_history(
+    bias_snapshot
+)
+
 bias_assessment = assess_market_bias(
     bias_snapshot,
     bias_history,
     now
 )
 
+
 # ============================================================
-# 23. DASHBOARD TABS
+# 27. DASHBOARD TABS
 # ============================================================
 
 tab_amt, tab_futures, tab_options, tab_bias = st.tabs([
@@ -1790,8 +2354,6 @@ tab_amt, tab_futures, tab_options, tab_bias = st.tabs([
 with tab_amt:
 
     st.subheader("BTC Auction Structure")
-
-    # Current Price
 
     st.metric(
         "Current BTC Price (Binance BTCUSDT)",
@@ -1860,8 +2422,6 @@ with tab_amt:
 
     st.divider()
 
-    # Initial Balance
-
     st.markdown(
         '<div class="section-header">Initial Balance</div>',
         unsafe_allow_html=True
@@ -1894,13 +2454,11 @@ with tab_amt:
         )
 
         st.info(
-            "IB requires both the 17:30 and 18:00 "
-            "IST candles of the current cycle."
+            "IB requires both the 05:30 and 06:00 "
+            "IST candles of the current UTC daily cycle."
         )
 
     st.divider()
-
-    # Single Prints
 
     st.markdown(
         '<div class="section-header">Single Prints</div>',
@@ -1930,8 +2488,6 @@ with tab_amt:
         )
 
     st.divider()
-
-    # Volume Profile
 
     st.markdown(
         '<div class="section-header">'
@@ -1980,11 +2536,8 @@ with tab_futures:
     if futures is not None:
 
         oi = futures["oi_value_usd"]
-
         funding = futures["funding_rate"]
-
         mark_price = futures["mark_price"]
-
         spot_price = futures["spot_price"]
 
         col1, col2 = st.columns(2)
@@ -1993,17 +2546,16 @@ with tab_futures:
             "Total OI (USD)",
             (
                 f"${oi:,.2f}"
-                if np.isfinite(oi)
+                if finite(oi)
                 else "Unavailable"
             )
         )
 
-        # FIXED: Removed the * 100 multiplier. Delta returns 0.01 for 0.01%.
         col2.metric(
             "Current Funding Rate",
             (
                 f"{funding:.4f}%"
-                if np.isfinite(funding)
+                if finite(funding)
                 else "Unavailable"
             )
         )
@@ -2018,8 +2570,8 @@ with tab_futures:
         )
 
         if (
-            np.isfinite(mark_price)
-            and np.isfinite(spot_price)
+            finite(mark_price)
+            and finite(spot_price)
             and spot_price != 0
         ):
 
@@ -2139,17 +2691,11 @@ with tab_options:
             unsafe_allow_html=True
         )
 
-        now = datetime.now(IST)
-
-        expiry_datetime = datetime.combine(
-            expiry_date,
-            dt_time(17, 30),
-            tzinfo=IST
-        )
+        now_options = datetime.now(IST)
 
         countdown = expiry_countdown(
             expiry_date,
-            now
+            now_options
         )
 
         c1, c2 = st.columns(2)
@@ -2165,14 +2711,11 @@ with tab_options:
         )
 
         st.caption(
-            "Expiry reference: 17:30 IST. "
-            "Settlement price follows Delta's "
-            "published settlement methodology."
+            "Options expiry reference: 17:30 IST. "
+            "This is independent of the BTC AMT cycle."
         )
 
         st.divider()
-
-        # ATM STRADDLE
 
         st.markdown(
             '<div class="section-header">'
@@ -2194,7 +2737,7 @@ with tab_options:
             "ATM Straddle Price",
             (
                 f"${straddle:,.2f}"
-                if np.isfinite(straddle)
+                if finite(straddle)
                 else "Unavailable"
             )
         )
@@ -2206,8 +2749,6 @@ with tab_options:
         )
 
         st.divider()
-
-        # CALL OI WALL
 
         st.markdown(
             '<div class="section-header">'
@@ -2234,13 +2775,9 @@ with tab_options:
 
         else:
 
-            st.info(
-                "Call OI data unavailable."
-            )
+            st.info("Call OI data unavailable.")
 
         st.divider()
-
-        # PUT OI WALL
 
         st.markdown(
             '<div class="section-header">'
@@ -2267,13 +2804,9 @@ with tab_options:
 
         else:
 
-            st.info(
-                "Put OI data unavailable."
-            )
+            st.info("Put OI data unavailable.")
 
         st.divider()
-
-        # OPTIONS CHAIN
 
         st.markdown(
             '<div class="section-header">'
@@ -2331,64 +2864,136 @@ with tab_options:
 
 
 # ============================================================
-# TAB 4: AUTOMATIC MARKET BIAS AND COPY REPORT
+# TAB 4: MARKET BIAS AND COPY REPORT
 # ============================================================
 
 with tab_bias:
 
-    st.subheader("Automatic Combined Market Assessment")
+    st.subheader(
+        "Automatic Combined Market Assessment"
+    )
+
     st.caption(
-        "Assessment combines the current AMT structure with Delta futures and "
-        "nearest-expiry options context. Historical comparisons are collected "
-        "automatically during this app session."
+        "Assessment combines AMT structure with Delta futures "
+        "and nearest-expiry options context. Historical comparisons "
+        "are collected automatically during this app session."
     )
 
     b1, b2, b3 = st.columns(3)
-    b1.metric("Combined Bias", bias_assessment["bias"])
-    b2.metric("Confidence", bias_assessment["confidence"])
-    b3.metric("Stored Readings", str(bias_assessment["history_count"]))
 
-    st.markdown("#### Auction and participation evidence")
+    b1.metric(
+        "Combined Bias",
+        bias_assessment["bias"]
+    )
+
+    b2.metric(
+        "Confidence",
+        bias_assessment["confidence"]
+    )
+
+    b3.metric(
+        "Stored Readings",
+        str(bias_assessment["history_count"])
+    )
+
+    st.markdown(
+        "#### Auction and participation evidence"
+    )
 
     left, right = st.columns(2)
+
     with left:
+
         st.markdown("**Bullish evidence**")
+
         if bias_assessment["bullish"]:
+
             for item in bias_assessment["bullish"]:
+
                 st.write(f"• {item}")
+
         else:
-            st.write("No bullish evidence identified.")
+
+            st.write(
+                "No bullish evidence identified."
+            )
 
         st.markdown("**Bearish evidence**")
+
         if bias_assessment["bearish"]:
+
             for item in bias_assessment["bearish"]:
+
                 st.write(f"• {item}")
+
         else:
-            st.write("No bearish evidence identified.")
+
+            st.write(
+                "No bearish evidence identified."
+            )
 
     with right:
-        st.markdown("**Context and cautions**")
-        if bias_assessment["neutral"]:
-            for item in bias_assessment["neutral"]:
-                st.write(f"• {item}")
-        else:
-            st.write("No additional context available.")
 
-        st.markdown("**Futures OI interpretation**")
-        st.write(bias_assessment["oi_context"])
+        st.markdown("**Context and cautions**")
+
+        if bias_assessment["neutral"]:
+
+            for item in bias_assessment["neutral"]:
+
+                st.write(f"• {item}")
+
+        else:
+
+            st.write(
+                "No additional context available."
+            )
+
+        st.markdown(
+            "**Futures OI interpretation**"
+        )
+
+        st.write(
+            bias_assessment["oi_context"]
+        )
 
     st.divider()
-    st.markdown("#### Automatic historical comparison")
+
+    st.markdown(
+        "#### Automatic historical comparison"
+    )
 
     comparison_rows = []
+
     for label in ("30m", "1h", "4h"):
-        item = bias_assessment["comparisons"].get(label)
+
+        item = bias_assessment["comparisons"].get(
+            label
+        )
+
         comparison_rows.append({
+
             "Lookback": label,
-            "Price change": item["price"] if item else "Collecting readings",
-            "OI change": item["oi"] if item else "Collecting readings",
-            "POC change": item["poc"] if item else "Collecting readings",
-            "Reference time": item["time"] if item else "—"
+
+            "Price change": (
+                item["price"]
+                if item else "Collecting readings"
+            ),
+
+            "OI change": (
+                item["oi"]
+                if item else "Collecting readings"
+            ),
+
+            "POC change": (
+                item["poc"]
+                if item else "Collecting readings"
+            ),
+
+            "Reference time": (
+                item["time"]
+                if item else "—"
+            )
+
         })
 
     st.dataframe(
@@ -2398,9 +3003,9 @@ with tab_bias:
     )
 
     st.caption(
-        "The dashboard stores a reading about every 5 minutes. "
-        "30-minute, 1-hour and 4-hour comparisons become available after enough "
-        "readings have accumulated."
+        "The dashboard stores a reading approximately every "
+        "five minutes. 30-minute, 1-hour and 4-hour comparisons "
+        "become available after enough readings accumulate."
     )
 
     report_text = build_copy_report(
@@ -2414,31 +3019,59 @@ with tab_bias:
     )
 
     st.divider()
-    st.markdown("#### Copy-ready report")
-    st.caption("Use the copy icon on the report block, then paste it into ChatGPT.")
-    st.code(report_text, language="text")
 
-    with st.expander("History and data-quality notes"):
+    st.markdown(
+        "#### Copy-ready report"
+    )
+
+    st.caption(
+        "Use the copy icon on the report block, "
+        "then paste it into ChatGPT."
+    )
+
+    st.code(
+        report_text,
+        language="text"
+    )
+
+    with st.expander(
+        "History and data-quality notes"
+    ):
+
         st.write(
-            "History is held in Streamlit session state. It accumulates automatically "
-            "while this browser session remains connected, but it is not durable storage "
-            "and may reset after a server restart, session expiry, or a new browser session."
+            "Primary AMT profile uses the UTC calendar-day boundary "
+            "(00:00 UTC / 05:30 IST). Options expiry remains a "
+            "separate 17:30 IST contract reference."
         )
+
         st.write(
-            "The bias is a structured interpretation, not a prediction. Developing TPO "
-            "uses 30-minute candle ranges; the volume profile is an OHLCV approximation. "
-            "Options OI walls are concentrations, not confirmed support/resistance. "
-            "Gamma is not dealer net gamma exposure."
+            "History is held in Streamlit session state. It "
+            "accumulates during normal app reruns, but is not "
+            "durable storage and may reset after session expiry, "
+            "server restart, or a new browser session."
         )
+
         st.write(
-            "The current code uses Binance's latest candle close, which may be an "
-            "in-progress 30-minute candle. The automatic history therefore records the "
-            "dashboard's current displayed reading at each refresh."
+            "The bias is a structured interpretation, not a "
+            "prediction. Developing TPO uses 30-minute candle "
+            "ranges. The volume profile is an OHLCV approximation."
+        )
+
+        st.write(
+            "Options OI concentrations are not confirmed "
+            "support/resistance. Delta gamma is not dealer net "
+            "gamma exposure."
+        )
+
+        st.write(
+            "The current code uses Binance's latest candle close, "
+            "which may be an in-progress 30-minute candle. "
+            "Automatic history records the displayed reading."
         )
 
 
 # ============================================================
-# 24. DATA STATUS AND LAST FETCH TIME
+# 28. DATA STATUS
 # ============================================================
 
 st.divider()
@@ -2453,21 +3086,27 @@ with status1:
 
     st.metric(
         "Binance OHLC",
-        "Available" if candles is not None else "Unavailable"
+        "Available"
+        if candles is not None
+        else "Unavailable"
     )
 
 with status2:
 
     st.metric(
         "Delta Futures",
-        "Available" if futures is not None else "Unavailable"
+        "Available"
+        if futures is not None
+        else "Unavailable"
     )
 
 with status3:
 
     st.metric(
         "Delta Options",
-        "Available" if options_df is not None else "Unavailable"
+        "Available"
+        if options_df is not None
+        else "Unavailable"
     )
 
 last_fetch = market_data["last_successful_fetch"]
@@ -2494,20 +3133,14 @@ st.caption(
 
 
 # ============================================================
-# 25. AUTOMATIC REFRESH - EVERY 5 MINUTES
+# 29. AUTOMATIC REFRESH
 # ============================================================
 
-components.html(
-    f"""
-    <script>
-        const refreshInterval = {REFRESH_INTERVAL_MS};
+# This triggers a Streamlit rerun instead of a full
+# browser-page reload. Session state can therefore
+# continue accumulating readings during the session.
 
-        setTimeout(function() {{
-
-            window.parent.location.reload();
-
-        }}, refreshInterval);
-    </script>
-    """,
-    height=0
+st_autorefresh(
+    interval=REFRESH_INTERVAL_MS,
+    key="btc_amt_auto_refresh"
 )
