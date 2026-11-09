@@ -24,6 +24,16 @@ IST_TZ = timezone(timedelta(hours=5, minutes=30))
 qp = st.query_params
 is_share_mode = qp.get("share", "false").lower() == "true"
 
+# FIX: Moved state_names to global scope so alerts can access it
+state_names = {
+    0: "BUILDING", 1: "DEVELOPMENT", 2: "DISCOVERY ABOVE", 3: "DISCOVERY BELOW",
+    4: "ACCEPTANCE UP", 5: "ACCEPTANCE DOWN", 6: "POC BREAK ABOVE",
+    7: "POC BREAK BELOW", 8: "NEW AREA UP", 9: "NEW AREA DOWN", 10: "FAILED DISC UP",
+    11: "FAILED DISC DOWN", 12: "ACC FAILURE UP", 13: "ACC FAILURE DOWN",
+    14: "RE-ENTRY CONFIRMED", 15: "STALLED ABOVE", 16: "STALLED BELOW",
+    17: "FAILED UP (CAND)", 18: "FAILED DOWN (CAND)"
+}
+
 # ==========================================
 # PERSISTENT STATE
 # ==========================================
@@ -52,9 +62,9 @@ def get_persistent_state():
         "active_broken_put_wall": 0.0,
         "gamma_wall_unavailable": False,
         "futures_oi_history": [],
-        "last_alerted_max_pain": None, # FIX #2 Deduplication
-        "last_alerted_trap_door": None, # FIX #2 Deduplication
-        "last_alerted_squeeze": None, # FIX #2 Deduplication
+        "last_alerted_max_pain": None,
+        "last_alerted_trap_door": None,
+        "last_alerted_squeeze": None,
     }
 
 p_state = get_persistent_state()
@@ -151,7 +161,6 @@ final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 alert_triggered = False
 alert_message = ""
 
-# FIX #5: Initialize globally to prevent snapshot crash
 loc = "Unavailable"
 verdict = "Unavailable"
 current_inverted_status = False
@@ -192,7 +201,6 @@ def fetch_amt_data():
             continue
     return pd.DataFrame()
 
-# Fetch Delta Futures Context (Funding, OI, Spot/Perp)
 @st.cache_data(ttl=60)
 def fetch_futures_context():
     try:
@@ -355,7 +363,7 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
     if pd.isna(prevVAH) or pd.isna(prevVAL) or pd.isna(prevPOC): return pd.DataFrame(), manual_valid, {}
 
     journal = []
-    candle_state_map = {} # FIX #1: Track every candle's state
+    candle_state_map = {}
     auctionState = 0
     discoveryStartBar = 0
     cycleBars = 0
@@ -368,15 +376,6 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
     pocBelowBars = 0
     reentryInsideBars = 0
     prev_currVAH, prev_currVAL, prev_currPOC = np.nan, np.nan, np.nan
-    
-    state_names = {
-        0: "BUILDING", 1: "DEVELOPMENT", 2: "DISCOVERY ABOVE", 3: "DISCOVERY BELOW",
-        4: "ACCEPTANCE UP", 5: "ACCEPTANCE DOWN", 6: "POC BREAK ABOVE",
-        7: "POC BREAK BELOW", 8: "NEW AREA UP", 9: "NEW AREA DOWN", 10: "FAILED DISC UP",
-        11: "FAILED DISC DOWN", 12: "ACC FAILURE UP", 13: "ACC FAILURE DOWN",
-        14: "RE-ENTRY CONFIRMED", 15: "STALLED ABOVE", 16: "STALLED BELOW",
-        17: "FAILED UP (CAND)", 18: "FAILED DOWN (CAND)"
-    }
 
     for i in range(len(today_df)):
         bar = today_df.iloc[i]
@@ -473,7 +472,6 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
             
         prev_currVAH, prev_currVAL, prev_currPOC = currVAH, currVAL, currPOC
         
-        # FIX #1: Record state for EVERY candle
         candle_state_map[bar['Date'].strftime('%H:%M')] = auctionState
         
         if i == 0 or auctionState != journal[-1]['Code'] or i == len(today_df) - 1:
@@ -644,7 +642,6 @@ def fetch_delta_options():
         tickers, tick_complete = fetch_paginated_data(f"{BASE_URL}/tickers?contract_types=call_options,put_options&page_size=1000")
         ticker_map = {t.get("symbol"): t for t in tickers if t.get("symbol")}
         
-        # FIX #3: Verify contract coverage, not just pagination completeness
         expected_symbols = [p.get("symbol") for p in filtered_options]
         is_chain_complete = prod_complete and tick_complete and all(sym in ticker_map for sym in expected_symbols)
 
@@ -735,10 +732,8 @@ near_put, mid_put, far_put = [], [], []
 pending_gamma_breach = False
 pending_broken_wall = 0.0
 
-# Fetch Futures Context
 funding_rate, mark_price, oi_usd, sp_prem = fetch_futures_context()
 
-# FIX #6: Initialize as NaN, not 0.0
 oi_delta_pct = np.nan
 ctx = "⚪ Neutral"
 if oi_usd is not None:
@@ -811,7 +806,6 @@ if not session_df.empty and not df.empty:
                     alert_message += f"H: ${r['High']:,.0f} | L: ${r['Low']:,.0f}<br>"
                     alert_message += f"POC: ${r['POC']:,.0f} | VAH: ${r['VAH']:,.0f} | VAL: ${r['VAL']:,.0f}<br>"
                     alert_message += f"Flow: {ctx}<br><br>"
-                    # FIX #7: Session alert logged only after Telegram succeeds
                     pending_session_alerts = p_state.get("pending_session_alerts", [])
                     pending_session_alerts.append((s_name, cycle_date_str))
                     p_state["pending_session_alerts"] = pending_session_alerts
@@ -894,7 +888,6 @@ if not options_df.empty and latest_price > 0:
     filtered_options = options_df[(options_df['Strike'] >= lower_bound) & (options_df['Strike'] <= upper_bound)].copy()
 
     if not filtered_options.empty:
-        # FIX #4: Validate max values before selecting
         temp_filt = filtered_options.fillna(0)
         
         if temp_filt['OI_USD_Call'].max() > 0: call_oi_wall = temp_filt.loc[temp_filt['OI_USD_Call'].idxmax()]
@@ -944,7 +937,6 @@ if not options_df.empty and latest_price > 0:
                 if nearest_call_dist < nearest_put_dist: options_bias_score -= 1
                 elif nearest_put_dist < nearest_call_dist: options_bias_score += 1
 
-        # FIX #8: Three states for inverted gamma
         current_inverted_status = False
         gamma_unavailable = False
         
@@ -1004,7 +996,6 @@ if not options_df.empty and latest_price > 0:
             completed_candle_time = int(completed_candle['CloseTimeMs'])
             completed_candle_close = float(completed_candle['close'])
 
-            # FIX #1: Use the state map, not the filtered journal
             closed_amt_state = candle_state_map.get(completed_candle['Date'].strftime('%H:%M'))
             if closed_amt_state is not None:
                 closed_amt_name = state_names.get(closed_amt_state, "UNKNOWN")
@@ -1100,11 +1091,9 @@ if not options_df.empty and latest_price > 0:
         else:
             p_state["options_flow_history"].append({"time": datetime.datetime.now(IST_TZ).strftime("%H:%M"), "call": current_wall_state[0], "put": current_wall_state[1], "mp": current_wall_state[2]})
 
-        # FIX #2: Deduplicate persistent alerts
         if straddle_valid and near_put and current_amt_state in [3, 11, 14]:
             p_cluster = near_put[0]['VWAS'] if near_put else (mid_put[0]['VWAS'] if mid_put else 0)
             if p_cluster > 0 and latest_price <= p_cluster and options_bias_score <= -1:
-                # Deduplication: Only fire if it's a new cluster or price moved away and came back
                 if p_state["last_alerted_trap_door"] != p_cluster:
                     alert_triggered = True
                     alert_message += f"🚨 TRAP DOOR: Price breaking below Put Cluster (${p_cluster:,.0f}) with Bearish Bias! | Flow: {ctx}<br>"
@@ -1177,7 +1166,6 @@ if alert_triggered:
             p_state["put_gamma_break_state"] = "BREACHED"
             p_state["active_broken_put_wall"] = pending_broken_wall
             
-        # FIX #7: Commit session logs only after successful Telegram delivery
         pending_alerts = p_state.get("pending_session_alerts", [])
         for s_name, c_date in pending_alerts:
             p_state["session_alert_log"][s_name] = c_date
@@ -1190,7 +1178,6 @@ if alert_triggered:
             p_state["last_closed_candle_time"] = p_state["previous_candle_time"]
         if p_state["alert_history"]: p_state["alert_history"].pop(0)
         
-        # Clear deduplication so it can retry next time
         p_state["last_alerted_max_pain"] = None
         p_state["last_alerted_trap_door"] = None
         p_state["last_alerted_squeeze"] = None
@@ -1239,7 +1226,6 @@ with tab_dashboard:
         
         tc1, tc2, tc3, tc4 = st.columns(4)
         
-        # FIX #8: 3 states for Gamma Structure
         if options_df.empty:
             gamma_struct = "⚪ UNAVAILABLE"
             gamma_color = "off"
@@ -1251,7 +1237,6 @@ with tab_dashboard:
         
         tc2.metric("Derivatives Flow", ctx)
         
-        # FIX #5: Handled properly with global initialization
         if pd.isna(final_vah) or pd.isna(final_val):
             loc = "Value Area Unavailable"
             loc_color = "off"
