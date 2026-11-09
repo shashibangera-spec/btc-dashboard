@@ -1,4 +1,3 @@
-
 """
 BTC AMT RESEARCH DASHBOARD
 AMT + Price Action + Futures OI + Options Positioning
@@ -1865,26 +1864,19 @@ def assess_market_bias(
         )
 
     # --------------------------------------------------------
-    # G. BIAS CLASSIFICATION
+    # G. BIAS CLASSIFICATION (UPDATED PER CHATGPT AUDIT)
     # --------------------------------------------------------
 
     bull_score = len(bullish)
     bear_score = len(bearish)
 
-    if bull_score >= bear_score + 2:
-
-        bias = "Bullish"
-
-    elif bear_score >= bull_score + 2:
-
-        bias = "Bearish"
-
+    if bull_score > 0 and bear_score == 0:
+        bias = "Bullish evidence only"
+    elif bear_score > 0 and bull_score == 0:
+        bias = "Bearish evidence only"
     elif bull_score == 0 and bear_score == 0:
-
-        bias = "Neutral / rotational"
-
+        bias = "Neutral / insufficient directional evidence"
     else:
-
         bias = "Mixed / conflicting"
 
     dominant = max(
@@ -1909,8 +1901,8 @@ def assess_market_bias(
         confidence = "Low"
 
     if not reference and bias in (
-        "Bullish",
-        "Bearish"
+        "Bullish evidence only",
+        "Bearish evidence only"
     ):
 
         confidence = "Low"
