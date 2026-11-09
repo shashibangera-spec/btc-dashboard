@@ -209,7 +209,8 @@ def fetch_futures_context():
         res = requests.get(url, timeout=10).json()
         for ticker in res.get("result", []):
             if ticker.get("symbol") == "BTCUSD":
-                funding_rate = float(ticker.get("funding_rate", 0)) * 100
+                # FIX: Removed the * 100 multiplier. Delta returns 0.01 for 0.01%.
+                funding_rate = float(ticker.get("funding_rate", 0)) 
                 mark_price = float(ticker.get("mark_price", 0))
                 spot_price = float(ticker.get("spot_price", 0))
                 oi_usd = float(ticker.get("oi_value_usd", 0))
@@ -867,7 +868,6 @@ if not options_df.empty and latest_price > 0:
         dt_p = parse_timestamp(put_ts[0])
         if dt_p: atm_put_age = f"{(now_utc - dt_p).total_seconds():.0f}s"
 
-    # FIX #11: Future-dated timestamps cannot be labelled Fresh
     if atm_call_age != "N/A" and atm_put_age != "N/A":
         try:
             max_age = max(float(atm_call_age.replace("s", "")), float(atm_put_age.replace("s", "")))
