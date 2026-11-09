@@ -1172,12 +1172,8 @@ with tab_dashboard:
             
         st.markdown("---")
 
-        # ==========================================
-        # CLEANED UP TAPE READ
-        # ==========================================
         st.subheader("🧠 Tape Read & Confluence")
         
-        # Row 1: Metrics
         tc1, tc2, tc3, tc4 = st.columns(4)
         
         gamma_struct = "🚨 INVERTED" if current_inverted_status else "🟢 NORMAL"
@@ -1192,9 +1188,14 @@ with tab_dashboard:
         
         tc4.metric("AMT State", current_amt_name, f"Code {current_amt_state}")
         
-        # Row 2: The Verdict
         verdict = ""
-        if current_inverted_status and "Short Build" in ctx:
+        
+        # NEW DIVERGENCE LOGIC
+        if options_bias_score >= 2 and "Short Build" in ctx and loc == "Below VAL":
+            verdict = "⚠️ **TRADER'S TRAP**: Shorts building below value, BUT Options Bias is strongly Bullish. High risk of a violent short squeeze. Do NOT blindly short."
+        elif options_bias_score <= -2 and "Long Build" in ctx and loc == "Above VAH":
+            verdict = "⚠️ **TRADER'S TRAP**: Longs building above value, BUT Options Bias is strongly Bearish. High risk of a long liquidation. Do NOT blindly long."
+        elif current_inverted_status and "Short Build" in ctx:
             verdict = "⚠️ **TRAP DOOR SETUP**: Shorts building into inverted gamma. Expect a violent fakeout/squeeze. Do NOT trust breakdowns."
         elif current_inverted_status and "Long Build" in ctx:
             verdict = "⚠️ **BULL TRAP SETUP**: Longs building into inverted gamma. Expect a violent fakeout/liquidation. Do NOT trust breakouts."
@@ -1317,7 +1318,6 @@ with tab_dashboard:
             st.caption("ℹ️ Context only — not support, resistance or price targets. Gross Gamma estimated using unsigned OI.")
             st.markdown("---")
 
-            # Render active and historical inverted gamma events
             display_inv_history = p_state["inverted_gamma_history"].copy()
             if p_state.get("active_inverted_event"):
                 active_event = p_state["active_inverted_event"].copy()
@@ -1327,7 +1327,6 @@ with tab_dashboard:
             if display_inv_history:
                 st.markdown("##### 📝 Inverted Gamma Journal (Research Only)")
                 inv_df = pd.DataFrame(display_inv_history)
-                # Reorder columns for clarity
                 cols = ["Time", "Close Time", "Status", "Call Wall", "Put Wall", "Entry Price", "High", "Low"]
                 inv_df = inv_df[[c for c in cols if c in inv_df.columns]]
                 
@@ -1451,6 +1450,7 @@ Verdict: {verdict}
 OI (USD): {f"${oi_usd/1e6:.2f}M" if oi_usd is not None else "N/A"}
 OI Delta (30m): {f"{oi_delta_pct:+.2f}%" if oi_usd is not None else "N/A"}
 Spot/Perp Premium: {f"{sp_prem:+.3f}%" if sp_prem is not None else "N/A"}
+Derivatives Flow: {ctx}
 
 [AMT MAP]
 Prior VAH: {vah_text} | Prior POC: {poc_text} | Prior VAL: {val_text}
