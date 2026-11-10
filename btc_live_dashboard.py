@@ -68,6 +68,8 @@ def get_persistent_state():
         "prev_mid_call_vwas": None,
         "prev_near_put_vwas": None,
         "prev_mid_put_vwas": None,
+        "last_dissolved_time": {},
+        "last_formed_time": {},
     }
 
 p_state = get_persistent_state()
@@ -92,6 +94,8 @@ p_state.setdefault("prev_near_call_vwas", None)
 p_state.setdefault("prev_mid_call_vwas", None)
 p_state.setdefault("prev_near_put_vwas", None)
 p_state.setdefault("prev_mid_put_vwas", None)
+p_state.setdefault("last_dissolved_time", {})
+p_state.setdefault("last_formed_time", {})
 
 # ==========================================
 # TELEGRAM
@@ -1146,22 +1150,34 @@ if not options_df.empty and latest_price > 0:
         # ==========================================
         # NEW: CLUSTER ALERT LOGIC (Replaces Wall Shift)
         # ==========================================
-        def check_cluster_alert(cluster_list, prev_key, name):
+        def check_cluster_alert(cluster_list, prev_key, name, cluster_key):
             current_vwas = cluster_list[0]['VWAS'] if cluster_list else None
             prev_vwas = p_state.get(prev_key)
             msg = ""
             triggered = False
-            
+            now_ts = datetime.datetime.now(timezone.utc).timestamp()
+
             if current_vwas != prev_vwas:
                 if prev_vwas is None and current_vwas is not None:
+                    # Formed
                     p_state[prev_key] = current_vwas
-                    msg = f"🚨 NEW {name} CLUSTER: ${current_vwas:,.0f} formed! | Flow: {ctx}<br>"
-                    triggered = True
+                    last_dis = p_state["last_dissolved_time"].get(cluster_key, 0)
+                    if now_ts - last_dis > 900: # 15 minutes
+                        msg = f"🚨 NEW {name} CLUSTER: ${current_vwas:,.0f} formed! | Flow: {ctx}<br>"
+                        triggered = True
+                    p_state["last_formed_time"][cluster_key] = now_ts
+
                 elif prev_vwas is not None and current_vwas is None:
+                    # Dissolved
                     p_state[prev_key] = None
-                    msg = f"⚠️ {name} CLUSTER DISSOLVED. Level cleared. | Flow: {ctx}<br>"
-                    triggered = True
+                    last_form = p_state["last_formed_time"].get(cluster_key, 0)
+                    if now_ts - last_form > 900: # 15 minutes
+                        msg = f"⚠️ {name} CLUSTER DISSOLVED. Level cleared. | Flow: {ctx}<br>"
+                        triggered = True
+                    p_state["last_dissolved_time"][cluster_key] = now_ts
+
                 elif prev_vwas is not None and current_vwas is not None and abs(current_vwas - prev_vwas) >= 150:
+                    # Shifted
                     direction = "UP" if current_vwas > prev_vwas else "DOWN"
                     p_state[prev_key] = current_vwas
                     msg = f"🚧 {name} CLUSTER SHIFT {direction}: Moved from ${prev_vwas:,.0f} to ${current_vwas:,.0f}! | Flow: {ctx}<br>"
@@ -1169,16 +1185,16 @@ if not options_df.empty and latest_price > 0:
             return msg, triggered
 
         if straddle_valid:
-            msg, trig = check_cluster_alert(near_call, "prev_near_call_vwas", "NEAR CALL")
+            msg, trig = check_cluster_alert(near_call, "prev_near_call_vwas", "NEAR CALL", "near_call")
             if trig: alert_message += msg; alert_triggered = True
             
-            msg, trig = check_cluster_alert(mid_call, "prev_mid_call_vwas", "MID CALL")
+            msg, trig = check_cluster_alert(mid_call, "prev_mid_call_vwas", "MID CALL", "mid_call")
             if trig: alert_message += msg; alert_triggered = True
             
-            msg, trig = check_cluster_alert(near_put, "prev_near_put_vwas", "NEAR PUT")
+            msg, trig = check_cluster_alert(near_put, "prev_near_put_vwas", "NEAR PUT", "near_put")
             if trig: alert_message += msg; alert_triggered = True
             
-            msg, trig = check_cluster_alert(mid_put, "prev_mid_put_vwas", "MID PUT")
+            msg, trig = check_cluster_alert(mid_put, "prev_mid_put_vwas", "MID PUT", "mid_put")
             if trig: alert_message += msg; alert_triggered = True
 
         p_state["prev_pcr"] = pcr
