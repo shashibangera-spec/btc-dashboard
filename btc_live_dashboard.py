@@ -918,7 +918,8 @@ if not options_df.empty and latest_price > 0:
         total_puts_vol = temp_filt['Volume_Put'].sum()
         pcr_volume = total_puts_vol / total_calls_vol if total_calls_vol > 0 else 0
 
-        if is_chain_complete:
+        # FIX: Calculate Max Pain even if chain is not 100% complete (Delta API often drops a few strikes)
+        if not options_df.empty:
             all_strikes = options_df['Strike'].tolist()
             all_call_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Call'].fillna(0)))
             all_put_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Put'].fillna(0)))
@@ -930,12 +931,16 @@ if not options_df.empty and latest_price > 0:
                     for k in all_strikes
                 )
                 pain_dict[settle] = total_pain
-            true_max_pain = min(pain_dict, key=pain_dict.get)
+            
+            if pain_dict:
+                true_max_pain = min(pain_dict, key=pain_dict.get)
+            else:
+                true_max_pain = np.nan
         else:
             true_max_pain = np.nan
 
         if straddle_valid and raw_chain_df is not None and strike_ladder is not None:
-            # FIX 2: Lock straddle math to the start of the session to prevent cluster spam
+            # FIX: Lock straddle math to the start of the session to prevent cluster spam
             base_straddle = p_state["session_start_straddle"] if p_state["session_start_straddle"] else straddle_price
             near_call, mid_call, far_call = find_oi_clusters(strike_ladder, raw_chain_df, "Call", latest_price, base_straddle)
             near_put, mid_put, far_put = find_oi_clusters(strike_ladder, raw_chain_df, "Put", latest_price, base_straddle)
