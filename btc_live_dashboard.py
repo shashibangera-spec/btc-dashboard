@@ -589,7 +589,8 @@ def fetch_delta_options():
         results = []
         seen_cursors = set()
         page_count = 0
-        while url and page_count < 20:
+        # FIX 1: Increased max pages from 20 to 50 to capture the full chain
+        while url and page_count < 50:
             try:
                 response = requests.get(url, timeout=10)
                 response.raise_for_status()
@@ -934,8 +935,10 @@ if not options_df.empty and latest_price > 0:
             true_max_pain = np.nan
 
         if straddle_valid and raw_chain_df is not None and strike_ladder is not None:
-            near_call, mid_call, far_call = find_oi_clusters(strike_ladder, raw_chain_df, "Call", latest_price, straddle_price)
-            near_put, mid_put, far_put = find_oi_clusters(strike_ladder, raw_chain_df, "Put", latest_price, straddle_price)
+            # FIX 2: Lock straddle math to the start of the session to prevent cluster spam
+            base_straddle = p_state["session_start_straddle"] if p_state["session_start_straddle"] else straddle_price
+            near_call, mid_call, far_call = find_oi_clusters(strike_ladder, raw_chain_df, "Call", latest_price, base_straddle)
+            near_put, mid_put, far_put = find_oi_clusters(strike_ladder, raw_chain_df, "Put", latest_price, base_straddle)
             
             if 0 < pcr < 0.70: options_bias_score += 1
             elif pcr > 1.20: options_bias_score -= 1
@@ -1209,6 +1212,13 @@ if alert_triggered:
     if len(p_state["alert_history"]) > 50: p_state["alert_history"] = p_state["alert_history"][:50]
     
     clean_telegram_msg = alert_message.replace("<br>", "\n")
+    
+    # FIX 3: LOCK STATE BEFORE SENDING (Prevents duplicate alerts)
+    pending_alerts = p_state.get("pending_session_alerts", [])
+    for s_name, c_date in pending_alerts:
+        p_state["session_alert_log"][s_name] = c_date
+    p_state["pending_session_alerts"] = []
+    
     success = send_telegram_message(f"🚨 BTC TERMINAL ALERT 🚨\n\n{clean_telegram_msg}")
     
     if success:
@@ -1216,14 +1226,14 @@ if alert_triggered:
             p_state["put_gamma_break_state"] = "BREACHED"
             p_state["active_broken_put_wall"] = pending_broken_wall
             
-        pending_alerts = p_state.get("pending_session_alerts", [])
-        for s_name, c_date in pending_alerts:
-            p_state["session_alert_log"][s_name] = c_date
-        p_state["pending_session_alerts"] = []
-            
         st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
         components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
     else:
+        # FIX 3: ROLLBACK STATE IF FAILED
+        for s_name, c_date in pending_alerts:
+            if p_state["session_alert_log"].get(s_name) == c_date:
+                del p_state["session_alert_log"][s_name]
+                
         if pending_gamma_breach:
             p_state["last_closed_candle_time"] = p_state["previous_candle_time"]
         if p_state["alert_history"]: p_state["alert_history"].pop(0)
@@ -1419,7 +1429,6 @@ with tab_dashboard:
         if not filtered_options.empty:
             st.subheader("🎯 OI Concentrations & Walls")
             
-            # --- NEW SORTING TOGGLE ---
             sort_view = st.radio(
                 "Sort OI Clusters By:", 
                 ["Distance (Near/Mid/Distant)", "OI Size (Largest First)"],
