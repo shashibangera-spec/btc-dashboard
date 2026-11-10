@@ -63,7 +63,6 @@ def get_persistent_state():
         "last_alerted_trap_door": None,
         "last_alerted_squeeze": None,
         "pending_session_alerts": [],
-        # NEW: Cluster Alert Tracker
         "prev_near_call_vwas": None,
         "prev_mid_call_vwas": None,
         "prev_near_put_vwas": None,
@@ -1147,9 +1146,6 @@ if not options_df.empty and latest_price > 0:
                 alert_triggered = True
                 alert_message += f"🔥 GAMMA BREAKOUT: Price crossed above Call Wall (${call_gamma_wall['Strike']:,.0f})! | Flow: {ctx}<br>"
 
-        # ==========================================
-        # NEW: CLUSTER ALERT LOGIC (Replaces Wall Shift)
-        # ==========================================
         def check_cluster_alert(cluster_list, prev_key, name, cluster_key):
             current_vwas = cluster_list[0]['VWAS'] if cluster_list else None
             prev_vwas = p_state.get(prev_key)
@@ -1159,25 +1155,22 @@ if not options_df.empty and latest_price > 0:
 
             if current_vwas != prev_vwas:
                 if prev_vwas is None and current_vwas is not None:
-                    # Formed
                     p_state[prev_key] = current_vwas
                     last_dis = p_state["last_dissolved_time"].get(cluster_key, 0)
-                    if now_ts - last_dis > 900: # 15 minutes
+                    if now_ts - last_dis > 900: 
                         msg = f"🚨 NEW {name} CLUSTER: ${current_vwas:,.0f} formed! | Flow: {ctx}<br>"
                         triggered = True
                     p_state["last_formed_time"][cluster_key] = now_ts
 
                 elif prev_vwas is not None and current_vwas is None:
-                    # Dissolved
                     p_state[prev_key] = None
                     last_form = p_state["last_formed_time"].get(cluster_key, 0)
-                    if now_ts - last_form > 900: # 15 minutes
+                    if now_ts - last_form > 900: 
                         msg = f"⚠️ {name} CLUSTER DISSOLVED. Level cleared. | Flow: {ctx}<br>"
                         triggered = True
                     p_state["last_dissolved_time"][cluster_key] = now_ts
 
                 elif prev_vwas is not None and current_vwas is not None and abs(current_vwas - prev_vwas) >= 150:
-                    # Shifted
                     direction = "UP" if current_vwas > prev_vwas else "DOWN"
                     p_state[prev_key] = current_vwas
                     msg = f"🚧 {name} CLUSTER SHIFT {direction}: Moved from ${prev_vwas:,.0f} to ${current_vwas:,.0f}! | Flow: {ctx}<br>"
@@ -1425,43 +1418,47 @@ with tab_dashboard:
 
         if not filtered_options.empty:
             st.subheader("🎯 OI Concentrations & Walls")
-            cluster_rows = []
             
+            # --- NEW SORTING TOGGLE ---
+            sort_view = st.radio(
+                "Sort OI Clusters By:", 
+                ["Distance (Near/Mid/Distant)", "OI Size (Largest First)"],
+                horizontal=True
+            )
+            
+            cluster_rows = []
             c_near = near_call[0] if near_call else None
             p_near = near_put[0] if near_put else None
-            cluster_rows.append({
-                "Tier": "📍 Near (<0.5x)",
-                "Call Strike": f"${c_near['VWAS']:,.0f}" if c_near else "N/A",
-                "Call OI": f"${c_near['OI_USD']/1e6:.2f}M" if c_near else "N/A",
-                "Call Dist": f"{c_near['Dist']:.1f}x" if c_near else "N/A",
-                "Put Strike": f"${p_near['VWAS']:,.0f}" if p_near else "N/A",
-                "Put OI": f"${p_near['OI_USD']/1e6:.2f}M" if p_near else "N/A",
-                "Put Dist": f"{p_near['Dist']:.1f}x" if p_near else "N/A",
-            })
-            
             c_mid = mid_call[0] if mid_call else None
             p_mid = mid_put[0] if mid_put else None
-            cluster_rows.append({
-                "Tier": "📍 Mid (0.5 - 1.0x)",
-                "Call Strike": f"${c_mid['VWAS']:,.0f}" if c_mid else "N/A",
-                "Call OI": f"${c_mid['OI_USD']/1e6:.2f}M" if c_mid else "N/A",
-                "Call Dist": f"{c_mid['Dist']:.1f}x" if c_mid else "N/A",
-                "Put Strike": f"${p_mid['VWAS']:,.0f}" if p_mid else "N/A",
-                "Put OI": f"${p_mid['OI_USD']/1e6:.2f}M" if p_mid else "N/A",
-                "Put Dist": f"{p_mid['Dist']:.1f}x" if p_mid else "N/A",
-            })
-            
             c_far = far_call[0] if far_call else None
             p_far = far_put[0] if far_put else None
-            cluster_rows.append({
-                "Tier": "🌍 Distant (>1.0x)",
-                "Call Strike": f"${c_far['VWAS']:,.0f}" if c_far else "N/A",
-                "Call OI": f"${c_far['OI_USD']/1e6:.2f}M" if c_far else "N/A",
-                "Call Dist": f"{c_far['Dist']:.1f}x" if c_far else "N/A",
-                "Put Strike": f"${p_far['VWAS']:,.0f}" if p_far else "N/A",
-                "Put OI": f"${p_far['OI_USD']/1e6:.2f}M" if p_far else "N/A",
-                "Put Dist": f"{p_far['Dist']:.1f}x" if p_far else "N/A",
-            })
+
+            raw_clusters = [
+                {"Tier": "📍 Near (<0.5x)", "Call": c_near, "Put": p_near},
+                {"Tier": "📍 Mid (0.5 - 1.0x)", "Call": c_mid, "Put": p_mid},
+                {"Tier": "🌍 Distant (>1.0x)", "Call": c_far, "Put": p_far}
+            ]
+
+            if sort_view == "OI Size (Largest First)":
+                for r in raw_clusters:
+                    call_oi = r['Call']['OI_USD'] if r['Call'] else 0
+                    put_oi = r['Put']['OI_USD'] if r['Put'] else 0
+                    r['Max_OI'] = max(call_oi, put_oi)
+                raw_clusters = sorted(raw_clusters, key=lambda x: x['Max_OI'], reverse=True)
+
+            for r in raw_clusters:
+                c_data = r['Call']
+                p_data = r['Put']
+                cluster_rows.append({
+                    "Tier": r['Tier'],
+                    "Call Strike": f"${c_data['VWAS']:,.0f}" if c_data else "N/A",
+                    "Call OI": f"${c_data['OI_USD']/1e6:.2f}M" if c_data else "N/A",
+                    "Call Dist": f"{c_data['Dist']:.1f}x" if c_data else "N/A",
+                    "Put Strike": f"${p_data['VWAS']:,.0f}" if p_data else "N/A",
+                    "Put OI": f"${p_data['OI_USD']/1e6:.2f}M" if p_data else "N/A",
+                    "Put Dist": f"{p_data['Dist']:.1f}x" if p_data else "N/A",
+                })
 
             st.dataframe(pd.DataFrame(cluster_rows), use_container_width=True, hide_index=True)
             st.caption("Context only — not support, resistance or price targets. Normalized distance based on ATM Straddle.")
