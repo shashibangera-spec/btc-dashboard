@@ -48,7 +48,7 @@ def get_persistent_state():
         "alert_history": [],
         "options_flow_history": [],
         "wall_status_log": [],
-        "inverted_gamma_history": [], 
+        "inverted_gamma_history": [], # Keeping internal key unchanged for cache safety
         "active_inverted_event": None, 
         "last_inverted_status": False, 
         "session_alert_log": {}, 
@@ -224,8 +224,12 @@ def fetch_futures_context():
                 spot_price = float(ticker.get("spot_price", 0))
                 oi_usd = float(ticker.get("oi_value_usd", 0))
                 
-                sp_prem = ((mark_price - spot_price) / spot_price) * 100 if spot_price > 0 else 0.0
-                
+                # CODER FIX: Do not turn missing spot data into zero premium
+                if spot_price > 0:
+                    sp_prem = ((mark_price - spot_price) / spot_price) * 100
+                else:
+                    sp_prem = None
+                    
                 return funding_rate, mark_price, oi_usd, sp_prem
         return None, None, None, None
     except Exception:
@@ -585,30 +589,39 @@ def find_oi_clusters(strike_ladder, df_opt, opt_type, spot_price, straddle_price
 def fetch_delta_options():
     BASE_URL = "https://api.india.delta.exchange/v2"
     
+    # CODER FIX: Proper pagination loop
     def fetch_paginated_data(url):
         results = []
         seen_cursors = set()
         page_count = 0
-        # FIX 1: Increased max pages from 20 to 50 to capture the full chain
-        while url and page_count < 50:
+        complete = False
+        while url:
+            if page_count >= 50: break
             try:
                 response = requests.get(url, timeout=10)
                 response.raise_for_status()
                 data = response.json()
-                results.extend(data.get("result", []))
-                meta = data.get("meta", {})
-                after = meta.get("after")
-                if not after or after in seen_cursors: break
-                seen_cursors.add(after)
-                base_url = url.split("?")[0]
-                query_params = url.split("?")[1]
-                params = [p for p in query_params.split("&") if not p.startswith("after=")]
-                params.append(f"after={after}")
-                url = f"{base_url}?{'&'.join(params)}"
+                if not isinstance(data, dict): break
+                page_results = data.get("result", [])
+                if not isinstance(page_results, list): break
+                results.extend(page_results)
                 page_count += 1
+                meta = data.get("meta") or {}
+                after = meta.get("after")
+                if after is None or after == "":
+                    complete = True
+                    break
+                cursor = str(after)
+                if cursor in seen_cursors: break
+                seen_cursors.add(cursor)
+                base_url, query_params = url.split("?", 1)
+                params = [p for p in query_params.split("&") if not p.startswith("after=")]
+                params.append(f"after={cursor}")
+                url = f"{base_url}?{'&'.join(params)}"
             except Exception:
+                complete = False
                 break
-        return results, True if not url else False
+        return results, complete
 
     try:
         products, prod_complete = fetch_paginated_data(f"{BASE_URL}/products?states=live&page_size=1000")
@@ -655,7 +668,6 @@ def fetch_delta_options():
         ticker_map = {t.get("symbol"): t for t in tickers if t.get("symbol")}
         
         expected_symbols = [p.get("symbol") for p in filtered_options]
-        is_chain_complete = prod_complete and tick_complete and all(sym in ticker_map for sym in expected_symbols)
 
         chain = []
         for opt in filtered_options:
@@ -688,6 +700,7 @@ def fetch_delta_options():
                 ts_val = ticker.get("timestamp") or ticker.get("updated_at")
                 
                 chain.append({
+                    "Symbol": sym, # CODER FIX: Added symbol to track completeness
                     "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, 
                     "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val
                 })
@@ -696,6 +709,21 @@ def fetch_delta_options():
 
         df = pd.DataFrame(chain)
         if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, None, False
+
+        # CODER FIX: Completeness validation
+        expected_symbol_set = set(str(sym) for sym in expected_symbols)
+        received_symbol_set = set(df["Symbol"].dropna().astype(str)) if not df.empty else set()
+        oi_values = pd.to_numeric(df["OI_Contracts"], errors="coerce") if not df.empty else pd.Series()
+
+        is_chain_complete = (
+            prod_complete
+            and tick_complete
+            and expected_symbol_set == received_symbol_set
+            and len(df) == len(expected_symbol_set)
+            and oi_values.notna().all()
+            and np.isfinite(oi_values.to_numpy(dtype=float)).all()
+            and (oi_values >= 0).all()
+        )
 
         df_pivot = df.pivot_table(index="Strike", columns="Type", values=["Bid", "Ask", "Mark", "OI_USD", "OI_Contracts", "Gamma", "IV", "Volume"], aggfunc="first").reset_index()
 
@@ -750,7 +778,7 @@ pending_broken_wall = 0.0
 funding_rate, mark_price, oi_usd, sp_prem = fetch_futures_context()
 
 oi_delta_pct = np.nan
-ctx = "⚪ Neutral"
+ctx = "Data Unavailable"
 if oi_usd is not None:
     now_utc_ts = int(datetime.datetime.now(timezone.utc).timestamp())
     p_state["futures_oi_history"].append({"time": now_utc_ts, "oi": oi_usd})
@@ -765,17 +793,20 @@ if oi_usd is not None:
         if abs(closest_entry["time"] - target_time) <= 300 and closest_entry["oi"] > 0:
             oi_delta_pct = ((oi_usd - closest_entry["oi"]) / closest_entry["oi"]) * 100
 
-    if sp_prem is not None and not pd.isna(oi_delta_pct):
-        if oi_delta_pct > 0 and sp_prem > 0:
-            ctx = "🟢 Long Build"
-        elif oi_delta_pct > 0 and sp_prem < 0:
-            ctx = "🔴 Short Build"
-        elif oi_delta_pct < 0 and sp_prem > 0:
-            ctx = "🟡 Short Covering"
-        elif oi_delta_pct < 0 and sp_prem < 0:
-            ctx = "🟠 Long Liquidation"
-        else:
-            ctx = "⚪ Neutral"
+    # CODER FIX: Factual Futures Flow Labels
+    oi_label = "OI Change Unavailable"
+    if not pd.isna(oi_delta_pct):
+        if oi_delta_pct > 0: oi_label = "OI Rising"
+        elif oi_delta_pct < 0: oi_label = "OI Falling"
+        else: oi_label = "OI Unchanged"
+        
+    basis_label = "Perp Basis Unavailable"
+    if sp_prem is not None and np.isfinite(sp_prem):
+        if sp_prem > 0: basis_label = "Perp Premium"
+        elif sp_prem < 0: basis_label = "Perp Discount"
+        else: basis_label = "Near Parity"
+        
+    ctx = f"{oi_label} + {basis_label}"
 
 if not df.empty:
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
@@ -918,8 +949,8 @@ if not options_df.empty and latest_price > 0:
         total_puts_vol = temp_filt['Volume_Put'].sum()
         pcr_volume = total_puts_vol / total_calls_vol if total_calls_vol > 0 else 0
 
-        # FIX: Calculate Max Pain even if chain is not 100% complete (Delta API often drops a few strikes)
-        if not options_df.empty:
+        # CODER FIX: Max Pain withheld if chain is incomplete
+        if is_chain_complete and not options_df.empty:
             all_strikes = options_df['Strike'].tolist()
             all_call_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Call'].fillna(0)))
             all_put_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Put'].fillna(0)))
@@ -940,7 +971,7 @@ if not options_df.empty and latest_price > 0:
             true_max_pain = np.nan
 
         if straddle_valid and raw_chain_df is not None and strike_ladder is not None:
-            # FIX: Lock straddle math to the start of the session to prevent cluster spam
+            # CODER FIX: Lock straddle math to the start of the session
             base_straddle = p_state["session_start_straddle"] if p_state["session_start_straddle"] else straddle_price
             near_call, mid_call, far_call = find_oi_clusters(strike_ladder, raw_chain_df, "Call", latest_price, base_straddle)
             near_put, mid_put, far_put = find_oi_clusters(strike_ladder, raw_chain_df, "Put", latest_price, base_straddle)
@@ -1086,7 +1117,7 @@ if not options_df.empty and latest_price > 0:
                     if p_state["put_gamma_break_state"] == "SAFE":
                         if completed_candle_close < wall_strike:
                             alert_triggered = True
-                            alert_message += f"🚨 GAMMA WALL BREAK — 30M CLOSE CONFIRMED: Price closed at ${completed_candle_close:,.2f}, below Put Wall (${wall_strike:,.0f}). | Flow: {ctx}<br>"
+                            alert_message += f"🚨 WALL-ORDER INVERSION BREAK — 30M CLOSE CONFIRMED: Price closed at ${completed_candle_close:,.2f}, below Put Wall (${wall_strike:,.0f}). | Flow: {ctx}<br>"
                             pending_gamma_breach = True
                             pending_broken_wall = wall_strike
                     elif p_state["put_gamma_break_state"] == "BREACHED":
@@ -1218,7 +1249,6 @@ if alert_triggered:
     
     clean_telegram_msg = alert_message.replace("<br>", "\n")
     
-    # FIX 3: LOCK STATE BEFORE SENDING (Prevents duplicate alerts)
     pending_alerts = p_state.get("pending_session_alerts", [])
     for s_name, c_date in pending_alerts:
         p_state["session_alert_log"][s_name] = c_date
@@ -1234,7 +1264,6 @@ if alert_triggered:
         st.warning(f"🚨 **DATA UPDATE** 🚨\n\n{alert_message}")
         components.html("<audio autoplay><source src='https://actions.google.com/sounds/v1/alarms/beep_short.ogg' type='audio/ogg'></audio>", height=0, width=0)
     else:
-        # FIX 3: ROLLBACK STATE IF FAILED
         for s_name, c_date in pending_alerts:
             if p_state["session_alert_log"].get(s_name) == c_date:
                 del p_state["session_alert_log"][s_name]
@@ -1281,9 +1310,9 @@ with tab_history:
                 inv_df = pd.DataFrame(p_state["inverted_gamma_history"])
                 inv_csv = inv_df.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label="📥 Download Inverted Gamma Journal (CSV)",
+                    label="📥 Download Wall-Order Inversion Proxy Journal (CSV)",
                     data=inv_csv,
-                    file_name=f"inverted_gamma_{datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d')}.csv",
+                    file_name=f"wall_order_inversion_proxy_{datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d')}.csv",
                     mime="text/csv",
                     help="Save this to backtest the fakeout volatility events."
                 )
@@ -1316,13 +1345,24 @@ with tab_dashboard:
         tc1, tc2, tc3, tc4 = st.columns(4)
         
         if options_df.empty:
-            gamma_struct = "⚪ UNAVAILABLE"
-            gamma_color = "off"
+            proxy_status = "UNAVAILABLE"
+            proxy_detail = "Both wall estimates required"
+            proxy_color = "off"
+        elif current_inverted_status:
+            proxy_status = "INVERSION OBSERVED"
+            proxy_detail = "Call-wall estimate below put-wall estimate"
+            proxy_color = "inverse"
         else:
-            gamma_struct = "🚨 INVERTED" if current_inverted_status else "🟢 NORMAL"
-            gamma_color = "inverse" if current_inverted_status else "normal"
+            proxy_status = "NO INVERSION"
+            proxy_detail = "Call-wall estimate not below put-wall estimate"
+            proxy_color = "normal"
             
-        tc1.metric("Gamma Structure", gamma_struct, "Trap Risk" if current_inverted_status else "Standard", delta_color=gamma_color)
+        tc1.metric(
+            "Wall-Order Inversion Proxy",
+            proxy_status,
+            proxy_detail,
+            delta_color=proxy_color
+        )
         
         tc2.metric("Derivatives Flow", ctx)
         
@@ -1339,22 +1379,18 @@ with tab_dashboard:
         
         verdict = ""
         
-        if options_bias_score >= 2 and "Short Build" in ctx and loc == "Below VAL":
-            verdict = "⚠️ **TRADER'S TRAP**: Shorts building below value, BUT Options Bias is strongly Bullish. High risk of a violent short squeeze. Do NOT blindly short."
-        elif options_bias_score <= -2 and "Long Build" in ctx and loc == "Above VAH":
-            verdict = "⚠️ **TRADER'S TRAP**: Longs building above value, BUT Options Bias is strongly Bearish. High risk of a long liquidation. Do NOT blindly long."
-        elif current_inverted_status and "Short Build" in ctx:
-            verdict = "⚠️ **TRAP DOOR SETUP**: Shorts building into inverted gamma. Expect a violent fakeout/squeeze. Do NOT trust breakdowns."
-        elif current_inverted_status and "Long Build" in ctx:
-            verdict = "⚠️ **BULL TRAP SETUP**: Longs building into inverted gamma. Expect a violent fakeout/liquidation. Do NOT trust breakouts."
-        elif not current_inverted_status and "Short Build" in ctx and loc == "Below VAL":
-            verdict = "📉 **TREND CONTINUATION**: Bearish flow confirmed below value. Watch for acceptance lower."
-        elif not current_inverted_status and "Long Build" in ctx and loc == "Above VAH":
-            verdict = "📈 **TREND CONTINUATION**: Bullish flow confirmed above value. Watch for acceptance higher."
+        # CODER FIX: Verdicts based on factual observations, not inferred positioning
+        if loc == "Above VAH":
+            verdict = f"Price is above prior VAH. Futures observation: ({ctx})."
+        elif loc == "Below VAL":
+            verdict = f"Price is below prior VAL. Futures observation: ({ctx})."
         elif loc == "Inside VA":
-            verdict = "⚖️ **CHOP ZONE**: Price is inside value. Wait for the edges (VAH/VAL) to break before acting."
+            verdict = f"Price is inside prior value. Futures observation: ({ctx})."
         else:
-            verdict = "⏳ **WAIT FOR CONFLUENCE**: No high-probability setup currently."
+            verdict = f"Price location unavailable. Futures observation: ({ctx})."
+            
+        if current_inverted_status:
+            verdict += " Wall-order inversion proxy observed: call-wall estimate is below put-wall estimate."
             
         st.success(verdict)
         st.markdown("---")
@@ -1370,8 +1406,12 @@ with tab_dashboard:
                 oi_d_color = "normal" if oi_delta_pct > 0 else "inverse" if oi_delta_pct < 0 else "off"
                 fc2.metric("OI Delta (30m)", f"{oi_delta_pct:+.2f}%", "Building" if oi_delta_pct > 0 else "Unwinding" if oi_delta_pct < 0 else "Stable", delta_color=oi_d_color)
             
-            sp_color = "normal" if sp_prem > 0 else "inverse" if sp_prem < 0 else "off"
-            fc3.metric("Spot/Perp Premium", f"{sp_prem:+.3f}%", "Perp Premium" if sp_prem > 0 else "Perp Discount" if sp_prem < 0 else "Flat", delta_color=sp_color)
+            # CODER FIX: Handle missing spot data safely
+            if sp_prem is not None and np.isfinite(sp_prem):
+                sp_color = "normal" if sp_prem > 0 else "inverse" if sp_prem < 0 else "off"
+                fc3.metric("Spot/Perp Premium", f"{sp_prem:+.3f}%", "Perp Premium" if sp_prem > 0 else "Perp Discount" if sp_prem < 0 else "Flat", delta_color=sp_color)
+            else:
+                fc3.metric("Spot/Perp Premium", "N/A", "Basis Unavailable", delta_color="off")
             
             fc4.metric("Derivatives Flow", ctx)
         else:
@@ -1484,7 +1524,7 @@ with tab_dashboard:
             w2.metric("Local Vol PCR (±10%)", f"{pcr_volume:.2f}", "Put Vol / Call Vol")
             
             w3, w4 = st.columns(2)
-            w3.metric("Local Gross Gamma (±10%)", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A", "Unsigned OI Estimation")
+            w3.metric("Gross Gamma Wall Estimates", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A", "Unsigned OI Estimation")
             w4.metric("Local Structural Extreme (±10%)", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}" if call_oi_wall is not None and put_oi_wall is not None else "N/A")
             
             st.caption("ℹ️ Context only — not support, resistance or price targets. Gross Gamma estimated using unsigned OI.")
@@ -1497,7 +1537,7 @@ with tab_dashboard:
                 display_inv_history.append(active_event)
 
             if display_inv_history:
-                st.markdown("##### 📝 Inverted Gamma Journal (Research Only)")
+                st.markdown("##### 📝 Wall-Order Inversion Proxy Journal (Research Only)")
                 inv_df = pd.DataFrame(display_inv_history)
                 cols = ["Time", "Close Time", "Status", "Call Wall", "Put Wall", "Entry Price", "High", "Low"]
                 inv_df = inv_df[[c for c in cols if c in inv_df.columns]]
@@ -1623,7 +1663,7 @@ Options Bias: {b_text} (Score: {options_bias_score:+d})
 Funding Rate: {funding_text}
 
 [TAPE READ & CONFLUENCE]
-Structure: {gamma_struct} | Flow: {ctx} | Location: {loc} | AMT: {current_amt_name}
+Structure: {proxy_status} | Flow: {ctx} | Location: {loc} | AMT: {current_amt_name}
 Verdict: {verdict}
 
 [FUTURES CONTEXT]
@@ -1653,7 +1693,7 @@ Distant (>=1.0x): Call {call_cluster_far} | Put {put_cluster_far}
 [CLUSTER STATUS LOG (Passive Tracking)]
 {wall_text}
 
-[INVERTED GAMMA JOURNAL (Passive Tracking)]
+[WALL-ORDER INVERSION PROXY JOURNAL (Passive Tracking)]
 {inv_text}
 
 [OPTIONS FLOW JOURNAL (Last 5 Shifts)]
