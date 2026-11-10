@@ -73,7 +73,7 @@ DB_PATH = "oi_forensics.db"
 # ============================================================
 @st.cache_resource
 def get_history():
-    """Stores general history on the server, so it survives browser closure."""
+    """In-memory market history; it lasts only while this server cache survives."""
     return []
 
 def init_db():
@@ -98,89 +98,212 @@ def init_db():
     conn.close()
 
 def save_oi_snapshot(options_df, now_ist):
-    """Save OI snapshot to SQLite every ~5 minutes."""
-    if options_df.empty:
-        return
-        
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Check last save time to prevent spamming
-    c.execute("SELECT MAX(timestamp) FROM oi_snapshots")
-    last_ts_str = c.fetchone()[0]
-    
-    if last_ts_str:
-        last_ts = datetime.fromisoformat(last_ts_str)
-        # If less than 4 minutes have passed, skip saving
-        if (now_ist - last_ts).total_seconds() < 240:
-            conn.close()
-            return
-            
-    current_ts = now_ist.isoformat()
-    
-    for _, row in options_df.iterrows():
-        c.execute('''
-            INSERT INTO oi_snapshots 
+    """Persist the nearest-expiry option chain at most once every 30 minutes.
+
+    Collection occurs only when the Streamlit app reruns (normally via the
+    browser-triggered refresh). SQLite durability depends on the host retaining
+    the working directory and its files across restarts/redeployments.
+    """
+    if options_df is None or options_df.empty:
+        return False
+
+    conn = sqlite3.connect(DB_PATH, timeout=20)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT MAX(timestamp) FROM oi_snapshots")
+        last_ts_str = c.fetchone()[0]
+
+        if last_ts_str:
+            last_ts = datetime.fromisoformat(last_ts_str)
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=IST)
+            if (now_ist - last_ts).total_seconds() < 1800:
+                return False
+
+        current_ts = now_ist.isoformat()
+        rows = []
+        for _, row in options_df.iterrows():
+            # CODER FIX: Preserve missing values as NULL (None) instead of 0.0
+            strike_val = to_float(row.get('strike'))
+            oi_contracts_val = to_float(row.get('oi_contracts'))
+            oi_usd_val = to_float(row.get('oi_usd'))
+            volume_val = to_float(row.get('volume'))
+            iv_val = to_float(row.get('iv'))
+            premium_val = to_float(row.get('option_price'))
+
+            rows.append((
+                current_ts,
+                str(row.get('symbol', '')),
+                strike_val if not pd.isna(strike_val) else 0.0,
+                str(row.get('option_type', '')),
+                oi_contracts_val if not pd.isna(oi_contracts_val) else None,
+                oi_usd_val if not pd.isna(oi_usd_val) else None,
+                volume_val if not pd.isna(volume_val) else None,
+                iv_val if not pd.isna(iv_val) else None,
+                premium_val if not pd.isna(premium_val) else None
+            ))
+
+        c.executemany('''
+            INSERT INTO oi_snapshots
             (timestamp, symbol, strike, option_type, oi_contracts, oi_usd, volume, iv, premium)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            current_ts,
-            row['symbol'],
-            row['strike'],
-            row['option_type'],
-            row.get('oi_contracts', 0),
-            row.get('oi_usd', 0),
-            row.get('volume', 0),
-            row.get('iv', 0),
-            row.get('option_price', 0)
-        ))
-        
-    conn.commit()
-    conn.close()
+        ''', rows)
+        conn.commit()
+        return True
+    finally:
+        conn.close()
 
-def get_oi_change(symbol, current_oi, now_ist):
-    """Query DB to find OI change over the last 30 minutes."""
-    if not current_oi or np.isnan(current_oi):
-        return "Unavailable"
-        
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
+
+def get_oi_comparison(symbol, current_oi, now_ist):
+    """Compare current contract OI with the closest snapshot to 30m earlier.
+
+    A prior snapshot must be within 10 minutes of the 30-minute target.
+    The +/-2% band is treated as approximately unchanged.
+    """
+    if current_oi is None or not finite(current_oi):
+        return {
+            "previous_oi": np.nan, "change": np.nan, "pct_change": np.nan,
+            "status": "Current OI unavailable", "snapshot_time": None
+        }
+
     target_time = now_ist - timedelta(minutes=30)
-    
-    # Find snapshot closest to 30 mins ago (with a 10 min tolerance)
-    c.execute('''
-        SELECT timestamp, oi_contracts FROM oi_snapshots 
-        WHERE symbol = ? 
-        ORDER BY ABS(strftime('%s', timestamp) - strftime('%s', ?)) ASC LIMIT 1
-    ''', (symbol, target_time.isoformat()))
-    
-    result = c.fetchone()
-    conn.close()
-    
+    conn = sqlite3.connect(DB_PATH, timeout=20)
+    try:
+        c = conn.cursor()
+        c.execute('''
+            SELECT timestamp, oi_contracts
+            FROM oi_snapshots
+            WHERE symbol = ?
+            ORDER BY ABS(strftime('%s', timestamp) - strftime('%s', ?)) ASC
+            LIMIT 1
+        ''', (symbol, target_time.isoformat()))
+        result = c.fetchone()
+    finally:
+        conn.close()
+
     if not result:
-        return "Insufficient history"
-        
+        return {
+            "previous_oi": np.nan, "change": np.nan, "pct_change": np.nan,
+            "status": "Insufficient history", "snapshot_time": None
+        }
+
     past_ts_str, past_oi = result
     past_ts = datetime.fromisoformat(past_ts_str)
-    
-    # If the closest snapshot is too far (e.g., app was closed for hours), ignore
-    if abs((past_ts - target_time).total_seconds()) > 600:
-        return "Insufficient history"
-        
-    if past_oi == 0:
-        return "Insufficient history"
-        
-    change = current_oi - past_oi
-    pct_change = (change / past_oi) * 100
-    
-    # Define threshold for "Approximately unchanged" (e.g., +/- 2%)
+    if past_ts.tzinfo is None:
+        past_ts = past_ts.replace(tzinfo=IST)
+
+    if abs((past_ts - target_time).total_seconds()) > 600 or past_oi is None or past_oi <= 0:
+        return {
+            "previous_oi": np.nan, "change": np.nan, "pct_change": np.nan,
+            "status": "Insufficient history", "snapshot_time": past_ts_str
+        }
+
+    change = float(current_oi) - float(past_oi)
+    pct_change = (change / float(past_oi)) * 100.0
     if pct_change > 2.0:
-        return f"Growing (+{pct_change:.1f}%)"
+        status = "Growing"
     elif pct_change < -2.0:
-        return f"Shrinking ({pct_change:.1f}%)"
+        status = "Shrinking"
     else:
-        return "Approximately unchanged"
+        status = "Approximately unchanged"
+
+    return {
+        "previous_oi": float(past_oi), "change": change,
+        "pct_change": pct_change, "status": status,
+        "snapshot_time": past_ts_str
+    }
+
+
+def build_oi_migration_table(options_df, now_ist):
+    """Build strike-by-strike migration rows using one SQLite read per rerun."""
+    if options_df is None or options_df.empty:
+        return pd.DataFrame()
+
+    target_time = now_ist - timedelta(minutes=30)
+    lower_bound = (target_time - timedelta(minutes=10)).isoformat()
+    upper_bound = (target_time + timedelta(minutes=10)).isoformat()
+
+    conn = sqlite3.connect(DB_PATH, timeout=20)
+    try:
+        previous_rows = conn.execute(
+            """SELECT symbol, timestamp, oi_contracts
+               FROM oi_snapshots
+               WHERE timestamp >= ? AND timestamp <= ?""",
+            (lower_bound, upper_bound)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    # Keep the closest valid prior reading for each contract symbol.
+    previous_by_symbol = {}
+    for symbol, ts_text, past_oi in previous_rows:
+        past_ts = datetime.fromisoformat(ts_text)
+        if past_ts.tzinfo is None:
+            past_ts = past_ts.replace(tzinfo=IST)
+        distance = abs((past_ts - target_time).total_seconds())
+        if symbol not in previous_by_symbol or distance < previous_by_symbol[symbol][0]:
+            previous_by_symbol[symbol] = (distance, ts_text, past_oi)
+
+    rows = []
+    for _, row in options_df.iterrows():
+        symbol = row.get("symbol", "")
+        current_oi = to_float(row.get("oi_contracts"))
+        previous = previous_by_symbol.get(symbol)
+        previous_oi = np.nan
+        change = np.nan
+        pct_change = np.nan
+        snapshot_time = "Unavailable"
+
+        if not finite(current_oi):
+            status = "Current OI unavailable"
+        elif previous is None:
+            status = "Insufficient history"
+        else:
+            _, snapshot_time, past_oi = previous
+            if past_oi is None or not finite(past_oi) or float(past_oi) <= 0:
+                status = "Insufficient history"
+                previous_oi = np.nan
+                snapshot_time = "Unavailable"
+            else:
+                previous_oi = float(past_oi)
+                change = float(current_oi) - previous_oi
+                pct_change = (change / previous_oi) * 100.0
+                if pct_change > 2.0:
+                    status = "Growing"
+                elif pct_change < -2.0:
+                    status = "Shrinking"
+                else:
+                    status = "Approximately unchanged"
+
+        rows.append({
+            "Type": "Call" if row.get("option_type") == "C" else "Put",
+            "Strike": to_float(row.get("strike")),
+            "Symbol": symbol,
+            "Current OI (contracts)": current_oi,
+            "Previous OI (contracts)": previous_oi,
+            "Change (contracts)": change,
+            "Change (%)": pct_change,
+            "30m OI Assessment": status,
+            "Current OI (USD)": to_float(row.get("oi_usd")),
+            "Volume (API units)": to_float(row.get("volume")),
+            "Previous snapshot": snapshot_time
+        })
+
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result = result.sort_values(["Type", "Strike"], ascending=[True, True]).reset_index(drop=True)
+    return result
+
+
+def get_oi_change(symbol, current_oi, now_ist):
+    """Compatibility wrapper used by the call/put wall summary."""
+    comparison = get_oi_comparison(symbol, current_oi, now_ist)
+    if comparison["status"] in ("Growing", "Shrinking") and finite(comparison["pct_change"]):
+        sign = "+" if comparison["pct_change"] > 0 else ""
+        return f"{comparison['status']} ({sign}{comparison['pct_change']:.1f}%)"
+    if comparison["status"] == "Approximately unchanged" and finite(comparison["pct_change"]):
+        return f"Approximately unchanged ({comparison['pct_change']:+.1f}%)"
+    return comparison["status"]
 
 init_db()
 
@@ -416,10 +539,10 @@ def fetch_delta_options():
             "option_type": parsed["option_type"],
             "strike": parsed["strike"],
             "expiry_date": parsed["expiry_date"],
-            "oi_usd": to_float(ticker.get("oi_value_usd"), default=0.0),
-            "oi_contracts": to_float(ticker.get("oi"), default=0.0), # NEW RAW OI
-            "volume": to_float(ticker.get("volume"), default=0.0),  # NEW VOLUME
-            "iv": to_float(quotes.get("mark_iv") or quotes.get("bid_iv") or quotes.get("ask_iv"), default=0.0), # NEW IV
+            "oi_usd": to_float(ticker.get("oi_value_usd")),
+            "oi_contracts": to_float(ticker.get("oi")), # Preserved as NaN if missing
+            "volume": to_float(ticker.get("volume")),   # Preserved as NaN if missing
+            "iv": to_float(quotes.get("mark_iv") or quotes.get("bid_iv") or quotes.get("ask_iv")),
             "gamma": to_float(greeks.get("gamma")),
             "bid": bid,
             "ask": ask,
@@ -608,10 +731,14 @@ def calculate_options_metrics(options_df, current_price):
 
     calls = options_df[options_df["option_type"] == "C"].copy()
     puts = options_df[options_df["option_type"] == "P"].copy()
+    
+    # Drop NaNs for finding the Max Wall, but keep NaNs in the original df
+    valid_calls = calls.dropna(subset=["oi_usd"])
+    valid_puts = puts.dropna(subset=["oi_usd"])
+    
+    if valid_calls.empty or valid_puts.empty: return None
+
     all_strikes = sorted(options_df["strike"].unique())
-
-    if not all_strikes: return None
-
     atm_strike = min(all_strikes, key=lambda strike: abs(strike - current_price))
     
     atm_calls = calls[calls["strike"] == atm_strike]
@@ -624,21 +751,22 @@ def calculate_options_metrics(options_df, current_price):
     if finite(call_price) and finite(put_price):
         straddle = call_price + put_price
 
-    call_wall = calls.loc[calls["oi_usd"].idxmax()] if not calls.empty else None
-    put_wall = puts.loc[puts["oi_usd"].idxmax()] if not puts.empty else None
+    call_wall = valid_calls.loc[valid_calls["oi_usd"].idxmax()]
+    put_wall = valid_puts.loc[valid_puts["oi_usd"].idxmax()]
 
-    # Find Neighboring Strikes
-    def get_neighbors(wall_row):
-        if wall_row is None: return [], []
+    # Neighbours are the immediately adjacent listed strikes on each side.
+    def get_neighbors(wall_row, side_df):
+        if wall_row is None or side_df.empty: return None, None
+        side_strikes = sorted(side_df["strike"].dropna().unique().tolist())
         strike = wall_row["strike"]
-        idx = all_strikes.index(strike)
-        
-        lower = all_strikes[idx - 1] if idx > 0 else None
-        upper = all_strikes[idx + 1] if idx < len(all_strikes) - 1 else None
+        if strike not in side_strikes: return None, None
+        idx = side_strikes.index(strike)
+        lower = side_strikes[idx - 1] if idx > 0 else None
+        upper = side_strikes[idx + 1] if idx < len(side_strikes) - 1 else None
         return lower, upper
 
-    call_neighbors = get_neighbors(call_wall)
-    put_neighbors = get_neighbors(put_wall)
+    call_neighbors = get_neighbors(call_wall, calls)
+    put_neighbors = get_neighbors(put_wall, puts)
 
     return {
         "atm_strike": atm_strike,
@@ -950,7 +1078,7 @@ def build_copy_report(snapshot, assessment, options_metrics, initial_balance, si
 
     lines += [
         "", f"Stored readings in server memory: {assessment['history_count']}",
-        "History is stored on the server and survives browser closure.",
+        "In-memory history lasts only while the server process/cache remains alive; it is not durable storage.",
         "A single OI snapshot cannot establish OI build-up or reduction.",
         "Please assess observed facts separately from interpretation. Do not treat OI walls, funding or gamma as standalone directional proof."
     ]
@@ -1156,7 +1284,7 @@ with tab_options:
             cw1.metric("Call Strike", f"${call_wall['strike']:,.2f}")
             cw2.metric("Call OI (USD)", f"${call_wall['oi_usd']:,.2f}")
             
-            # Fetch 30m OI change from SQLite
+            # Compare current OI with the closest valid snapshot near 30 minutes earlier.
             oi_status = get_oi_change(call_wall["symbol"], call_wall["oi_contracts"], now)
             cw3.metric("30m OI Trend", oi_status)
             
@@ -1174,7 +1302,7 @@ with tab_options:
             pw1.metric("Put Strike", f"${put_wall['strike']:,.2f}")
             pw2.metric("Put OI (USD)", f"${put_wall['oi_usd']:,.2f}")
             
-            # Fetch 30m OI change from SQLite
+            # Compare current OI with the closest valid snapshot near 30 minutes earlier.
             oi_status = get_oi_change(put_wall["symbol"], put_wall["oi_contracts"], now)
             pw3.metric("30m OI Trend", oi_status)
             
@@ -1191,6 +1319,16 @@ with tab_options:
         display_df = display_df.sort_values(["Strike", "Type"])
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         st.caption("Gamma is displayed as supplied by Delta. It is not an estimate of dealer net gamma exposure.")
+
+        st.divider()
+        st.markdown('<div class="section-header">Strike-by-Strike Historical OI Migration</div>', unsafe_allow_html=True)
+        migration_df = build_oi_migration_table(options_df, now)
+        if migration_df.empty:
+            st.info("No option contracts are available for the migration comparison.")
+        else:
+            st.dataframe(migration_df, use_container_width=True, hide_index=True)
+            st.caption("Comparison uses the closest stored snapshot to 30 minutes earlier, accepted only within a 10-minute tolerance. Growing: above +2%; Shrinking: below -2%; Approximately unchanged: between -2% and +2%. Missing or stale baseline data is shown as Insufficient history, not as unchanged.")
+        st.caption("Snapshots are attempted every 30 minutes when the Streamlit app reruns. If the browser/app is closed, collection pauses. SQLite survives a restart only if the hosting environment preserves this file and working directory.")
     else: st.warning("Options positioning data is currently unavailable.")
 
 
@@ -1266,7 +1404,7 @@ with tab_bias:
 
     with st.expander("History and data-quality notes"):
         st.write("Primary AMT profile uses the UTC calendar-day boundary (00:00 UTC / 05:30 IST). Options expiry remains a separate 17:30 IST contract reference.")
-        st.write("History is stored on the server (st.cache_resource) and OI Snapshots are stored in a local SQLite database (oi_forensics.db).")
+        st.write("General market history is held in server memory and may be lost on restart, redeploy, or cache eviction. Options OI snapshots are written to the local SQLite file oi_forensics.db when the app reruns; persistence across restarts depends on the host retaining its filesystem.")
         st.write("The bias is a structured interpretation, not a prediction.")
         st.write("Options OI concentrations are not confirmed support/resistance. Delta gamma is not dealer net gamma exposure.")
 
