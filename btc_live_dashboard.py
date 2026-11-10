@@ -41,8 +41,6 @@ def get_persistent_state():
     return {
         "prev_pcr": 0.0,
         "prev_max_pain": 0.0,
-        "prev_call_wall": 0.0,
-        "prev_put_wall": 0.0,
         "prev_amt_state": -1,
         "prev_price": 0.0,
         "session_start_straddle": None,
@@ -65,6 +63,11 @@ def get_persistent_state():
         "last_alerted_trap_door": None,
         "last_alerted_squeeze": None,
         "pending_session_alerts": [],
+        # NEW: Cluster Alert Tracker
+        "prev_near_call_vwas": None,
+        "prev_mid_call_vwas": None,
+        "prev_near_put_vwas": None,
+        "prev_mid_put_vwas": None,
     }
 
 p_state = get_persistent_state()
@@ -85,6 +88,10 @@ p_state.setdefault("last_alerted_max_pain", None)
 p_state.setdefault("last_alerted_trap_door", None)
 p_state.setdefault("last_alerted_squeeze", None)
 p_state.setdefault("pending_session_alerts", [])
+p_state.setdefault("prev_near_call_vwas", None)
+p_state.setdefault("prev_mid_call_vwas", None)
+p_state.setdefault("prev_near_put_vwas", None)
+p_state.setdefault("prev_mid_put_vwas", None)
 
 # ==========================================
 # TELEGRAM
@@ -1130,26 +1137,52 @@ if not options_df.empty and latest_price > 0:
             alert_triggered = True
             direction = "UP" if true_max_pain > p_state["prev_max_pain"] else "DOWN"
             alert_message += f"🔄 MAX PAIN SHIFT {direction}: Moved from ${p_state['prev_max_pain']:,.0f} to ${true_max_pain:,.0f}! | Flow: {ctx}<br>"
-            
-        if p_state["prev_call_wall"] != 0 and call_oi_wall is not None and abs(call_oi_wall['Strike'] - p_state["prev_call_wall"]) >= 200:
-            alert_triggered = True
-            direction = "UP" if call_oi_wall['Strike'] > p_state["prev_call_wall"] else "DOWN"
-            alert_message += f"🚧 CALL OI WALL SHIFT {direction}: Moved from ${p_state['prev_call_wall']:,.0f} to ${call_oi_wall['Strike']:,.0f}! | Flow: {ctx}<br>"
-            
-        if p_state["prev_put_wall"] != 0 and put_oi_wall is not None and abs(put_oi_wall['Strike'] - p_state["prev_put_wall"]) >= 200:
-            alert_triggered = True
-            direction = "UP" if put_oi_wall['Strike'] > p_state["prev_put_wall"] else "DOWN"
-            alert_message += f"🚧 PUT OI WALL SHIFT {direction}: Moved from ${p_state['prev_put_wall']:,.0f} to ${put_oi_wall['Strike']:,.0f}! | Flow: {ctx}<br>"
 
         if p_state["prev_price"] != 0.0 and call_gamma_wall is not None:
             if p_state["prev_price"] < call_gamma_wall['Strike'] and latest_price >= call_gamma_wall['Strike']:
                 alert_triggered = True
                 alert_message += f"🔥 GAMMA BREAKOUT: Price crossed above Call Wall (${call_gamma_wall['Strike']:,.0f})! | Flow: {ctx}<br>"
 
+        # ==========================================
+        # NEW: CLUSTER ALERT LOGIC (Replaces Wall Shift)
+        # ==========================================
+        def check_cluster_alert(cluster_list, prev_key, name):
+            current_vwas = cluster_list[0]['VWAS'] if cluster_list else None
+            prev_vwas = p_state.get(prev_key)
+            msg = ""
+            triggered = False
+            
+            if current_vwas != prev_vwas:
+                if prev_vwas is None and current_vwas is not None:
+                    p_state[prev_key] = current_vwas
+                    msg = f"🚨 NEW {name} CLUSTER: ${current_vwas:,.0f} formed! | Flow: {ctx}<br>"
+                    triggered = True
+                elif prev_vwas is not None and current_vwas is None:
+                    p_state[prev_key] = None
+                    msg = f"⚠️ {name} CLUSTER DISSOLVED. Level cleared. | Flow: {ctx}<br>"
+                    triggered = True
+                elif prev_vwas is not None and current_vwas is not None and abs(current_vwas - prev_vwas) >= 150:
+                    direction = "UP" if current_vwas > prev_vwas else "DOWN"
+                    p_state[prev_key] = current_vwas
+                    msg = f"🚧 {name} CLUSTER SHIFT {direction}: Moved from ${prev_vwas:,.0f} to ${current_vwas:,.0f}! | Flow: {ctx}<br>"
+                    triggered = True
+            return msg, triggered
+
+        if straddle_valid:
+            msg, trig = check_cluster_alert(near_call, "prev_near_call_vwas", "NEAR CALL")
+            if trig: alert_message += msg; alert_triggered = True
+            
+            msg, trig = check_cluster_alert(mid_call, "prev_mid_call_vwas", "MID CALL")
+            if trig: alert_message += msg; alert_triggered = True
+            
+            msg, trig = check_cluster_alert(near_put, "prev_near_put_vwas", "NEAR PUT")
+            if trig: alert_message += msg; alert_triggered = True
+            
+            msg, trig = check_cluster_alert(mid_put, "prev_mid_put_vwas", "MID PUT")
+            if trig: alert_message += msg; alert_triggered = True
+
         p_state["prev_pcr"] = pcr
         p_state["prev_max_pain"] = true_max_pain
-        if call_oi_wall is not None: p_state["prev_call_wall"] = call_oi_wall['Strike']
-        if put_oi_wall is not None: p_state["prev_put_wall"] = put_oi_wall['Strike']
         p_state["prev_price"] = latest_price
 
 if not df.empty and (options_df.empty or filtered_options.empty or latest_price <= 0):
@@ -1208,7 +1241,6 @@ with tab_history:
     if history_data:
         st.dataframe(pd.DataFrame(history_data), use_container_width=True, hide_index=True)
         
-        # NEW: CSV EXPORT BUTTONS
         col1, col2 = st.columns(2)
         with col1:
             alert_df = pd.DataFrame(history_data)
