@@ -74,7 +74,6 @@ def fetch_supabase_aggregate_oi():
         return {**empty_result, "status": f"ERROR: {exc}"}
 
 def process_options_snapshot(client, snapshot_id):
-    """Helper to fetch and pivot a single options snapshot"""
     chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, mark_iv, volume_24h").eq("snapshot_id", snapshot_id).execute()
     if not chain.data: return None
     
@@ -100,18 +99,24 @@ def fetch_options_forensics():
         key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
         client = create_client(url, key)
         
-        # Get the latest 5 unique snapshots
-        res = client.table("options_oi_snapshots").select("snapshot_id, collected_at").order("collected_at", desc=True).limit(50).execute()
-        if not res.data: return None
+        # FIX: Query the runs table to get exactly 2 distinct snapshots
+        runs = client.table("options_collection_runs").select("snapshot_id, completed_at").order("completed_at", desc=True).limit(2).execute()
         
-        # Find the latest and previous snapshots
-        snapshots = []
-        seen_ids = set()
-        for row in res.data:
-            if row["snapshot_id"] not in seen_ids:
-                snapshots.append(row)
-                seen_ids.add(row["snapshot_id"])
-                
+        # Fallback if runs table isn't populated yet
+        if not runs.data or len(runs.data) < 2:
+            res = client.table("options_oi_snapshots").select("snapshot_id, collected_at").order("collected_at", desc=True).limit(1000).execute()
+            snapshots = []
+            seen = set()
+            for row in res.data or []:
+                if row["snapshot_id"] not in seen:
+                    snapshots.append({"snapshot_id": row["snapshot_id"], "completed_at": row["collected_at"]})
+                    seen.add(row["snapshot_id"])
+                    if len(snapshots) >= 2: break
+        else:
+            snapshots = runs.data
+            
+        if not snapshots: return None
+        
         latest_snapshot = snapshots[0]
         previous_snapshot = snapshots[1] if len(snapshots) > 1 else None
         
@@ -119,8 +124,8 @@ def fetch_options_forensics():
         previous_df = process_options_snapshot(client, previous_snapshot["snapshot_id"]) if previous_snapshot else None
         
         return {
-            "timestamp": latest_snapshot["collected_at"], 
-            "previous_timestamp": previous_snapshot["collected_at"] if previous_snapshot else None,
+            "timestamp": latest_snapshot["completed_at"], 
+            "previous_timestamp": previous_snapshot["completed_at"] if previous_snapshot else None,
             "data": current_df,
             "previous_data": previous_df
         }
@@ -210,11 +215,9 @@ def analyze_volume_vs_oi(df, current_price):
     return {"call_ratio": call_ratio, "put_ratio": put_ratio, "status": status, "direction": direction, "interpretation": interpretation}
 
 def analyze_oi_migration(current_df, previous_df):
-    """FILTER 4: Compares Peak Call/Put OI strikes between current and previous snapshots"""
     if current_df is None or previous_df is None or current_df.empty or previous_df.empty:
         return None
         
-    # Find the strike with the highest OI for Calls and Puts
     peak_call_current = current_df.loc[current_df['Call OI'].idxmax()]['strike_price']
     peak_put_current = current_df.loc[current_df['Put OI'].idxmax()]['strike_price']
     
