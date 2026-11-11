@@ -15,7 +15,6 @@ st.caption("AMT Engine (v1.0) + Futures Positioning (v1.2) + Options Forensics")
 # --- SUPABASE FETCHERS ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_layer2_supabase_data():
-    """Fetches the latest AGGREGATE snapshot for Layer 2 (OI, Basis, Funding)"""
     empty_result = {
         "current_oi_usd": None, "previous_oi_usd": None, "delta_usd": None, "delta_pct": None, "status": "DATA_UNAVAILABLE",
         "basis_pct": None, "funding_rate": None, "coverage": "UNKNOWN"
@@ -25,7 +24,6 @@ def fetch_layer2_supabase_data():
         key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
         client = create_client(url, key)
 
-        # Get latest 100 AGGREGATE rows
         response = client.table("futures_oi_snapshots").select("created_at,oi_usd,funding_rate,basis_pct,status").eq("exchange", "AGGREGATE").order("created_at", desc=True).limit(100).execute()
         rows = response.data or []
 
@@ -54,7 +52,6 @@ def fetch_layer2_supabase_data():
         parsed_rows.sort(key=lambda item: item["time"])
         latest = parsed_rows[-1]
 
-        # Build base return
         result = {
             "current_oi_usd": latest["oi"], 
             "basis_pct": latest["basis"],
@@ -66,7 +63,6 @@ def fetch_layer2_supabase_data():
         if latest["oi"] is None or latest["oi"] <= 0:
             return {**result, "status": "LATEST_AGGREGATE_OI_UNAVAILABLE"}
 
-        # Calculate 30m Delta with STRICT 25-35 minute rule
         previous_candidates = [item for item in parsed_rows if item["time"] < latest["time"] and item["oi"] is not None]
         if not previous_candidates:
             return {**result, "status": "PENDING_BASELINE"}
@@ -273,7 +269,6 @@ shadow_state = fetch_amt_shadow_state()
 layer2_data = fetch_layer2_supabase_data()
 opt_forensics = fetch_options_forensics()
 
-# --- CALCULATE OPTIONS FIRST TO GET SIGNALS ---
 opt_df = opt_forensics["data"] if opt_forensics and "data" in opt_forensics else None
 prev_opt_df = opt_forensics.get("previous_data") if opt_forensics else None
 
@@ -283,43 +278,36 @@ vol_analysis = analyze_volume_vs_oi(opt_df, current_price)
 migration_analysis = analyze_oi_migration(opt_df, prev_opt_df)
 aggressor_analysis = analyze_aggressor_trades(opt_df, current_price)
 
-# --- MASTER SIGNAL SCORE LOGIC ---
-score = 0
-signals = []
+# --- RENDER UI: CONSENSUS OVERVIEW ---
+st.markdown("### 📊 Options Forensics Consensus")
+st.caption("This is a multi-dimensional overview, not a predictive Buy/Sell signal. AMT determines structure; Options provide positioning context.")
 
-if iv_analysis:
-    if iv_analysis['status'] == "BULLISH_URGENCY": score += 1; signals.append("Bullish IV Skew")
-    elif iv_analysis['status'] == "BEARISH_URGENCY": score -= 1; signals.append("Bearish IV Skew")
+# Build the consensus metrics (No points, just True/False states)
+c1, c2, c3 = st.columns(3)
+c1.metric("AMT Structure", shadow_state["confirmed_state"] if shadow_state else "N/A")
+c2.metric("Coverage", layer2_data["coverage"])
+c3.metric("Current Price", f"${current_price:,.2f}")
 
-if vol_analysis:
-    if vol_analysis['direction'] == "BULLISH_ACTIVITY": score += 1; signals.append("Fresh Bullish Volume")
-    elif vol_analysis['direction'] == "BEARISH_ACTIVITY": score -= 1; signals.append("Fresh Bearish Volume")
-
-if migration_analysis:
-    if migration_analysis['status'] in ["BULLISH_MIGRATION", "MILD_BULLISH"]: score += 1; signals.append("Bullish OI Migration")
-    elif migration_analysis['status'] == "BEARISH_MIGRATION": score -= 1; signals.append("Bearish OI Migration")
-
-if aggressor_analysis:
-    if aggressor_analysis['status'] == "AGGRESSIVE_BUYING": score += 1; signals.append("Aggressive Taker Buying")
-    elif aggressor_analysis['status'] == "AGGRESSIVE_SELLING": score -= 1; signals.append("Aggressive Taker Selling")
-
-# --- RENDER UI ---
-# Master Signal Dashboard
-st.markdown("### 📊 Master Signal Overview")
-ms1, ms2, ms3, ms4 = st.columns(4)
-ms1.metric("Current Price", f"${current_price:,.2f}")
-ms2.metric("AMT Certified State", shadow_state["confirmed_state"] if shadow_state else "N/A")
-ms3.metric("Coverage", layer2_data["coverage"])
-
-if score >= 2:
-    ms4.success(f"🚀 **BULLISH** (Score: +{score})")
-elif score <= -2:
-    ms4.error(f"🔻 **BEARISH** (Score: {score})")
-else:
-    ms4.info(f"⚖️ **NEUTRAL** (Score: {score})")
-
-if signals:
-    st.caption("**Active Drivers:** " + " | ".join(signals))
+cons1, cons2, cons3, cons4, cons5 = st.columns(5)
+with cons1:
+    if walls: st.warning("🧱 **Walls Detected**")
+    else: st.info("⚖️ Unclassified")
+with cons2:
+    if iv_analysis and iv_analysis['status'] == "BULLISH_URGENCY": st.success("🌪️ **Bullish IV**")
+    elif iv_analysis and iv_analysis['status'] == "BEARISH_URGENCY": st.error("🌪️ **Bearish IV**")
+    else: st.info("🌪️ Neutral IV")
+with cons3:
+    if vol_analysis and vol_analysis['direction'] == "BULLISH_ACTIVITY": st.success("🐋 **Bullish Vol**")
+    elif vol_analysis and vol_analysis['direction'] == "BEARISH_ACTIVITY": st.error("🐋 **Bearish Vol**")
+    else: st.info("🐋 Stale/Neutral")
+with cons4:
+    if migration_analysis and migration_analysis['status'] == "BULLISH_MIGRATION": st.success("🚚 **Bullish Shift**")
+    elif migration_analysis and migration_analysis['status'] == "BEARISH_MIGRATION": st.error("🚚 **Bearish Shift**")
+    else: st.info("🚚 Stable OI")
+with cons5:
+    if aggressor_analysis and aggressor_analysis['status'] == "AGGRESSIVE_BUYING": st.success("⚔️ **Taker Buys**")
+    elif aggressor_analysis and aggressor_analysis['status'] == "AGGRESSIVE_SELLING": st.error("⚔️ **Taker Sells**")
+    else: st.info("⚔️ Neutral Flow")
 
 st.markdown("---")
 st.subheader("🗺️ Layer 1: Auction Market Theory")
@@ -331,8 +319,6 @@ p4.metric("ATR (21)", f"${completed_df.iloc[-1]['atr']:,.2f}")
 
 if shadow_state:
     st.info(f"**Certified AMT State:** {shadow_state['confirmed_state']} (Last Updated: {shadow_state['candle_open_time']})")
-else:
-    st.warning("Certified AMT State: PENDING (Waiting for first GitHub Action run)")
 
 st.markdown("---")
 st.subheader("📈 Layer 2: Futures Positioning (Historical Snapshot)")
@@ -358,7 +344,6 @@ st.subheader("🔍 Layer 3: Options Forensics (Delta India)")
 if opt_forensics and "data" in opt_forensics:
     st.caption(f"Latest Snapshot: {opt_forensics['timestamp']}")
     
-    # --- FILTER 1 ---
     st.markdown("#### 🧱 Filter 1: Neighboring Strike Analysis (OI Walls)")
     if walls:
         for wall in walls:
@@ -366,7 +351,6 @@ if opt_forensics and "data" in opt_forensics:
     else:
         st.success("**Unclassified Concentration:** No distinct OI walls found near current price.")
 
-    # --- FILTER 2 ---
     st.markdown("#### 🌪️ Filter 2: Implied Volatility Skew (Urgency)")
     if iv_analysis:
         c1, c2, c3 = st.columns(3)
@@ -378,7 +362,6 @@ if opt_forensics and "data" in opt_forensics:
         elif iv_analysis['status'] == "BEARISH_URGENCY": st.warning(f"**BEARISH_URGENCY:** Put IV is significantly higher than Call IV. Traders are paying a premium for downside protection.")
         else: st.info(f"**NEUTRAL:** Volatility is balanced. Market is pricing a neutral outcome.")
 
-    # --- FILTER 3 ---
     st.markdown("#### 🐋 Filter 3: Volume vs OI (Fresh Money Detector)")
     if vol_analysis:
         v1, v2 = st.columns(2)
@@ -390,7 +373,6 @@ if opt_forensics and "data" in opt_forensics:
             else: st.info(f"**FRESH MONEY: NEUTRAL** - Traders are actively opening new positions today.")
         else: st.info(f"**STALE POSITIONING:** Volume is low relative to OI. Existing positions are being held, but no significant new money is entering.")
 
-    # --- FILTER 4 ---
     st.markdown("#### 🚚 Filter 4: OI Migration (Sentiment Shift)")
     if migration_analysis:
         if migration_analysis['status'] == "BULLISH_MIGRATION": st.success(f"**BULLISH MIGRATION:** Both Call and Put walls moved HIGHER. Sentiment is shifting Bullish.")
@@ -399,7 +381,6 @@ if opt_forensics and "data" in opt_forensics:
         else: st.info(f"**STABLE MIGRATION:** Peak OI strikes have not moved significantly.")
     else: st.warning("**PENDING:** Waiting for a second historical successful snapshot to calculate migration.")
 
-    # --- FILTER 5 ---
     st.markdown("#### ⚔️ Filter 5: Aggressor Trades (Directional Taker Flow)")
     if aggressor_analysis:
         a1, a2 = st.columns(2)
