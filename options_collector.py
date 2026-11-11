@@ -100,7 +100,7 @@ def exchange_timestamp_to_iso(value):
 # ---------------------------------------------------------
 # API FETCHING
 # ---------------------------------------------------------
-def get_api_data(url, params, retries=MAX_RETRIES):
+def get_api_data(url, params=None, retries=MAX_RETRIES):
     last_error = None
     for attempt in range(1, retries + 1):
         try:
@@ -121,7 +121,10 @@ def get_tickers(params):
 
 def fetch_taker_flow(product_id):
     """Fetches recent trades for a product and sums Taker Buys vs Taker Sells"""
-    trades = get_api_data(TRADES_URL, {"product_id": product_id, "page_size": 100})
+    # FIXED: Delta API requires product_id in the path, not as a query parameter
+    url = f"{TRADES_URL}/{product_id}"
+    trades = get_api_data(url, {"page_size": 100})
+    
     if not trades: return None, None
     
     # DEBUG: Print the first trade so we can see Delta's exact format in the logs
