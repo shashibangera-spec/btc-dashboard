@@ -255,12 +255,12 @@ def collect_binance():
 
     return result
 
-BYBIT_HOST = "https://api.bybit.com"
+BYBIT_HOSTS = ("https://api.bybit.com", "https://api.bytick.com")
 
 def collect_bybit():
     result = exchange_template()
     try:
-        response = request_json(BYBIT_HOST + "/v5/market/tickers", {"category": "linear", "symbol": SYMBOL})
+        response = request_with_host_fallback(BYBIT_HOSTS, "/v5/market/tickers", {"category": "linear", "symbol": SYMBOL})
         payload = response["payload"]
         api_require(isinstance(payload, dict) and str(payload.get("retCode")) == "0", "Bybit error")
         rows = payload.get("result", {}).get("list", [])
@@ -288,7 +288,7 @@ def collect_bybit():
         result["errors"]["linear_ticker"] = exc.as_dict()
 
     try:
-        response = request_json(BYBIT_HOST + "/v5/market/tickers", {"category": "spot", "symbol": SYMBOL})
+        response = request_with_host_fallback(BYBIT_HOSTS, "/v5/market/tickers", {"category": "spot", "symbol": SYMBOL})
         payload = response["payload"]
         api_require(isinstance(payload, dict) and str(payload.get("retCode")) == "0", "Bybit spot error")
         rows = payload.get("result", {}).get("list", [])
