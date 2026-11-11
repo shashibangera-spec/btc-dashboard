@@ -51,19 +51,25 @@ def main():
         }
         result = amt_engine.process_candle(candle, {})
         
-        # Calculate buffer based on engine rules
         buffer_value = max(config["minimum_buffer"], float(row['atr']) * config["atr_multiplier"])
-        
-        # Convert close_time to ISO
         close_dt = datetime.fromtimestamp(row['close_time'] / 1000.0, tz=timezone.utc)
 
-        # Build database row matching your EXACT schema
+        # Build database row matching your EXACT schema (Now with OHLCV!)
         db_row = {
             "exchange": "BINANCE",
             "symbol": "BTCUSDT",
             "timeframe": "30",
             "candle_open_time": row['Date'].isoformat(),
             "candle_close_time": close_dt.isoformat(),
+            
+            # --- ADDED PRICE & VOLUME FIELDS HERE ---
+            "open_price": float(row['open']),
+            "high_price": float(row['high']),
+            "low_price": float(row['low']),
+            "close_price": float(row['close']),
+            "volume": float(row['volume']),
+            # ----------------------------------------
+            
             "profile_date": last_prev_day,
             "profile_id": frozen_profile["profile_id"],
             "prior_vah": float(vah),
@@ -78,11 +84,10 @@ def main():
             "engine_version": "v1.0",
             "confirmed_state": result.get('confirmed_state'),
             "developing_state": result.get('developing_state'),
-            "state_output": result, # Saved as JSONB
+            "state_output": result, 
             "data_status": result.get('data_status', 'OK')
         }
         
-        # Upsert using the correct conflict columns
         client.table("amt_snapshots").upsert(db_row, on_conflict="exchange,symbol,timeframe,candle_open_time").execute()
         print(f"Saved candle: {row['Date'].strftime('%H:%M')} -> State: {result.get('confirmed_state')}")
 
