@@ -282,7 +282,6 @@ aggressor_analysis = analyze_aggressor_trades(opt_df, current_price)
 st.markdown("### 📊 Options Forensics Consensus")
 st.caption("This is a multi-dimensional overview, not a predictive Buy/Sell signal. AMT determines structure; Options provide positioning context.")
 
-# Build the consensus metrics (No points, just True/False states)
 c1, c2, c3 = st.columns(3)
 c1.metric("AMT Structure", shadow_state["confirmed_state"] if shadow_state else "N/A")
 c2.metric("Coverage", layer2_data["coverage"])
@@ -411,3 +410,31 @@ elif opt_forensics and "error" in opt_forensics:
     st.error(f"Error loading options data: {opt_forensics['error']}")
 else:
     st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
+
+# --- TEXT EXPORT FOR AI SUPPORT ---
+st.markdown("---")
+with st.expander("📋 Copy/Paste Text Report for AI Support"):
+    st.write("Click the copy icon in the top right of the box below to copy this for support.")
+    
+    report_lines = []
+    report_lines.append(f"--- BTC TERMINAL REPORT ---")
+    report_lines.append(f"Time (UTC): {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
+    report_lines.append(f"Price: ${current_price:,.2f}")
+    report_lines.append(f"AMT State: {shadow_state['confirmed_state'] if shadow_state else 'N/A'}")
+    report_lines.append(f"Coverage: {layer2_data['coverage']}")
+    
+    report_lines.append(f"\n--- LAYER 2 (FUTURES) ---")
+    report_lines.append(f"OI: ${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data['current_oi_usd'] else "OI: N/A")
+    report_lines.append(f"30m Delta: {layer2_data['status']} {layer2_data.get('delta_pct', '')}")
+    report_lines.append(f"Basis: {layer2_data['basis_pct']}")
+    report_lines.append(f"Funding: {layer2_data['funding_rate']}")
+    
+    report_lines.append(f"\n--- LAYER 3 (OPTIONS) ---")
+    report_lines.append(f"Walls: {walls}")
+    report_lines.append(f"IV Skew: {iv_analysis}")
+    report_lines.append(f"Vol vs OI: {vol_analysis}")
+    report_lines.append(f"Migration: {migration_analysis}")
+    report_lines.append(f"Aggressor Flow: {aggressor_analysis}")
+    
+    final_report = "\n".join(report_lines)
+    st.code(final_report, language="text")
