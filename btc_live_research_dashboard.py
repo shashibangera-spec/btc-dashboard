@@ -74,7 +74,8 @@ def fetch_supabase_aggregate_oi():
         return {**empty_result, "status": f"ERROR: {exc}"}
 
 def process_options_snapshot(client, snapshot_id):
-    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, mark_iv, volume_24h").eq("snapshot_id", snapshot_id).execute()
+    # Added taker_buy_volume and taker_sell_volume
+    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).execute()
     if not chain.data: return None
     
     df = pd.DataFrame(chain.data)
@@ -90,6 +91,13 @@ def process_options_snapshot(client, snapshot_id):
     
     merged = pd.merge(pivot_oi, pivot_iv, on='strike_price', how='outer')
     merged = pd.merge(merged, pivot_vol, on='strike_price', how='outer')
+    
+    # We don't pivot taker volumes per strike for now, we just sum them up overall
+    # But we will attach them to the dataframe for the Filter 5 logic
+    if 'taker_buy_volume' in df.columns:
+        taker_agg = df.groupby('strike_price')[['taker_buy_volume', 'taker_sell_volume']].sum().reset_index()
+        merged = pd.merge(merged, taker_agg, on='strike_price', how='outer')
+    
     return merged.sort_values('strike_price')
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -162,83 +170,88 @@ def analyze_neighboring_strikes(df, current_price):
 def analyze_iv_skew(df, current_price):
     closest = get_nearest_strikes(df, current_price, count=5)
     if closest.empty: return None
-    
     avg_call_iv = closest['Call IV'].mean()
     avg_put_iv = closest['Put IV'].mean()
-    
     if pd.isna(avg_call_iv) or pd.isna(avg_put_iv): return None
-    
     skew = avg_call_iv - avg_put_iv
     skew_pct = (skew / avg_put_iv) * 100
-    
     status = "NEUTRAL"
     interpretation = "Volatility is balanced. Market is pricing a neutral outcome."
-    
     if skew_pct > 5.0:
         status = "BULLISH_URGENCY"
         interpretation = "Call IV is significantly higher than Put IV. Traders are paying a premium for upside."
     elif skew_pct < -5.0:
         status = "BEARISH_URGENCY"
         interpretation = "Put IV is significantly higher than Call IV. Traders are paying a premium for downside protection."
-
     return {"avg_call_iv": avg_call_iv, "avg_put_iv": avg_put_iv, "skew_pct": skew_pct, "status": status, "interpretation": interpretation}
 
 def analyze_volume_vs_oi(df, current_price):
     closest = get_nearest_strikes(df, current_price, count=5)
     if closest.empty: return None
-    
     total_call_vol = closest['Call Vol'].sum()
     total_call_oi = closest['Call OI'].sum()
     total_put_vol = closest['Put Vol'].sum()
     total_put_oi = closest['Put OI'].sum()
-    
     if total_call_oi == 0 or total_put_oi == 0: return None
-    
     call_ratio = total_call_vol / total_call_oi
     put_ratio = total_put_vol / total_put_oi
-    
     status = "STALE_POSITIONING"
     interpretation = "Volume is low relative to OI. Existing positions are being held, but no significant new money is entering."
-    
     if call_ratio > 0.5 or put_ratio > 0.5:
         status = "FRESH_MONEY_ENTERING"
         interpretation = "High Volume relative to OI detected. Traders are actively opening new positions today."
-        
     direction = "NEUTRAL"
-    if call_ratio > (put_ratio * 1.5):
-        direction = "BULLISH_ACTIVITY"
-    elif put_ratio > (call_ratio * 1.5):
-        direction = "BEARISH_ACTIVITY"
-        
+    if call_ratio > (put_ratio * 1.5): direction = "BULLISH_ACTIVITY"
+    elif put_ratio > (call_ratio * 1.5): direction = "BEARISH_ACTIVITY"
     return {"call_ratio": call_ratio, "put_ratio": put_ratio, "status": status, "direction": direction, "interpretation": interpretation}
 
 def analyze_oi_migration(current_df, previous_df):
-    if current_df is None or previous_df is None or current_df.empty or previous_df.empty:
-        return None
-        
+    if current_df is None or previous_df is None or current_df.empty or previous_df.empty: return None
     peak_call_current = current_df.loc[current_df['Call OI'].idxmax()]['strike_price']
     peak_put_current = current_df.loc[current_df['Put OI'].idxmax()]['strike_price']
-    
     peak_call_previous = previous_df.loc[previous_df['Call OI'].idxmax()]['strike_price']
     peak_put_previous = previous_df.loc[previous_df['Put OI'].idxmax()]['strike_price']
-    
     call_shift = peak_call_current - peak_call_previous
     put_shift = peak_put_current - peak_put_previous
-    
     status = "STABLE"
     interpretation = "Peak OI strikes have not moved significantly."
-    
     if call_shift > 0 and put_shift > 0:
         status = "BULLISH_MIGRATION"
-        interpretation = f"Both Call and Put walls moved HIGHER. Sentiment is shifting Bullish. (Calls: ${peak_call_previous}->${peak_call_current}, Puts: ${peak_put_previous}->${peak_put_current})"
+        interpretation = f"Both Call and Put walls moved HIGHER. Sentiment is shifting Bullish."
     elif call_shift < 0 and put_shift < 0:
         status = "BEARISH_MIGRATION"
-        interpretation = f"Both Call and Put walls moved LOWER. Sentiment is shifting Bearish. (Calls: ${peak_call_previous}->${peak_call_current}, Puts: ${peak_put_previous}->${peak_put_current})"
+        interpretation = f"Both Call and Put walls moved LOWER. Sentiment is shifting Bearish."
     elif call_shift > 0 and put_shift <= 0:
         status = "MILD_BULLISH"
-        interpretation = f"Call wall moved higher while Put wall stayed/lowered. (Calls: ${peak_call_previous}->${peak_call_current}, Puts: ${peak_put_previous}->${peak_put_current})"
-        
+        interpretation = f"Call wall moved higher while Put wall stayed/lowered."
     return {"call_shift": call_shift, "put_shift": put_shift, "status": status, "interpretation": interpretation}
+
+def analyze_aggressor_trades(df, current_price):
+    """FILTER 5: Analyzes Taker Buy vs Taker Sell volume"""
+    closest = get_nearest_strikes(df, current_price, count=5)
+    if closest.empty or 'taker_buy_volume' not in closest.columns: return None
+    
+    total_taker_buy = closest['taker_buy_volume'].sum()
+    total_taker_sell = closest['taker_sell_volume'].sum()
+    
+    # If both are zero or null, data is missing
+    if (pd.isna(total_taker_buy) or total_taker_buy == 0) and (pd.isna(total_taker_sell) or total_taker_sell == 0):
+        return None
+        
+    total_taker_buy = total_taker_buy if not pd.isna(total_taker_buy) else 0
+    total_taker_sell = total_taker_sell if not pd.isna(total_taker_sell) else 0
+    
+    status = "NEUTRAL_FLOW"
+    interpretation = "Taker buys and sells are relatively balanced."
+    
+    if total_taker_buy > (total_taker_sell * 1.3) and total_taker_buy > 10:
+        status = "AGGRESSIVE_BUYING"
+        interpretation = f"Heavy Taker Buying detected. Buyers are lifting the ask. (Buys: {total_taker_buy:,.0f} vs Sells: {total_taker_sell:,.0f})"
+    elif total_taker_sell > (total_taker_buy * 1.3) and total_taker_sell > 10:
+        status = "AGGRESSIVE_SELLING"
+        interpretation = f"Heavy Taker Selling detected. Sellers are hitting the bid. (Sells: {total_taker_sell:,.0f} vs Buys: {total_taker_buy:,.0f})"
+        
+    return {"buy_vol": total_taker_buy, "sell_vol": total_taker_sell, "status": status, "interpretation": interpretation}
 
 # --- DATA FETCHING ---
 with st.spinner("Fetching Binance data..."):
@@ -351,16 +364,11 @@ if opt_forensics and "data" in opt_forensics:
         c1, c2, c3 = st.columns(3)
         c1.metric("Avg Call IV (Nearby)", f"{iv_analysis['avg_call_iv']*100:.2f}%")
         c2.metric("Avg Put IV (Nearby)", f"{iv_analysis['avg_put_iv']*100:.2f}%")
-        
         delta_color = "normal" if iv_analysis['skew_pct'] > 0 else "inverse"
         c3.metric("IV Skew (Call - Put)", f"{iv_analysis['skew_pct']:+.2f}%", delta_color=delta_color)
-        
-        if iv_analysis['status'] == "BULLISH_URGENCY":
-            st.error(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
-        elif iv_analysis['status'] == "BEARISH_URGENCY":
-            st.warning(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
-        else:
-            st.info(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
+        if iv_analysis['status'] == "BULLISH_URGENCY": st.error(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
+        elif iv_analysis['status'] == "BEARISH_URGENCY": st.warning(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
+        else: st.info(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
 
     # --- FILTER 3 ---
     vol_analysis = analyze_volume_vs_oi(opt_df, current_price)
@@ -369,35 +377,38 @@ if opt_forensics and "data" in opt_forensics:
         v1, v2 = st.columns(2)
         v1.metric("Call Vol/OI Ratio", f"{vol_analysis['call_ratio']:.2f}x")
         v2.metric("Put Vol/OI Ratio", f"{vol_analysis['put_ratio']:.2f}x")
-        
         if vol_analysis['status'] == "FRESH_MONEY_ENTERING":
-            if vol_analysis['direction'] == "BULLISH_ACTIVITY":
-                st.success(f"**FRESH MONEY: BULLISH** - {vol_analysis['interpretation']}")
-            elif vol_analysis['direction'] == "BEARISH_ACTIVITY":
-                st.error(f"**FRESH MONEY: BEARISH** - {vol_analysis['interpretation']}")
-            else:
-                st.info(f"**FRESH MONEY: NEUTRAL** - {vol_analysis['interpretation']}")
-        else:
-            st.info(f"**STALE POSITIONING:** {vol_analysis['interpretation']}")
+            if vol_analysis['direction'] == "BULLISH_ACTIVITY": st.success(f"**FRESH MONEY: BULLISH** - {vol_analysis['interpretation']}")
+            elif vol_analysis['direction'] == "BEARISH_ACTIVITY": st.error(f"**FRESH MONEY: BEARISH** - {vol_analysis['interpretation']}")
+            else: st.info(f"**FRESH MONEY: NEUTRAL** - {vol_analysis['interpretation']}")
+        else: st.info(f"**STALE POSITIONING:** {vol_analysis['interpretation']}")
 
     # --- FILTER 4 ---
     migration_analysis = analyze_oi_migration(opt_df, prev_opt_df)
     st.markdown("#### 🚚 Filter 4: OI Migration (Sentiment Shift)")
     if migration_analysis:
-        if migration_analysis['status'] == "BULLISH_MIGRATION":
-            st.success(f"**BULLISH MIGRATION:** {migration_analysis['interpretation']}")
-        elif migration_analysis['status'] == "BEARISH_MIGRATION":
-            st.error(f"**BEARISH MIGRATION:** {migration_analysis['interpretation']}")
-        elif migration_analysis['status'] == "MILD_BULLISH":
-            st.info(f"**MILD BULLISH MIGRATION:** {migration_analysis['interpretation']}")
-        else:
-            st.info(f"**STABLE MIGRATION:** {migration_analysis['interpretation']}")
-    else:
-        st.warning("**PENDING:** Waiting for a second historical snapshot to calculate migration.")
+        if migration_analysis['status'] == "BULLISH_MIGRATION": st.success(f"**BULLISH MIGRATION:** {migration_analysis['interpretation']}")
+        elif migration_analysis['status'] == "BEARISH_MIGRATION": st.error(f"**BEARISH MIGRATION:** {migration_analysis['interpretation']}")
+        elif migration_analysis['status'] == "MILD_BULLISH": st.info(f"**MILD BULLISH MIGRATION:** {migration_analysis['interpretation']}")
+        else: st.info(f"**STABLE MIGRATION:** {migration_analysis['interpretation']}")
+    else: st.warning("**PENDING:** Waiting for a second historical snapshot to calculate migration.")
 
     # --- FILTER 5 ---
+    aggressor_analysis = analyze_aggressor_trades(opt_df, current_price)
     st.markdown("#### ⚔️ Filter 5: Aggressor Trades (Directional Taker Flow)")
-    st.info("**PENDING:** Awaiting Trade Tape Collector. We need to upgrade `options_collector.py` to fetch the `/v2/trades` endpoint to analyze Taker Buy/Sell flow.")
+    if aggressor_analysis:
+        a1, a2 = st.columns(2)
+        a1.metric("Taker Buy Vol", f"{aggressor_analysis['buy_vol']:,.0f}")
+        a2.metric("Taker Sell Vol", f"{aggressor_analysis['sell_vol']:,.0f}")
+        
+        if aggressor_analysis['status'] == "AGGRESSIVE_BUYING":
+            st.success(f"**AGGRESSIVE BUYING:** {aggressor_analysis['interpretation']}")
+        elif aggressor_analysis['status'] == "AGGRESSIVE_SELLING":
+            st.error(f"**AGGRESSIVE SELLING:** {aggressor_analysis['interpretation']}")
+        else:
+            st.info(f"**NEUTRAL FLOW:** {aggressor_analysis['interpretation']}")
+    else:
+        st.info("**PENDING:** Awaiting Aggressor Trade Data. We need to wait for the updated options_collector.py to run.")
 
     st.markdown("#### Raw Options Chain (Closest 10 Strikes)")
     closest_df = get_nearest_strikes(opt_df, current_price, count=10)
