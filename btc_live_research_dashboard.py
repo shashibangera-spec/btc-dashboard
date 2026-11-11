@@ -324,19 +324,23 @@ if fut_snapshot:
 
     with st.expander("View Exchange Breakdown"):
         ex_data = []
-        # UPDATED TO INCLUDE DELTA
+        # UPDATED TO INCLUDE DELTA AND SAFE STATUS ACCESS
         for name in ["BINANCE", "BYBIT", "OKX", "DELTA"]:
             ex = fut_snapshot["exchanges"].get(name, {})
             oi = valid_metric_value(ex, "oi_usd")
             funding = valid_metric_value(ex, "funding_rate")
             basis = valid_metric_value(ex, "basis_pct")
             
+            # Safely get the status, preventing KeyError if cached data is old
+            oi_metric = ex.get("oi_usd", {})
+            status_val = oi_metric.get("status", "NOT_COLLECTED") if isinstance(oi_metric, dict) else "NOT_COLLECTED"
+            
             ex_data.append({
                 "Exchange": name,
                 "OI (USD)": f"${oi/1e9:.2f}B" if oi else "N/A",
                 "Funding": f"{funding*100:.4f}%" if funding else "N/A",
                 "Basis": f"{basis:+.4f}%" if basis else "N/A",
-                "Status": ex["oi_usd"]["status"]
+                "Status": status_val
             })
         
         st.dataframe(pd.DataFrame(ex_data), use_container_width=True, hide_index=True)
