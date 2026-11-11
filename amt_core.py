@@ -2,10 +2,11 @@ import pandas as pd
 import numpy as np
 import requests
 import math
+import streamlit as st  # <--- THIS IS THE FIX: Added missing import
 from datetime import timezone
 from research_engine import ResearchStateEngine, IN_VALUE
 
-@st.cache_data(ttl=60) # Will be ignored if st is not imported, but works fine
+@st.cache_data(ttl=60) # Now this works perfectly in both GitHub Actions and Streamlit
 def fetch_binance_data():
     url = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=30m&limit=500"
     res = requests.get(url, timeout=10).json()
