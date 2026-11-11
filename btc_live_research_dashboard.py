@@ -14,7 +14,7 @@ from futures_positioning import FuturesPositioning, valid_metric_value
 st.set_page_config(page_title="BTC Combined Research", layout="wide")
 
 st.title("🔬 BTC Combined Research Terminal")
-st.caption("AMT Engine (v1.0) + Futures Positioning (v1.1) + Options Forensics")
+st.caption("AMT Engine (v1.0) + Futures Positioning (v1.2) + Options Forensics")
 
 # ==========================================
 # 1. AMT DATA FETCHING & CALCULATIONS
@@ -324,7 +324,8 @@ if fut_snapshot:
 
     with st.expander("View Exchange Breakdown"):
         ex_data = []
-        for name in ["BINANCE", "BYBIT", "OKX"]:
+        # UPDATED TO INCLUDE DELTA
+        for name in ["BINANCE", "BYBIT", "OKX", "DELTA"]:
             ex = fut_snapshot["exchanges"].get(name, {})
             oi = valid_metric_value(ex, "oi_usd")
             funding = valid_metric_value(ex, "funding_rate")
