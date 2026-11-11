@@ -35,7 +35,7 @@ def fetch_supabase_aggregate_oi():
             except: oi_value = None
             if pd.isna(timestamp): continue
             
-            # MATCHED CONTRIBUTOR FIX: Extract contributors from status JSON
+            # Extract contributors from status JSON
             contributors = []
             try:
                 status_json = json.loads(row.get("status", "{}"))
@@ -64,7 +64,7 @@ def fetch_supabase_aggregate_oi():
         if offset_seconds > 600:
             return {**empty_result, "current_oi_usd": latest["oi"], "status": "NO_30M_MATCH_WITHIN_10M"}
 
-        # MATCHED CONTRIBUTOR FIX: Only compare if contributors are identical
+        # Only compare if contributors are identical
         if latest["contributors"] != previous["contributors"]:
             return {**empty_result, "current_oi_usd": latest["oi"], "status": "COVERAGE_MISMATCH"}
 
@@ -146,11 +146,14 @@ def fetch_amt_shadow_state():
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
         client = create_client(url, key)
-        res = client.table("amt_snapshots").select("open_time_utc, result").order("open_time_utc", desc=True).limit(1).execute()
+        # Query the correct columns: candle_open_time and confirmed_state
+        res = client.table("amt_snapshots").select("candle_open_time, confirmed_state").order("candle_open_time", desc=True).limit(1).execute()
         if res.data:
             return res.data[0]
         return None
-    except: return None
+    except Exception as e: 
+        print(f"Error fetching AMT shadow state: {e}")
+        return None
 
 shadow_state = fetch_amt_shadow_state()
 
@@ -172,7 +175,8 @@ opt_forensics = fetch_options_forensics()
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Current Price", f"${completed_df.iloc[-1]['close']:,.2f}")
 col2.metric("AMT Live", "See Below")
-col3.metric("AMT Certified", shadow_state["result"].get("confirmed_state") if shadow_state else "N/A")
+# Use the correct dictionary key from our query
+col3.metric("AMT Certified", shadow_state["confirmed_state"] if shadow_state else "N/A")
 col4.metric("ATR (21)", f"${completed_df.iloc[-1]['atr']:,.2f}")
 
 st.markdown("---")
@@ -183,7 +187,8 @@ p2.metric("Prior POC", f"${poc:,.2f}")
 p3.metric("Prior VAL", f"${val:,.2f}")
 
 if shadow_state:
-    st.info(f"**Certified AMT State (from Supabase):** {shadow_state['result'].get('confirmed_state')} (Last Updated: {shadow_state['open_time_utc']})")
+    # Use the correct dictionary keys for rendering
+    st.info(f"**Certified AMT State (from Supabase):** {shadow_state['confirmed_state']} (Last Updated: {shadow_state['candle_open_time']})")
 else:
     st.warning("Certified AMT State: PENDING (Waiting for first GitHub Action run)")
 
