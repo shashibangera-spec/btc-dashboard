@@ -1,4 +1,3 @@
-
 """
 collector.py
 BTC Futures OI -> Supabase collector
@@ -11,10 +10,11 @@ Environment variables:
     SUPABASE_URL
     SUPABASE_SERVICE_ROLE_KEY
 
-Writes four records per run:
+Writes five records per run:
     BINANCE
     BYBIT
     OKX
+    DELTA
     AGGREGATE
 
 Unavailable metric values are stored as SQL NULL.
@@ -176,7 +176,8 @@ def build_database_rows(snapshot):
 
     exchanges = snapshot.get("exchanges", {})
 
-    for exchange_name in ("BINANCE", "BYBIT", "OKX"):
+    # FIXED: Added "DELTA" to this tuple so it gets its own row
+    for exchange_name in ("BINANCE", "BYBIT", "OKX", "DELTA"):
         exchange_data = exchanges.get(exchange_name, {})
 
         rows.append(
@@ -212,7 +213,7 @@ def main():
     print("Collecting exchange data...")
 
     try:
-        # Reuse the tested v1.1 exchange collectors.
+        # Reuse the tested v1.2 exchange collectors.
         exchanges = fp.collect_all_exchanges()
 
         # Build the same partial-coverage aggregate used by the
