@@ -51,21 +51,39 @@ def main():
         }
         result = amt_engine.process_candle(candle, {})
         
-        # Build database row
+        # Calculate buffer based on engine rules
+        buffer_value = max(config["minimum_buffer"], float(row['atr']) * config["atr_multiplier"])
+        
+        # Convert close_time to ISO
+        close_dt = datetime.fromtimestamp(row['close_time'] / 1000.0, tz=timezone.utc)
+
+        # Build database row matching your EXACT schema
         db_row = {
             "exchange": "BINANCE",
             "symbol": "BTCUSDT",
             "timeframe": "30",
-            "open_time_utc": row['Date'].isoformat(),
+            "candle_open_time": row['Date'].isoformat(),
+            "candle_close_time": close_dt.isoformat(),
+            "profile_date": last_prev_day,
             "profile_id": frozen_profile["profile_id"],
-            "profile": frozen_profile,
-            "atr": float(row['atr']),
+            "prior_vah": float(vah),
+            "prior_poc": float(poc),
+            "prior_val": float(val),
+            "tpo_row_size": 50.0,
+            "value_area_percent": 0.70,
+            "atr_21": float(row['atr']),
+            "atr_buffer": float(buffer_value),
+            "discovery_above": result.get('upper_discovery_threshold'),
+            "discovery_below": result.get('lower_discovery_threshold'),
             "engine_version": "v1.0",
-            "result": result
+            "confirmed_state": result.get('confirmed_state'),
+            "developing_state": result.get('developing_state'),
+            "state_output": result, # Saved as JSONB
+            "data_status": result.get('data_status', 'OK')
         }
         
-        # Upsert to avoid duplicates
-        client.table("amt_snapshots").upsert(db_row, on_conflict="exchange,symbol,timeframe,open_time_utc").execute()
+        # Upsert using the correct conflict columns
+        client.table("amt_snapshots").upsert(db_row, on_conflict="exchange,symbol,timeframe,candle_open_time").execute()
         print(f"Saved candle: {row['Date'].strftime('%H:%M')} -> State: {result.get('confirmed_state')}")
 
     return 0
