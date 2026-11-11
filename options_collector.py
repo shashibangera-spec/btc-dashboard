@@ -124,16 +124,26 @@ def fetch_taker_flow(product_id):
     trades = get_api_data(TRADES_URL, {"product_id": product_id, "page_size": 100})
     if not trades: return None, None
     
+    # DEBUG: Print the first trade so we can see Delta's exact format in the logs
+    if len(trades) > 0:
+        print(f"DEBUG: Sample trade for product {product_id}: {trades[0]}")
+        
     taker_buy = 0.0
     taker_sell = 0.0
     
     for t in trades:
         size = to_float(t.get("size"))
         if size is None: continue
-        # Check both standard roles and taker_side formats
-        if t.get("buyer_role") == "taker" or t.get("taker_side") == "buy": 
+        
+        # Check all possible formats Delta might use for aggressor direction
+        side = str(t.get("side", "")).lower()
+        buyer_role = str(t.get("buyer_role", "")).lower()
+        seller_role = str(t.get("seller_role", "")).lower()
+        taker_side = str(t.get("taker_side", "")).lower()
+        
+        if side == "buy" or buyer_role == "taker" or taker_side == "buy":
             taker_buy += size
-        elif t.get("seller_role") == "taker" or t.get("taker_side") == "sell": 
+        elif side == "sell" or seller_role == "taker" or taker_side == "sell":
             taker_sell += size
             
     return taker_buy, taker_sell
@@ -247,7 +257,6 @@ def main():
         # Step 3: Find closest strikes for Trade Tape (with Spot Fallback)
         spot_price = to_float(chain_rows[0].get("spot_price"))
         
-        # FALLBACK: If options ticker doesn't have spot price, fetch it from perpetuals
         if not spot_price:
             print("Options ticker missing spot_price. Fetching from perpetuals...")
             perp_tickers = get_tickers({"contract_types": "perpetual_futures", "underlying_asset_symbols": UNDERLYING})
@@ -272,12 +281,11 @@ def main():
         for ticker in chain_rows:
             product_id = to_int(ticker.get("product_id") or ticker.get("id"))
             
-            # Fetch trades ONLY if it's one of the closest strikes
             taker_buy, taker_sell = None, None
             if product_id in closest_ids:
                 print(f"Fetching trades for product {product_id}...")
                 taker_buy, taker_sell = fetch_taker_flow(product_id)
-                time.sleep(0.1) # Small delay to prevent rate limits
+                time.sleep(0.1)
 
             row, error = build_snapshot_row(ticker, snapshot_id, collected_at, selected_expiry, taker_buy, taker_sell)
             if error: mapping_errors.append(f"{ticker.get('symbol', 'UNKNOWN')}: {error}")
