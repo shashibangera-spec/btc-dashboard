@@ -14,7 +14,7 @@ from futures_positioning import FuturesPositioning, valid_metric_value
 st.set_page_config(page_title="BTC Combined Research", layout="wide")
 
 st.title("🔬 BTC Combined Research Terminal")
-st.caption("AMT Engine (v1.0) + Futures Positioning (v1.1)")
+st.caption("AMT Engine (v1.0) + Futures Positioning (v1.1) + Options Forensics")
 
 # ==========================================
 # 1. AMT DATA FETCHING & CALCULATIONS
@@ -85,7 +85,7 @@ def calculate_tpo(session_df):
     return (base_bucket + up) * row_size + row_size/2, (base_bucket + dn) * row_size + row_size/2, (base_bucket + poc_idx) * row_size + row_size/2
 
 # ==========================================
-# 2. SUPABASE DATA FETCHING (Coder's Logic)
+# 2. SUPABASE DATA FETCHING
 # ==========================================
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -134,6 +134,72 @@ def fetch_supabase_aggregate_oi():
         delta_pct = (delta_usd / previous["oi"]) * 100.0
 
         return {"current_oi_usd": latest["oi"], "previous_oi_usd": previous["oi"], "delta_usd": delta_usd, "delta_pct": delta_pct, "status": "OK"}
+    except Exception as exc:
+        return {**empty_result, "status": f"ERROR: {exc}"}
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_options_forensics():
+    empty_result = {"latest_time": None, "baseline_time": None, "status": "DATA_UNAVAILABLE", "df": pd.DataFrame()}
+    
+    try:
+        supabase_url = st.secrets["SUPABASE_URL"]
+        supabase_key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+        client = create_client(supabase_url, supabase_key)
+
+        # 1. Get all SUCCESS runs
+        runs = client.table("options_collection_runs").select("snapshot_id, started_at").eq("status", "SUCCESS").order("started_at", desc=True).limit(10).execute().data
+        if not runs: return {**empty_result, "status": "NO_SUCCESSFUL_RUNS"}
+
+        latest_run = runs[0]
+        latest_snapshot_id = latest_run["snapshot_id"]
+        latest_time = pd.to_datetime(latest_run["started_at"], utc=True)
+
+        # 2. Find the baseline run (strictly 25-35 mins old)
+        baseline_run = None
+        for run in runs[1:]:
+            r_time = pd.to_datetime(run["started_at"], utc=True)
+            age_mins = (latest_time - r_time).total_seconds() / 60.0
+            if 25 <= age_mins <= 35:
+                baseline_run = run
+                break
+        
+        baseline_snapshot_id = baseline_run["snapshot_id"] if baseline_run else None
+        baseline_time = pd.to_datetime(baseline_run["started_at"], utc=True) if baseline_run else None
+
+        # 3. Fetch latest data
+        latest_data = client.table("options_oi_snapshots").select("product_id, expiry_date, strike_price, option_type, oi_contracts, oi_value_usd, mark_iv, spot_price").eq("snapshot_id", latest_snapshot_id).execute().data
+        if not latest_data: return {**empty_result, "status": "NO_CONTRACTS_IN_LATEST_RUN"}
+        
+        df_latest = pd.DataFrame(latest_data)
+
+        # 4. Fetch baseline data if available
+        df_baseline = pd.DataFrame()
+        if baseline_snapshot_id:
+            baseline_data = client.table("options_oi_snapshots").select("product_id, oi_contracts").eq("snapshot_id", baseline_snapshot_id).execute().data
+            if baseline_data: df_baseline = pd.DataFrame(baseline_data)
+
+        # 5. Merge and Calculate
+        df_merged = df_latest.copy()
+        
+        if not df_baseline.empty:
+            df_baseline = df_baseline.rename(columns={"oi_contracts": "prev_oi_contracts"})
+            df_merged = pd.merge(df_latest, df_baseline, on="product_id", how="left")
+            df_merged["oi_change"] = df_merged["oi_contracts"] - df_merged["prev_oi_contracts"]
+            status = "OK"
+        else:
+            df_merged["oi_change"] = np.nan
+            status = "PENDING_BASELINE"
+
+        # Format for display
+        df_merged["Mark IV (%)"] = df_merged["mark_iv"] * 100
+        df_merged = df_merged.sort_values(["strike_price", "option_type"])
+
+        return {
+            "latest_time": latest_time.strftime("%H:%M UTC"),
+            "baseline_time": baseline_time.strftime("%H:%M UTC") if baseline_time else None,
+            "status": status,
+            "df": df_merged
+        }
     except Exception as exc:
         return {**empty_result, "status": f"ERROR: {exc}"}
 
@@ -200,11 +266,11 @@ with st.spinner("Fetching Futures Positioning Data..."):
         fut_engine = get_futures_engine()
         fut_snapshot = fut_engine.collect()
     except Exception as e:
-        st.error(f"Failed to fetch Futures data: {e}")
         fut_snapshot = None
 
-# --- SUPABASE DELTA ---
+# --- SUPABASE FETCHES ---
 supabase_oi = fetch_supabase_aggregate_oi()
+opt_forensics = fetch_options_forensics()
 
 # ==========================================
 # 4. RENDER UI
@@ -238,13 +304,11 @@ if fut_snapshot:
 
     f1, f2, f3, f4 = st.columns(4)
     
-    # Supabase Aggregate OI
     if supabase_oi["current_oi_usd"] is not None:
         f1.metric("Aggregate OI (Supabase)", f"${supabase_oi['current_oi_usd']/1e9:.2f}B", f"Coverage: {cov['label']}")
     else:
         f1.metric("Aggregate OI (Live)", f"${agg['oi_usd']/1e9:.2f}B" if agg["oi_usd"] else "N/A", f"Coverage: {cov['label']}")
 
-    # Supabase 30m Delta
     if supabase_oi["status"] == "OK":
         f2.metric("30m OI Delta", f"{supabase_oi['delta_pct']:+.2f}%", f"${supabase_oi['delta_usd']:+,.0f}")
     else:
@@ -277,6 +341,49 @@ if fut_snapshot:
         st.dataframe(pd.DataFrame(ex_data), use_container_width=True, hide_index=True)
 else:
     st.warning("Futures positioning data is currently unavailable.")
+
+st.markdown("---")
+
+# LAYER 3: OPTIONS FORENSICS
+st.subheader("🔬 Layer 3: Options Forensics")
+
+st.caption(f"Latest Snapshot: {opt_forensics['latest_time'] or 'N/A'} | Baseline Snapshot: {opt_forensics['baseline_time'] or 'Pending 30m window'}")
+
+if opt_forensics["status"] == "OK":
+    st.success("Valid 30-minute baseline found. Showing OI migration.")
+elif opt_forensics["status"] == "PENDING_BASELINE":
+    st.warning("PENDING / NO VALID 30M BASELINE. Showing latest snapshot only. OI change will populate once a 25-35 minute baseline is available.")
+else:
+    st.error(f"Options Forensics Error: {opt_forensics['status']}")
+
+if not opt_forensics["df"].empty:
+    df_display = opt_forensics["df"]
+    
+    # Split into Calls and Puts for side-by-side display
+    calls = df_display[df_display["option_type"] == "CALL"][["strike_price", "oi_contracts", "oi_value_usd", "Mark IV (%)", "oi_change"]].rename(
+        columns={"oi_contracts": "Call OI", "oi_value_usd": "Call OI USD", "oi_change": "Call OI Change"}
+    )
+    puts = df_display[df_display["option_type"] == "PUT"][["strike_price", "oi_contracts", "oi_value_usd", "Mark IV (%)", "oi_change"]].rename(
+        columns={"oi_contracts": "Put OI", "oi_value_usd": "Put OI USD", "Mark IV (%)": "Put IV (%)", "oi_change": "Put OI Change"}
+    )
+
+    # Merge on strike
+    merged_display = pd.merge(calls, puts, on="strike_price", how="outer").sort_values("strike_price")
+    
+    # Format columns
+    st.dataframe(merged_display, use_container_width=True, hide_index=True, column_config={
+        "strike_price": st.column_config.NumberColumn("Strike", format="$%.0f"),
+        "Call OI": st.column_config.NumberColumn("Call OI", format="%.0f"),
+        "Call OI USD": st.column_config.NumberColumn("Call OI USD", format="$%.0f"),
+        "Mark IV (%)": st.column_config.NumberColumn("Call IV", format="%.2f%%"),
+        "Call OI Change": st.column_config.NumberColumn("Call Δ OI", format="%+.0f"),
+        "Put OI": st.column_config.NumberColumn("Put OI", format="%.0f"),
+        "Put OI USD": st.column_config.NumberColumn("Put OI USD", format="$%.0f"),
+        "Put IV (%)": st.column_config.NumberColumn("Put IV", format="%.2f%%"),
+        "Put OI Change": st.column_config.NumberColumn("Put Δ OI", format="%+.0f"),
+    })
+else:
+    st.info("No option chain data available for the latest snapshot.")
 
 st.markdown("""
 <script>
