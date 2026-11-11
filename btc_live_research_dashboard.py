@@ -51,17 +51,20 @@ def fetch_supabase_aggregate_oi():
         if latest["oi"] is None or not np.isfinite(latest["oi"]) or latest["oi"] <= 0:
             return {**empty_result, "status": "LATEST_AGGREGATE_OI_UNAVAILABLE"}
 
-        target_time = latest["time"] - pd.Timedelta(minutes=30)
+        # AUDIT FIX #4: Strict 25-35 Minute Baseline Validation
         previous_candidates = [item for item in parsed_rows if item["time"] < latest["time"] and item["oi"] is not None]
-
         if not previous_candidates:
             return {**empty_result, "current_oi_usd": latest["oi"], "status": "PENDING_BASELINE"}
 
+        # Find the closest candidate to exactly 30 mins ago
+        target_time = latest["time"] - pd.Timedelta(minutes=30)
         previous = min(previous_candidates, key=lambda item: abs((item["time"] - target_time).total_seconds()))
-        offset_seconds = abs((previous["time"] - target_time).total_seconds())
-
-        if offset_seconds > 600:
-            return {**empty_result, "current_oi_usd": latest["oi"], "status": "NO_30M_MATCH_WITHIN_10M"}
+        
+        # Calculate exact minute gap
+        diff_minutes = abs((latest["time"] - previous["time"]).total_seconds()) / 60.0
+        
+        if diff_minutes < 25.0 or diff_minutes > 35.0:
+            return {**empty_result, "current_oi_usd": latest["oi"], "status": f"INVALID_BASELINE_GAP_{diff_minutes:.1f}M"}
 
         if latest["contributors"] != previous["contributors"]:
             return {**empty_result, "current_oi_usd": latest["oi"], "status": "COVERAGE_MISMATCH"}
@@ -74,7 +77,6 @@ def fetch_supabase_aggregate_oi():
         return {**empty_result, "status": f"ERROR: {exc}"}
 
 def process_options_snapshot(client, snapshot_id):
-    # Added taker_buy_volume and taker_sell_volume
     chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).execute()
     if not chain.data: return None
     
@@ -92,8 +94,6 @@ def process_options_snapshot(client, snapshot_id):
     merged = pd.merge(pivot_oi, pivot_iv, on='strike_price', how='outer')
     merged = pd.merge(merged, pivot_vol, on='strike_price', how='outer')
     
-    # We don't pivot taker volumes per strike for now, we just sum them up overall
-    # But we will attach them to the dataframe for the Filter 5 logic
     if 'taker_buy_volume' in df.columns:
         taker_agg = df.groupby('strike_price')[['taker_buy_volume', 'taker_sell_volume']].sum().reset_index()
         merged = pd.merge(merged, taker_agg, on='strike_price', how='outer')
@@ -107,22 +107,20 @@ def fetch_options_forensics():
         key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
         client = create_client(url, key)
         
-        runs = client.table("options_collection_runs").select("snapshot_id, completed_at").order("completed_at", desc=True).limit(2).execute()
+        # AUDIT FIX #1: Strictly filter for SUCCESS runs only
+        runs = client.table("options_collection_runs").select("snapshot_id, completed_at").eq("status", "SUCCESS").order("completed_at", desc=True).limit(2).execute()
         
         if not runs.data or len(runs.data) < 2:
-            res = client.table("options_oi_snapshots").select("snapshot_id, collected_at").order("collected_at", desc=True).limit(1000).execute()
-            snapshots = []
-            seen = set()
-            for row in res.data or []:
-                if row["snapshot_id"] not in seen:
-                    snapshots.append({"snapshot_id": row["snapshot_id"], "completed_at": row["collected_at"]})
-                    seen.add(row["snapshot_id"])
-                    if len(snapshots) >= 2: break
+            # If we don't have at least two SUCCESSFUL runs, we can't calculate migration
+            # Fallback to just getting the single latest successful run
+            latest_run = client.table("options_collection_runs").select("snapshot_id, completed_at").eq("status", "SUCCESS").order("completed_at", desc=True).limit(1).execute()
+            if latest_run.data:
+                snapshots = latest_run.data
+            else:
+                return None
         else:
             snapshots = runs.data
             
-        if not snapshots: return None
-        
         latest_snapshot = snapshots[0]
         previous_snapshot = snapshots[1] if len(snapshots) > 1 else None
         
@@ -207,14 +205,22 @@ def analyze_volume_vs_oi(df, current_price):
 
 def analyze_oi_migration(current_df, previous_df):
     if current_df is None or previous_df is None or current_df.empty or previous_df.empty: return None
+    
+    # AUDIT FIX #5: Crash protection for idxmax() if data is missing
+    if current_df['Call OI'].dropna().empty or current_df['Put OI'].dropna().empty: return None
+    if previous_df['Call OI'].dropna().empty or previous_df['Put OI'].dropna().empty: return None
+        
     peak_call_current = current_df.loc[current_df['Call OI'].idxmax()]['strike_price']
     peak_put_current = current_df.loc[current_df['Put OI'].idxmax()]['strike_price']
     peak_call_previous = previous_df.loc[previous_df['Call OI'].idxmax()]['strike_price']
     peak_put_previous = previous_df.loc[previous_df['Put OI'].idxmax()]['strike_price']
+    
     call_shift = peak_call_current - peak_call_previous
     put_shift = peak_put_current - peak_put_previous
+    
     status = "STABLE"
     interpretation = "Peak OI strikes have not moved significantly."
+    
     if call_shift > 0 and put_shift > 0:
         status = "BULLISH_MIGRATION"
         interpretation = f"Both Call and Put walls moved HIGHER. Sentiment is shifting Bullish."
@@ -227,16 +233,13 @@ def analyze_oi_migration(current_df, previous_df):
     return {"call_shift": call_shift, "put_shift": put_shift, "status": status, "interpretation": interpretation}
 
 def analyze_aggressor_trades(df, current_price):
-    """FILTER 5: Analyzes Taker Buy vs Taker Sell volume"""
     closest = get_nearest_strikes(df, current_price, count=5)
     if closest.empty or 'taker_buy_volume' not in closest.columns: return None
     
     total_taker_buy = closest['taker_buy_volume'].sum()
     total_taker_sell = closest['taker_sell_volume'].sum()
     
-    # If both are zero or null, data is missing
-    if (pd.isna(total_taker_buy) or total_taker_buy == 0) and (pd.isna(total_taker_sell) or total_taker_sell == 0):
-        return None
+    if pd.isna(total_taker_buy) and pd.isna(total_taker_sell): return None
         
     total_taker_buy = total_taker_buy if not pd.isna(total_taker_buy) else 0
     total_taker_sell = total_taker_sell if not pd.isna(total_taker_sell) else 0
@@ -331,6 +334,8 @@ if fut_snapshot:
 
     if supabase_oi["status"] == "OK":
         f2.metric("30m OI Delta", f"{supabase_oi['delta_pct']:+.2f}%", f"${supabase_oi['delta_usd']:+,.0f}")
+    elif "INVALID_BASELINE_GAP" in supabase_oi["status"]:
+        f2.metric("30m OI Delta", "REJECTED", "Baseline not 25-35m", delta_color="inverse")
     elif supabase_oi["status"] == "COVERAGE_MISMATCH":
         f2.metric("30m OI Delta", "UNAVAILABLE", "Coverage changed", delta_color="off")
     else:
@@ -391,7 +396,7 @@ if opt_forensics and "data" in opt_forensics:
         elif migration_analysis['status'] == "BEARISH_MIGRATION": st.error(f"**BEARISH MIGRATION:** {migration_analysis['interpretation']}")
         elif migration_analysis['status'] == "MILD_BULLISH": st.info(f"**MILD BULLISH MIGRATION:** {migration_analysis['interpretation']}")
         else: st.info(f"**STABLE MIGRATION:** {migration_analysis['interpretation']}")
-    else: st.warning("**PENDING:** Waiting for a second historical snapshot to calculate migration.")
+    else: st.warning("**PENDING:** Waiting for a second historical successful snapshot to calculate migration.")
 
     # --- FILTER 5 ---
     aggressor_analysis = analyze_aggressor_trades(opt_df, current_price)
