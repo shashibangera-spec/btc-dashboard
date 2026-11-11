@@ -73,6 +73,26 @@ def fetch_supabase_aggregate_oi():
     except Exception as exc:
         return {**empty_result, "status": f"ERROR: {exc}"}
 
+def process_options_snapshot(client, snapshot_id):
+    """Helper to fetch and pivot a single options snapshot"""
+    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, mark_iv, volume_24h").eq("snapshot_id", snapshot_id).execute()
+    if not chain.data: return None
+    
+    df = pd.DataFrame(chain.data)
+    if df.empty: return None
+    
+    pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
+    pivot_iv = df.pivot_table(index='strike_price', columns='option_type', values='mark_iv', aggfunc='mean').reset_index()
+    pivot_vol = df.pivot_table(index='strike_price', columns='option_type', values='volume_24h', aggfunc='sum').reset_index()
+    
+    pivot_oi.rename(columns={'CALL': 'Call OI', 'PUT': 'Put OI'}, inplace=True)
+    pivot_iv.rename(columns={'CALL': 'Call IV', 'PUT': 'Put IV'}, inplace=True)
+    pivot_vol.rename(columns={'CALL': 'Call Vol', 'PUT': 'Put Vol'}, inplace=True)
+    
+    merged = pd.merge(pivot_oi, pivot_iv, on='strike_price', how='outer')
+    merged = pd.merge(merged, pivot_vol, on='strike_price', how='outer')
+    return merged.sort_values('strike_price')
+
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_options_forensics():
     try:
@@ -80,32 +100,30 @@ def fetch_options_forensics():
         key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
         client = create_client(url, key)
         
-        res = client.table("options_oi_snapshots").select("snapshot_id, collected_at").order("collected_at", desc=True).limit(1).execute()
+        # Get the latest 5 unique snapshots
+        res = client.table("options_oi_snapshots").select("snapshot_id, collected_at").order("collected_at", desc=True).limit(50).execute()
         if not res.data: return None
         
-        latest_snapshot = res.data[0]
-        snapshot_id = latest_snapshot["snapshot_id"]
+        # Find the latest and previous snapshots
+        snapshots = []
+        seen_ids = set()
+        for row in res.data:
+            if row["snapshot_id"] not in seen_ids:
+                snapshots.append(row)
+                seen_ids.add(row["snapshot_id"])
+                
+        latest_snapshot = snapshots[0]
+        previous_snapshot = snapshots[1] if len(snapshots) > 1 else None
         
-        # Added volume_24h to the query for Filter 3
-        chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, mark_iv, volume_24h").eq("snapshot_id", snapshot_id).execute()
-        if not chain.data: return None
+        current_df = process_options_snapshot(client, latest_snapshot["snapshot_id"])
+        previous_df = process_options_snapshot(client, previous_snapshot["snapshot_id"]) if previous_snapshot else None
         
-        df = pd.DataFrame(chain.data)
-        if df.empty: return None
-        
-        pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
-        pivot_iv = df.pivot_table(index='strike_price', columns='option_type', values='mark_iv', aggfunc='mean').reset_index()
-        pivot_vol = df.pivot_table(index='strike_price', columns='option_type', values='volume_24h', aggfunc='sum').reset_index()
-        
-        pivot_oi.rename(columns={'CALL': 'Call OI', 'PUT': 'Put OI'}, inplace=True)
-        pivot_iv.rename(columns={'CALL': 'Call IV', 'PUT': 'Put IV'}, inplace=True)
-        pivot_vol.rename(columns={'CALL': 'Call Vol', 'PUT': 'Put Vol'}, inplace=True)
-        
-        merged = pd.merge(pivot_oi, pivot_iv, on='strike_price', how='outer')
-        merged = pd.merge(merged, pivot_vol, on='strike_price', how='outer')
-        merged = merged.sort_values('strike_price')
-        
-        return {"timestamp": latest_snapshot["collected_at"], "data": merged}
+        return {
+            "timestamp": latest_snapshot["collected_at"], 
+            "previous_timestamp": previous_snapshot["collected_at"] if previous_snapshot else None,
+            "data": current_df,
+            "previous_data": previous_df
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -163,7 +181,6 @@ def analyze_iv_skew(df, current_price):
     return {"avg_call_iv": avg_call_iv, "avg_put_iv": avg_put_iv, "skew_pct": skew_pct, "status": status, "interpretation": interpretation}
 
 def analyze_volume_vs_oi(df, current_price):
-    """FILTER 3: Compares traded Volume vs Held OI to detect 'Fresh Money'"""
     closest = get_nearest_strikes(df, current_price, count=5)
     if closest.empty: return None
     
@@ -180,25 +197,47 @@ def analyze_volume_vs_oi(df, current_price):
     status = "STALE_POSITIONING"
     interpretation = "Volume is low relative to OI. Existing positions are being held, but no significant new money is entering."
     
-    # If Volume is > 50% of total OI, it's high activity
     if call_ratio > 0.5 or put_ratio > 0.5:
         status = "FRESH_MONEY_ENTERING"
         interpretation = "High Volume relative to OI detected. Traders are actively opening new positions today."
         
-    # Determine direction
     direction = "NEUTRAL"
     if call_ratio > (put_ratio * 1.5):
         direction = "BULLISH_ACTIVITY"
     elif put_ratio > (call_ratio * 1.5):
         direction = "BEARISH_ACTIVITY"
         
-    return {
-        "call_ratio": call_ratio,
-        "put_ratio": put_ratio,
-        "status": status,
-        "direction": direction,
-        "interpretation": interpretation
-    }
+    return {"call_ratio": call_ratio, "put_ratio": put_ratio, "status": status, "direction": direction, "interpretation": interpretation}
+
+def analyze_oi_migration(current_df, previous_df):
+    """FILTER 4: Compares Peak Call/Put OI strikes between current and previous snapshots"""
+    if current_df is None or previous_df is None or current_df.empty or previous_df.empty:
+        return None
+        
+    # Find the strike with the highest OI for Calls and Puts
+    peak_call_current = current_df.loc[current_df['Call OI'].idxmax()]['strike_price']
+    peak_put_current = current_df.loc[current_df['Put OI'].idxmax()]['strike_price']
+    
+    peak_call_previous = previous_df.loc[previous_df['Call OI'].idxmax()]['strike_price']
+    peak_put_previous = previous_df.loc[previous_df['Put OI'].idxmax()]['strike_price']
+    
+    call_shift = peak_call_current - peak_call_previous
+    put_shift = peak_put_current - peak_put_previous
+    
+    status = "STABLE"
+    interpretation = "Peak OI strikes have not moved significantly."
+    
+    if call_shift > 0 and put_shift > 0:
+        status = "BULLISH_MIGRATION"
+        interpretation = f"Both Call and Put walls moved HIGHER. Sentiment is shifting Bullish. (Calls: ${peak_call_previous}->${peak_call_current}, Puts: ${peak_put_previous}->${peak_put_current})"
+    elif call_shift < 0 and put_shift < 0:
+        status = "BEARISH_MIGRATION"
+        interpretation = f"Both Call and Put walls moved LOWER. Sentiment is shifting Bearish. (Calls: ${peak_call_previous}->${peak_call_current}, Puts: ${peak_put_previous}->${peak_put_current})"
+    elif call_shift > 0 and put_shift <= 0:
+        status = "MILD_BULLISH"
+        interpretation = f"Call wall moved higher while Put wall stayed/lowered. (Calls: ${peak_call_previous}->${peak_call_current}, Puts: ${peak_put_previous}->${peak_put_current})"
+        
+    return {"call_shift": call_shift, "put_shift": put_shift, "status": status, "interpretation": interpretation}
 
 # --- DATA FETCHING ---
 with st.spinner("Fetching Binance data..."):
@@ -293,6 +332,7 @@ if opt_forensics and "data" in opt_forensics:
     st.caption(f"Latest Snapshot: {opt_forensics['timestamp']}")
     
     opt_df = opt_forensics["data"]
+    prev_opt_df = opt_forensics.get("previous_data")
     
     # --- FILTER 1 ---
     walls = analyze_neighboring_strikes(opt_df, current_price)
@@ -338,6 +378,21 @@ if opt_forensics and "data" in opt_forensics:
                 st.info(f"**FRESH MONEY: NEUTRAL** - {vol_analysis['interpretation']}")
         else:
             st.info(f"**STALE POSITIONING:** {vol_analysis['interpretation']}")
+
+    # --- FILTER 4 ---
+    migration_analysis = analyze_oi_migration(opt_df, prev_opt_df)
+    st.markdown("#### 🚚 Filter 4: OI Migration (Sentiment Shift)")
+    if migration_analysis:
+        if migration_analysis['status'] == "BULLISH_MIGRATION":
+            st.success(f"**BULLISH MIGRATION:** {migration_analysis['interpretation']}")
+        elif migration_analysis['status'] == "BEARISH_MIGRATION":
+            st.error(f"**BEARISH MIGRATION:** {migration_analysis['interpretation']}")
+        elif migration_analysis['status'] == "MILD_BULLISH":
+            st.info(f"**MILD BULLISH MIGRATION:** {migration_analysis['interpretation']}")
+        else:
+            st.info(f"**STABLE MIGRATION:** {migration_analysis['interpretation']}")
+    else:
+        st.warning("**PENDING:** Waiting for a second historical snapshot to calculate migration.")
 
     st.markdown("#### Raw Options Chain (Closest 10 Strikes)")
     closest_df = get_nearest_strikes(opt_df, current_price, count=10)
