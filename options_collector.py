@@ -130,9 +130,12 @@ def fetch_taker_flow(product_id):
     for t in trades:
         size = to_float(t.get("size"))
         if size is None: continue
-        if t.get("buyer_role") == "taker": taker_buy += size
-        if t.get("seller_role") == "taker": taker_sell += size
-        
+        # Check both standard roles and taker_side formats
+        if t.get("buyer_role") == "taker" or t.get("taker_side") == "buy": 
+            taker_buy += size
+        elif t.get("seller_role") == "taker" or t.get("taker_side") == "sell": 
+            taker_sell += size
+            
     return taker_buy, taker_sell
 
 # ---------------------------------------------------------
@@ -241,17 +244,25 @@ def main():
 
         if received == 0: raise RuntimeError("Zero contracts returned for selected expiry.")
 
-        # Step 3: Find closest strikes for Trade Tape
-        # We only fetch trades for the top 10 strikes closest to the current spot price to save API calls
+        # Step 3: Find closest strikes for Trade Tape (with Spot Fallback)
         spot_price = to_float(chain_rows[0].get("spot_price"))
+        
+        # FALLBACK: If options ticker doesn't have spot price, fetch it from perpetuals
+        if not spot_price:
+            print("Options ticker missing spot_price. Fetching from perpetuals...")
+            perp_tickers = get_tickers({"contract_types": "perpetual_futures", "underlying_asset_symbols": UNDERLYING})
+            if perp_tickers:
+                spot_price = to_float(perp_tickers[0].get("spot_price"))
+                
         if spot_price:
+            print(f"Using Spot Price: {spot_price}")
             for t in chain_rows:
                 t["_distance"] = abs(to_float(t.get("strike_price") or 0) - spot_price)
             closest_strikes = sorted(chain_rows, key=lambda x: x["_distance"])[:10]
             closest_ids = {t.get("product_id") or t.get("id") for t in closest_strikes}
         else:
             closest_ids = set()
-            print("Warning: No spot price found, skipping trade tape.")
+            print("Warning: No spot price found anywhere, skipping trade tape.")
 
         # Step 4: Map and fetch trades
         collected_at = iso_utc(utc_now())
