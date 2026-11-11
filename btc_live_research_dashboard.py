@@ -86,7 +86,6 @@ def fetch_options_forensics():
         latest_snapshot = res.data[0]
         snapshot_id = latest_snapshot["snapshot_id"]
         
-        # We add volume_24h to the query for Filter 3 later
         chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, mark_iv, volume_24h").eq("snapshot_id", snapshot_id).execute()
         if not chain.data: return None
         
@@ -109,37 +108,64 @@ def fetch_options_forensics():
 def get_cached_binance_data():
     return fetch_binance_data()
 
-# --- OPTIONS CLASSIFIER: FILTER 1 (NEIGHBORING STRIKES) ---
+# --- OPTIONS CLASSIFIERS ---
+def get_nearest_strikes(df, current_price, count=5):
+    """Helper to get the strikes closest to the current price"""
+    if df is None or df.empty: return pd.DataFrame()
+    df_copy = df.copy()
+    df_copy['distance'] = abs(df_copy['strike_price'] - current_price)
+    return df_copy.nsmallest(count, 'distance').sort_values('strike_price')
+
 def analyze_neighboring_strikes(df, current_price):
-    """
-    Scans for OI walls near the current price. 
-    A wall is defined as a strike with > 1.5x the average OI of its immediate neighbors.
-    """
-    if df is None or df.empty: return None
-    
-    # Find the 5 closest strikes to current price
-    df['distance'] = abs(df['strike_price'] - current_price)
-    closest_strikes = df.nsmallest(5, 'distance').sort_values('strike_price')
-    
+    closest = get_nearest_strikes(df, current_price, count=5)
+    if closest.empty: return None
     walls = []
-    
-    # Check Call OI walls
-    if 'Call OI' in closest_strikes.columns:
-        call_ois = closest_strikes['Call OI'].fillna(0).tolist()
+    if 'Call OI' in closest.columns:
+        call_ois = closest['Call OI'].fillna(0).tolist()
         for i in range(1, len(call_ois) - 1):
             neighbor_avg = (call_ois[i-1] + call_ois[i+1]) / 2
-            if call_ois[i] > (neighbor_avg * 1.5) and call_ois[i] > 500: # Must be > 150% of neighbors and > 500 contracts
-                walls.append({"strike": closest_strikes.iloc[i]['strike_price'], "type": "CALL", "oi": call_ois[i]})
-
-    # Check Put OI walls
-    if 'Put OI' in closest_strikes.columns:
-        put_ois = closest_strikes['Put OI'].fillna(0).tolist()
+            if call_ois[i] > (neighbor_avg * 1.5) and call_ois[i] > 500:
+                walls.append({"strike": closest.iloc[i]['strike_price'], "type": "CALL", "oi": call_ois[i]})
+    if 'Put OI' in closest.columns:
+        put_ois = closest['Put OI'].fillna(0).tolist()
         for i in range(1, len(put_ois) - 1):
             neighbor_avg = (put_ois[i-1] + put_ois[i+1]) / 2
             if put_ois[i] > (neighbor_avg * 1.5) and put_ois[i] > 500:
-                walls.append({"strike": closest_strikes.iloc[i]['strike_price'], "type": "PUT", "oi": put_ois[i]})
-                
+                walls.append({"strike": closest.iloc[i]['strike_price'], "type": "PUT", "oi": put_ois[i]})
     return walls
+
+def analyze_iv_skew(df, current_price):
+    """FILTER 2: Compares Call IV vs Put IV on the nearest strikes"""
+    closest = get_nearest_strikes(df, current_price, count=5)
+    if closest.empty: return None
+    
+    avg_call_iv = closest['Call IV'].mean()
+    avg_put_iv = closest['Put IV'].mean()
+    
+    if pd.isna(avg_call_iv) or pd.isna(avg_put_iv): return None
+    
+    skew = avg_call_iv - avg_put_iv
+    skew_pct = (skew / avg_put_iv) * 100
+    
+    status = "NEUTRAL"
+    interpretation = "Volatility is balanced. Market is pricing a neutral outcome."
+    
+    # If Call IV is more than 5% higher than Put IV
+    if skew_pct > 5.0:
+        status = "BULLISH_URGENCY"
+        interpretation = "Call IV is significantly higher than Put IV. Traders are paying a premium for upside."
+    # If Put IV is more than 5% higher than Call IV
+    elif skew_pct < -5.0:
+        status = "BEARISH_URGENCY"
+        interpretation = "Put IV is significantly higher than Call IV. Traders are paying a premium for downside protection."
+
+    return {
+        "avg_call_iv": avg_call_iv,
+        "avg_put_iv": avg_put_iv,
+        "skew_pct": skew_pct,
+        "status": status,
+        "interpretation": interpretation
+    }
 
 # --- DATA FETCHING ---
 with st.spinner("Fetching Binance data..."):
@@ -233,20 +259,40 @@ st.subheader("🔍 Layer 3: Options Forensics (Delta India)")
 if opt_forensics and "data" in opt_forensics:
     st.caption(f"Latest Snapshot: {opt_forensics['timestamp']}")
     
-    # --- FILTER 1: NEIGHBORING STRIKES ---
     opt_df = opt_forensics["data"]
-    walls = analyze_neighboring_strikes(opt_df, current_price)
     
-    st.markdown("#### 🧱 Filter 1: Neighboring Strike Analysis")
+    # --- FILTER 1 ---
+    walls = analyze_neighboring_strikes(opt_df, current_price)
+    st.markdown("#### 🧱 Filter 1: Neighboring Strike Analysis (OI Walls)")
     if walls:
         for wall in walls:
             st.warning(f"**{wall['type']} WALL DETECTED at ${wall['strike']:,.0f}** (OI: {wall['oi']:,.0f})")
     else:
-        st.success("**Unclassified Concentration:** No distinct OI walls found near current price. OI is evenly distributed across neighboring strikes.")
+        st.success("**Unclassified Concentration:** No distinct OI walls found near current price.")
 
-    st.markdown("#### Raw Options Chain")
+    # --- FILTER 2 ---
+    iv_analysis = analyze_iv_skew(opt_df, current_price)
+    st.markdown("#### 🌪️ Filter 2: Implied Volatility Skew (Urgency)")
+    if iv_analysis:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Avg Call IV (Nearby)", f"{iv_analysis['avg_call_iv']*100:.2f}%")
+        c2.metric("Avg Put IV (Nearby)", f"{iv_analysis['avg_put_iv']*100:.2f}%")
+        
+        # Use delta_color to color the skew
+        delta_color = "normal" if iv_analysis['skew_pct'] > 0 else "inverse"
+        c3.metric("IV Skew (Call - Put)", f"{iv_analysis['skew_pct']:+.2f}%", delta_color=delta_color)
+        
+        if iv_analysis['status'] == "BULLISH_URGENCY":
+            st.error(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
+        elif iv_analysis['status'] == "BEARISH_URGENCY":
+            st.warning(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
+        else:
+            st.info(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
+
+    st.markdown("#### Raw Options Chain (Closest 10 Strikes)")
+    closest_df = get_nearest_strikes(opt_df, current_price, count=10)
     st.dataframe(
-        opt_df.drop(columns=['distance'], errors='ignore'), 
+        closest_df.drop(columns=['distance'], errors='ignore'), 
         use_container_width=True, 
         hide_index=True,
         column_config={
