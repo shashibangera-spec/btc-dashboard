@@ -86,6 +86,7 @@ def fetch_options_forensics():
         latest_snapshot = res.data[0]
         snapshot_id = latest_snapshot["snapshot_id"]
         
+        # Added volume_24h to the query for Filter 3
         chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, mark_iv, volume_24h").eq("snapshot_id", snapshot_id).execute()
         if not chain.data: return None
         
@@ -94,11 +95,15 @@ def fetch_options_forensics():
         
         pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
         pivot_iv = df.pivot_table(index='strike_price', columns='option_type', values='mark_iv', aggfunc='mean').reset_index()
+        pivot_vol = df.pivot_table(index='strike_price', columns='option_type', values='volume_24h', aggfunc='sum').reset_index()
         
         pivot_oi.rename(columns={'CALL': 'Call OI', 'PUT': 'Put OI'}, inplace=True)
         pivot_iv.rename(columns={'CALL': 'Call IV', 'PUT': 'Put IV'}, inplace=True)
+        pivot_vol.rename(columns={'CALL': 'Call Vol', 'PUT': 'Put Vol'}, inplace=True)
         
-        merged = pd.merge(pivot_oi, pivot_iv, on='strike_price', how='outer').sort_values('strike_price')
+        merged = pd.merge(pivot_oi, pivot_iv, on='strike_price', how='outer')
+        merged = pd.merge(merged, pivot_vol, on='strike_price', how='outer')
+        merged = merged.sort_values('strike_price')
         
         return {"timestamp": latest_snapshot["collected_at"], "data": merged}
     except Exception as e:
@@ -110,7 +115,6 @@ def get_cached_binance_data():
 
 # --- OPTIONS CLASSIFIERS ---
 def get_nearest_strikes(df, current_price, count=5):
-    """Helper to get the strikes closest to the current price"""
     if df is None or df.empty: return pd.DataFrame()
     df_copy = df.copy()
     df_copy['distance'] = abs(df_copy['strike_price'] - current_price)
@@ -135,7 +139,6 @@ def analyze_neighboring_strikes(df, current_price):
     return walls
 
 def analyze_iv_skew(df, current_price):
-    """FILTER 2: Compares Call IV vs Put IV on the nearest strikes"""
     closest = get_nearest_strikes(df, current_price, count=5)
     if closest.empty: return None
     
@@ -150,20 +153,50 @@ def analyze_iv_skew(df, current_price):
     status = "NEUTRAL"
     interpretation = "Volatility is balanced. Market is pricing a neutral outcome."
     
-    # If Call IV is more than 5% higher than Put IV
     if skew_pct > 5.0:
         status = "BULLISH_URGENCY"
         interpretation = "Call IV is significantly higher than Put IV. Traders are paying a premium for upside."
-    # If Put IV is more than 5% higher than Call IV
     elif skew_pct < -5.0:
         status = "BEARISH_URGENCY"
         interpretation = "Put IV is significantly higher than Call IV. Traders are paying a premium for downside protection."
 
+    return {"avg_call_iv": avg_call_iv, "avg_put_iv": avg_put_iv, "skew_pct": skew_pct, "status": status, "interpretation": interpretation}
+
+def analyze_volume_vs_oi(df, current_price):
+    """FILTER 3: Compares traded Volume vs Held OI to detect 'Fresh Money'"""
+    closest = get_nearest_strikes(df, current_price, count=5)
+    if closest.empty: return None
+    
+    total_call_vol = closest['Call Vol'].sum()
+    total_call_oi = closest['Call OI'].sum()
+    total_put_vol = closest['Put Vol'].sum()
+    total_put_oi = closest['Put OI'].sum()
+    
+    if total_call_oi == 0 or total_put_oi == 0: return None
+    
+    call_ratio = total_call_vol / total_call_oi
+    put_ratio = total_put_vol / total_put_oi
+    
+    status = "STALE_POSITIONING"
+    interpretation = "Volume is low relative to OI. Existing positions are being held, but no significant new money is entering."
+    
+    # If Volume is > 50% of total OI, it's high activity
+    if call_ratio > 0.5 or put_ratio > 0.5:
+        status = "FRESH_MONEY_ENTERING"
+        interpretation = "High Volume relative to OI detected. Traders are actively opening new positions today."
+        
+    # Determine direction
+    direction = "NEUTRAL"
+    if call_ratio > (put_ratio * 1.5):
+        direction = "BULLISH_ACTIVITY"
+    elif put_ratio > (call_ratio * 1.5):
+        direction = "BEARISH_ACTIVITY"
+        
     return {
-        "avg_call_iv": avg_call_iv,
-        "avg_put_iv": avg_put_iv,
-        "skew_pct": skew_pct,
+        "call_ratio": call_ratio,
+        "put_ratio": put_ratio,
         "status": status,
+        "direction": direction,
         "interpretation": interpretation
     }
 
@@ -278,7 +311,6 @@ if opt_forensics and "data" in opt_forensics:
         c1.metric("Avg Call IV (Nearby)", f"{iv_analysis['avg_call_iv']*100:.2f}%")
         c2.metric("Avg Put IV (Nearby)", f"{iv_analysis['avg_put_iv']*100:.2f}%")
         
-        # Use delta_color to color the skew
         delta_color = "normal" if iv_analysis['skew_pct'] > 0 else "inverse"
         c3.metric("IV Skew (Call - Put)", f"{iv_analysis['skew_pct']:+.2f}%", delta_color=delta_color)
         
@@ -288,6 +320,24 @@ if opt_forensics and "data" in opt_forensics:
             st.warning(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
         else:
             st.info(f"**{iv_analysis['status']}:** {iv_analysis['interpretation']}")
+
+    # --- FILTER 3 ---
+    vol_analysis = analyze_volume_vs_oi(opt_df, current_price)
+    st.markdown("#### 🐋 Filter 3: Volume vs OI (Fresh Money Detector)")
+    if vol_analysis:
+        v1, v2 = st.columns(2)
+        v1.metric("Call Vol/OI Ratio", f"{vol_analysis['call_ratio']:.2f}x")
+        v2.metric("Put Vol/OI Ratio", f"{vol_analysis['put_ratio']:.2f}x")
+        
+        if vol_analysis['status'] == "FRESH_MONEY_ENTERING":
+            if vol_analysis['direction'] == "BULLISH_ACTIVITY":
+                st.success(f"**FRESH MONEY: BULLISH** - {vol_analysis['interpretation']}")
+            elif vol_analysis['direction'] == "BEARISH_ACTIVITY":
+                st.error(f"**FRESH MONEY: BEARISH** - {vol_analysis['interpretation']}")
+            else:
+                st.info(f"**FRESH MONEY: NEUTRAL** - {vol_analysis['interpretation']}")
+        else:
+            st.info(f"**STALE POSITIONING:** {vol_analysis['interpretation']}")
 
     st.markdown("#### Raw Options Chain (Closest 10 Strikes)")
     closest_df = get_nearest_strikes(opt_df, current_price, count=10)
@@ -299,6 +349,8 @@ if opt_forensics and "data" in opt_forensics:
             "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
             "Call OI": st.column_config.NumberColumn("Call OI", format="%d"),
             "Put OI": st.column_config.NumberColumn("Put OI", format="%d"),
+            "Call Vol": st.column_config.NumberColumn("Call Vol", format="%d"),
+            "Put Vol": st.column_config.NumberColumn("Put Vol", format="%d"),
             "Call IV": st.column_config.NumberColumn("Call IV", format="%.4f"),
             "Put IV": st.column_config.NumberColumn("Put IV", format="%.4f"),
         }
