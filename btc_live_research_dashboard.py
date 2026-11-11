@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import requests
 import datetime
+import json
 from datetime import timezone
 from supabase import create_client
 from amt_core import fetch_binance_data, calculate_tpo
@@ -76,12 +77,49 @@ def fetch_supabase_aggregate_oi():
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_options_forensics():
-    # (Keep the options fetcher from the previous code here - it is correct)
-    # ... For brevity, assume the options fetcher is identical to before ...
-    pass # (Replace this with your existing options fetch logic)
+    # Queries the latest options snapshot from Delta Options Collector
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+        client = create_client(url, key)
+        
+        # Get the latest snapshot_id
+        res = client.table("options_oi_snapshots").select("snapshot_id, collected_at").order("collected_at", desc=True).limit(1).execute()
+        if not res.data: return None
+        
+        latest_snapshot = res.data[0]
+        snapshot_id = latest_snapshot["snapshot_id"]
+        
+        # Get all strikes for this snapshot
+        chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, mark_iv").eq("snapshot_id", snapshot_id).execute()
+        if not chain.data: return None
+        
+        df = pd.DataFrame(chain.data)
+        if df.empty: return None
+        
+        # Pivot to get Call/Put side by side
+        pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
+        pivot_iv = df.pivot_table(index='strike_price', columns='option_type', values='mark_iv', aggfunc='mean').reset_index()
+        
+        # Rename columns for clarity
+        pivot_oi.rename(columns={'CALL': 'Call OI', 'PUT': 'Put OI'}, inplace=True)
+        pivot_iv.rename(columns={'CALL': 'Call IV', 'PUT': 'Put IV'}, inplace=True)
+        
+        # Merge
+        merged = pd.merge(pivot_oi, pivot_iv, on='strike_price', how='outer').sort_values('strike_price')
+        
+        return {"timestamp": latest_snapshot["collected_at"], "data": merged}
+    except Exception as e:
+        return {"error": str(e)}
+
+@st.cache_data(ttl=60)
+def get_cached_binance_data():
+    return fetch_binance_data()
 
 # --- DATA FETCHING ---
-df = fetch_binance_data()
+with st.spinner("Fetching Binance data..."):
+    df = get_cached_binance_data()
+
 now_utc = datetime.datetime.now(timezone.utc)
 df['is_live'] = df['close_time'] > int(now_utc.timestamp() * 1000)
 completed_df = df[~df['is_live']].copy()
@@ -102,7 +140,6 @@ if pd.isna(vah):
     st.stop()
 
 # --- AMT ENGINE (Shadow Mode via Supabase) ---
-# We read the latest state directly from Supabase instead of calculating it live.
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_amt_shadow_state():
     try:
@@ -129,7 +166,7 @@ with st.spinner("Fetching Futures Positioning Data..."):
         fut_snapshot = None
 
 supabase_oi = fetch_supabase_aggregate_oi()
-# opt_forensics = fetch_options_forensics() # Uncomment when defined
+opt_forensics = fetch_options_forensics()
 
 # --- RENDER UI ---
 col1, col2, col3, col4 = st.columns(4)
@@ -169,3 +206,27 @@ if fut_snapshot:
 
     f3.metric("Weighted Basis", f"{agg['basis_pct_oi_weighted']:+.4f}%" if agg['basis_pct_oi_weighted'] else "N/A")
     f4.metric("Weighted Funding", f"{agg['funding_rate_oi_weighted']:+.4f}%" if agg['funding_rate_oi_weighted'] else "N/A")
+else:
+    st.warning("Futures data currently unavailable.")
+
+st.markdown("---")
+st.subheader("🔍 Layer 3: Options Forensics (Delta India)")
+
+if opt_forensics and "data" in opt_forensics:
+    st.caption(f"Latest Snapshot: {opt_forensics['timestamp']}")
+    st.dataframe(
+        opt_forensics["data"], 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
+            "Call OI": st.column_config.NumberColumn("Call OI"),
+            "Put OI": st.column_config.NumberColumn("Put OI"),
+            "Call IV": st.column_config.NumberColumn("Call IV", format="%.4f"),
+            "Put IV": st.column_config.NumberColumn("Put IV", format="%.4f"),
+        }
+    )
+elif opt_forensics and "error" in opt_forensics:
+    st.error(f"Error loading options data: {opt_forensics['error']}")
+else:
+    st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
