@@ -70,15 +70,19 @@ def safe_float(value):
         return None
 
 class DataFetchError(Exception):
-    def __init__(self, category, message, url=None):
+    def __init__(self, category, message, url=None, status_code=None, response_body=None):
         super().__init__(message)
         self.category = category
         self.message = str(message)
         self.url = url
+        self.status_code = status_code
+        self.response_body = response_body
 
     def as_dict(self):
         result = {"category": self.category, "message": self.message}
         if self.url: result["url"] = self.url
+        if self.status_code: result["status_code"] = self.status_code
+        if self.response_body: result["response_body"] = self.response_body
         return result
 
 def classify_exception(exc):
@@ -110,16 +114,34 @@ def request_json(url, params=None):
                 status = response.status
                 body = response.read().decode("utf-8")
             if status < 200 or status >= 300:
-                raise DataFetchError("HTTP_ERROR", "HTTP status {}".format(status), url)
+                raise DataFetchError("HTTP_ERROR", "HTTP status {}".format(status), url, status_code=status)
+            
             try:
                 payload = json.loads(body)
             except json.JSONDecodeError as exc:
-                raise DataFetchError("INVALID_RESPONSE", "Invalid JSON: {}".format(exc), url)
+                raise DataFetchError("INVALID_RESPONSE", "Invalid JSON: {}".format(exc), url, response_body=body[:200])
+            
             return {"payload": payload, "fetched_at": epoch_now(), "fetched_at_utc": iso_utc(), "url": url}
+            
+        except urllib.error.HTTPError as exc:
+            try:
+                body_snippet = exc.read().decode("utf-8")[:200]
+            except Exception:
+                body_snippet = "Could not read body"
+            
+            last_error = DataFetchError(
+                "HTTP_ERROR", 
+                f"HTTP status {exc.code}: {exc.reason}", 
+                url, 
+                status_code=exc.code,
+                response_body=body_snippet
+            )
+            
         except DataFetchError as exc:
             last_error = exc
         except Exception as exc:
             last_error = DataFetchError(classify_exception(exc), str(exc), url)
+            
         if attempt < REQUEST_RETRIES: time.sleep(RETRY_DELAY_SECONDS)
     raise last_error
 
