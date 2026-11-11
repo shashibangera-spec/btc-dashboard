@@ -99,10 +99,8 @@ def fetch_options_forensics():
         key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
         client = create_client(url, key)
         
-        # FIX: Query the runs table to get exactly 2 distinct snapshots
         runs = client.table("options_collection_runs").select("snapshot_id, completed_at").order("completed_at", desc=True).limit(2).execute()
         
-        # Fallback if runs table isn't populated yet
         if not runs.data or len(runs.data) < 2:
             res = client.table("options_oi_snapshots").select("snapshot_id, collected_at").order("collected_at", desc=True).limit(1000).execute()
             snapshots = []
@@ -396,6 +394,10 @@ if opt_forensics and "data" in opt_forensics:
             st.info(f"**STABLE MIGRATION:** {migration_analysis['interpretation']}")
     else:
         st.warning("**PENDING:** Waiting for a second historical snapshot to calculate migration.")
+
+    # --- FILTER 5 ---
+    st.markdown("#### ⚔️ Filter 5: Aggressor Trades (Directional Taker Flow)")
+    st.info("**PENDING:** Awaiting Trade Tape Collector. We need to upgrade `options_collector.py` to fetch the `/v2/trades` endpoint to analyze Taker Buy/Sell flow.")
 
     st.markdown("#### Raw Options Chain (Closest 10 Strikes)")
     closest_df = get_nearest_strikes(opt_df, current_price, count=10)
