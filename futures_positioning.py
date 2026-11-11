@@ -1,6 +1,6 @@
 """
 futures_positioning.py
-Version: 1.1
+Version: 1.2 (Added Delta Exchange)
 Purpose: Resilient multi-exchange BTC futures positioning collector.
 """
 
@@ -16,10 +16,11 @@ import urllib.request
 from collections import deque
 from datetime import datetime, timezone
 
-VERSION = "1.1"
+VERSION = "1.2"
 SYMBOL = "BTCUSDT"
 OKX_SWAP_ID = "BTC-USDT-SWAP"
 OKX_SPOT_ID = "BTC-USDT"
+DELTA_SYMBOL = "BTCUSD"
 
 REQUEST_TIMEOUT_SECONDS = 8
 REQUEST_RETRIES = 2
@@ -29,7 +30,9 @@ MAX_DATA_AGE_SECONDS = 180
 DELTA_WINDOW_SECONDS = 30 * 60
 DELTA_MIN_AGE_SECONDS = 25 * 60
 DELTA_MAX_AGE_SECONDS = 35 * 60
-EXCHANGE_NAMES = ("BINANCE", "BYBIT", "OKX")
+
+# ADDED DELTA TO THE EXCHANGE LIST
+EXCHANGE_NAMES = ("BINANCE", "BYBIT", "OKX", "DELTA")
 
 def utc_now():
     return datetime.now(timezone.utc)
@@ -104,7 +107,7 @@ def request_json(url, params=None):
         separator = "&" if "?" in url else "?"
         url = url + separator + query
 
-    headers = {"User-Agent": "BTC-Futures-Positioning-Research/1.1", "Accept": "application/json"}
+    headers = {"User-Agent": "BTC-Futures-Positioning-Research/1.2", "Accept": "application/json"}
     last_error = None
 
     for attempt in range(REQUEST_RETRIES + 1):
@@ -389,7 +392,55 @@ def collect_okx():
         result["basis_pct"] = {"value": None, "status": "DATA_UNAVAILABLE", "formula": "((perp_last / spot_last) - 1) * 100"}
     return result
 
-COLLECTORS = {"BINANCE": collect_binance, "BYBIT": collect_bybit, "OKX": collect_okx}
+# NEW DELTA EXCHANGE COLLECTOR
+def collect_delta():
+    result = exchange_template()
+    try:
+        response = request_json("https://api.india.delta.exchange/v2/tickers", {"contract_types": "perpetual_futures"})
+        payload = response["payload"]
+        tickers = payload.get("result", [])
+        
+        btc_ticker = next((t for t in tickers if t.get("symbol") == DELTA_SYMBOL), None)
+        
+        if not btc_ticker:
+            raise DataFetchError("INVALID_RESPONSE", "Delta BTCUSD ticker not found")
+            
+        oi_usd = safe_float(btc_ticker.get("oi_value_usd"))
+        funding = safe_float(btc_ticker.get("funding_rate"))
+        spot = safe_float(btc_ticker.get("spot_price"))
+        mark = safe_float(btc_ticker.get("mark_price"))
+        
+        metric_time = response["fetched_at"]
+        
+        if oi_usd is not None and oi_usd > 0:
+            result["oi_usd"] = metric_ok(oi_usd, metric_time)
+        else:
+            error = DataFetchError("INVALID_RESPONSE", "Invalid Delta OI")
+            result["oi_usd"] = metric_failure(error)
+            result["errors"]["open_interest"] = error.as_dict()
+
+        result["funding_rate"] = metric_ok(funding, metric_time)
+        result["spot_price"] = metric_ok(spot, metric_time)
+        result["perp_price"] = metric_ok(mark, metric_time)
+        
+        if spot is not None and mark is not None and spot > 0:
+            result["basis_pct"] = {"value": ((mark / spot) - 1.0) * 100.0, "status": "OK", "formula": "((mark / spot) - 1) * 100"}
+        else:
+            result["basis_pct"] = {"value": None, "status": "DATA_UNAVAILABLE", "formula": "((mark / spot) - 1) * 100"}
+            
+    except Exception as exc:
+        error = DataFetchError(classify_exception(exc), "Delta fetch failed: {}".format(exc))
+        result["oi_usd"] = metric_failure(error)
+        result["funding_rate"] = metric_failure(error)
+        result["perp_price"] = metric_failure(error)
+        result["spot_price"] = metric_failure(error)
+        result["basis_pct"] = {"value": None, "status": "DATA_UNAVAILABLE"}
+        result["errors"]["collector"] = error.as_dict()
+
+    return result
+
+# ADDED DELTA TO COLLECTORS DICT
+COLLECTORS = {"BINANCE": collect_binance, "BYBIT": collect_bybit, "OKX": collect_okx, "DELTA": collect_delta}
 
 def collect_all_exchanges():
     exchanges = {}
@@ -455,7 +506,8 @@ def build_snapshot(exchanges):
     if coverage_count == 0: interpretation = "No valid OI."
     elif coverage_count == 1: interpretation = f"PARTIAL: {oi_contributors[0].capitalize()}-only OI."
     elif coverage_count == 2: interpretation = f"PARTIAL: {', '.join(oi_contributors)} OI."
-    else: interpretation = "THREE-EXCHANGE OBSERVATION."
+    elif coverage_count == 3: interpretation = f"PARTIAL: {', '.join(oi_contributors)} OI."
+    else: interpretation = "FOUR-EXCHANGE OBSERVATION."
 
     return {
         "collected_at": iso_utc(),
