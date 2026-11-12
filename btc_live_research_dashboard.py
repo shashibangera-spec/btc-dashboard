@@ -13,7 +13,7 @@ st.title("🔬 BTC Combined Research Terminal")
 st.caption("AMT Engine (v1.0) + Futures Positioning (v1.2) + Options Forensics")
 
 # --- SUPABASE FETCHERS ---
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_layer2_supabase_data():
     empty_result = {
         "current_oi_usd": None, "previous_oi_usd": None, "delta_usd": None, "delta_pct": None, "status": "DATA_UNAVAILABLE",
@@ -109,7 +109,7 @@ def process_options_snapshot(client, snapshot_id):
     
     return merged.sort_values('strike_price')
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_options_forensics():
     try:
         url = st.secrets["SUPABASE_URL"]
@@ -142,7 +142,7 @@ def fetch_options_forensics():
     except Exception as e:
         return {"error": str(e)}
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_nearest_valid_options_metrics():
     """Latest collector run, then nearest future expiry with a complete source chain."""
     empty = {"status": "NO_DERIVED_METRICS", "expiry_date": None, "metric_status": {}}
@@ -187,7 +187,7 @@ def fetch_nearest_valid_options_metrics():
         return {**empty, "status": f"ERROR: {exc}"}
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def get_cached_binance_data():
     return fetch_binance_data()
 
@@ -317,28 +317,9 @@ def analyze_aggressor_trades(df, current_price):
     elif total_taker_sell > (total_taker_buy * 1.3) and total_taker_sell > 10: status = "AGGRESSIVE_SELLING"
     return {"status": status, "buy_vol": total_taker_buy, "sell_vol": total_taker_sell}
 
-# --- DATA FETCHING ---
-with st.spinner("Fetching Binance data..."):
-    df = get_cached_binance_data()
-
-now_utc = datetime.datetime.now(timezone.utc)
-df['is_live'] = df['close_time'] > int(now_utc.timestamp() * 1000)
-completed_df = df[~df['is_live']].copy()
-
-today_str = completed_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-yesterday_df = completed_df[completed_df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
-
-if not yesterday_df.empty:
-    last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
-    vah, val, poc = calculate_tpo(prev_day_df)
-else:
-    vah, val, poc = np.nan, np.nan, np.nan
-
-current_price = completed_df.iloc[-1]['close']
 
 # --- AMT ENGINE ---
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_amt_shadow_state():
     try:
         url = st.secrets["SUPABASE_URL"]
@@ -349,305 +330,332 @@ def fetch_amt_shadow_state():
         return None
     except: return None
 
-shadow_state = fetch_amt_shadow_state()
-layer2_data = fetch_layer2_supabase_data()
-opt_forensics = fetch_options_forensics()
-options_metrics = fetch_nearest_valid_options_metrics()
 
-opt_df = opt_forensics["data"] if opt_forensics and "data" in opt_forensics else None
-prev_opt_df = opt_forensics.get("previous_data") if opt_forensics else None
+@st.fragment(run_every="3m")
+def render_live_dashboard():
+    # --- DATA FETCHING ---
+    with st.spinner("Fetching Binance data..."):
+        df = get_cached_binance_data()
 
-# Execute Analyzers
-walls_res = analyze_neighboring_strikes(opt_df, current_price)
-iv_analysis = analyze_iv_skew(opt_df, current_price)
-vol_analysis = analyze_volume_vs_oi(opt_df, current_price)
-migration_analysis = analyze_oi_migration(opt_df, prev_opt_df)
-aggressor_analysis = analyze_aggressor_trades(opt_df, current_price)
+    now_utc = datetime.datetime.now(timezone.utc)
+    df['is_live'] = df['close_time'] > int(now_utc.timestamp() * 1000)
+    completed_df = df[~df['is_live']].copy()
 
-# --- RENDER UI: AMT-FIRST CONFLUENCE COCKPIT ---
-st.markdown("### AMT + Price Action Lead; Derivatives Provide Context")
-st.caption("Futures and options are research measurements, not standalone directional signals.")
+    today_str = completed_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
+    yesterday_df = completed_df[completed_df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
 
-# Top cockpit: three primary readouts.
-c1, c2, c3 = st.columns(3)
-c1.metric("Current Price", f"${current_price:,.2f}")
-c2.metric("AMT State", shadow_state["confirmed_state"] if shadow_state else "N/A")
+    if not yesterday_df.empty:
+        last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
+        prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
+        vah, val, poc = calculate_tpo(prev_day_df)
+    else:
+        vah, val, poc = np.nan, np.nan, np.nan
 
-if shadow_state:
-    echo_label = shadow_state.get("project_echo_name") or shadow_state.get("project_echo_code") or "N/A"
-    st.caption(
-        f"Project Echo: {echo_label} "
-        f"({shadow_state.get('project_echo_code') or 'NO_CODE'}; "
-        f"version {shadow_state.get('project_echo_version') or 'N/A'}) | "
-        f"Developing state: {shadow_state.get('developing_state') or 'N/A'}"
-    )
-else:
-    st.caption("Project Echo: N/A — no AMT snapshot available.")
+    current_price = completed_df.iloc[-1]['close']
 
-if layer2_data["status"] == "OK" and layer2_data.get("delta_pct") is not None:
-    c3.metric(
-        "30m OI Delta",
-        f"{layer2_data['delta_pct']:+.2f}%",
-        f"${layer2_data['delta_usd']:+,.0f}",
-    )
-elif "REJECTED_BASELINE" in layer2_data["status"]:
-    c3.metric("30m OI Delta", "REJECTED", "Baseline gap outside 25–35m", delta_color="off")
-elif layer2_data["status"] == "COVERAGE_MISMATCH":
-    c3.metric("30m OI Delta", "UNAVAILABLE", "Contributor coverage changed", delta_color="off")
-else:
-    c3.metric("30m OI Delta", "N/A", layer2_data["status"], delta_color="off")
 
-st.markdown("---")
-st.subheader("Confluence Table")
-st.caption("Reference framework: read price acceptance/rejection first; use derivatives only to qualify the context.")
-confluence_rows = [
-    {
-        "AMT / Price Action": "Price accepts above prior value",
-        "Derivatives Evidence": "OI rising; funding and basis provide supporting context",
-        "Interpretation": "Positioning accompanies the auction, but does not prove direction; require continued price acceptance.",
-    },
-    {
-        "AMT / Price Action": "Price rejects at prior VAH",
-        "Derivatives Evidence": "Nearby call OI concentration and/or call IV rising",
-        "Interpretation": "Potential overhead risk; wait for price-action confirmation of rejection.",
-    },
-    {
-        "AMT / Price Action": "Price accepts below prior VAL",
-        "Derivatives Evidence": "OI rising and basis weakening",
-        "Interpretation": "Positioning accompanies the downside auction; derivatives alone do not establish a short.",
-    },
-    {
-        "AMT / Price Action": "Price returns into prior value",
-        "Derivatives Evidence": "OI declining",
-        "Interpretation": "May reflect position reduction; treat as rotation/balance unless price establishes acceptance elsewhere.",
-    },
-    {
-        "AMT / Price Action": "Balanced auction",
-        "Derivatives Evidence": "Mixed, neutral, stale, or incomplete futures/options evidence",
-        "Interpretation": "No compelling directional evidence; preserve the AMT read and wait for clearer price behaviour.",
-    },
-]
-st.dataframe(pd.DataFrame(confluence_rows), use_container_width=True, hide_index=True)
+    shadow_state = fetch_amt_shadow_state()
+    layer2_data = fetch_layer2_supabase_data()
+    opt_forensics = fetch_options_forensics()
+    options_metrics = fetch_nearest_valid_options_metrics()
 
-futures_tab, options_tab, raw_tab = st.tabs(["Futures", "Options", "Raw Data"])
+    opt_df = opt_forensics["data"] if opt_forensics and "data" in opt_forensics else None
+    prev_opt_df = opt_forensics.get("previous_data") if opt_forensics else None
 
-with futures_tab:
-    st.subheader("Futures Positioning")
-    st.caption("Aggregate OI is limited to the exchanges contributing to this snapshot; coverage is shown explicitly.")
-    f1, f2, f3, f4 = st.columns(4)
-    f1.metric(
-        "Aggregate OI",
-        f"${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data["current_oi_usd"] is not None else "N/A",
-    )
-    f2.metric(
-        "Weighted Basis",
-        f"{layer2_data['basis_pct']:+.4f}%" if layer2_data["basis_pct"] is not None else "N/A",
-    )
-    f3.metric(
-        "Weighted Funding",
-        f"{layer2_data['funding_rate']:+.4f}%" if layer2_data["funding_rate"] is not None else "N/A",
-    )
-    f4.metric("Exchange Coverage", layer2_data.get("coverage", "UNKNOWN"))
-    st.caption(f"OI delta validation status: {layer2_data['status']}")
-    if layer2_data["status"] == "OK":
-        st.write(
-            f"Validated 30m change: ${layer2_data['delta_usd']:+,.0f} "
-            f"({layer2_data['delta_pct']:+.2f}%)."
+    # Execute Analyzers
+    walls_res = analyze_neighboring_strikes(opt_df, current_price)
+    iv_analysis = analyze_iv_skew(opt_df, current_price)
+    vol_analysis = analyze_volume_vs_oi(opt_df, current_price)
+    migration_analysis = analyze_oi_migration(opt_df, prev_opt_df)
+    aggressor_analysis = analyze_aggressor_trades(opt_df, current_price)
+
+    # --- RENDER UI: AMT-FIRST CONFLUENCE COCKPIT ---
+    st.markdown("### AMT + Price Action Lead; Derivatives Provide Context")
+    st.caption("Futures and options are research measurements, not standalone directional signals.")
+
+    # Top cockpit: three primary readouts.
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Current Price", f"${current_price:,.2f}")
+    c2.metric("AMT State", shadow_state["confirmed_state"] if shadow_state else "N/A")
+
+    if shadow_state:
+        echo_label = shadow_state.get("project_echo_name") or shadow_state.get("project_echo_code") or "N/A"
+        st.caption(
+            f"Project Echo: {echo_label} "
+            f"({shadow_state.get('project_echo_code') or 'NO_CODE'}; "
+            f"version {shadow_state.get('project_echo_version') or 'N/A'}) | "
+            f"Developing state: {shadow_state.get('developing_state') or 'N/A'}"
+        )
+    else:
+        st.caption("Project Echo: N/A — no AMT snapshot available.")
+
+    if layer2_data["status"] == "OK" and layer2_data.get("delta_pct") is not None:
+        c3.metric(
+            "30m OI Delta",
+            f"{layer2_data['delta_pct']:+.2f}%",
+            f"${layer2_data['delta_usd']:+,.0f}",
         )
     elif "REJECTED_BASELINE" in layer2_data["status"]:
-        st.warning("30m OI change rejected because the comparison interval was outside the accepted 25–35 minute window.")
+        c3.metric("30m OI Delta", "REJECTED", "Baseline gap outside 25–35m", delta_color="off")
     elif layer2_data["status"] == "COVERAGE_MISMATCH":
-        st.warning("30m OI change unavailable because exchange contributor coverage changed.")
+        c3.metric("30m OI Delta", "UNAVAILABLE", "Contributor coverage changed", delta_color="off")
     else:
-        st.info("A validated 30m OI comparison is not currently available.")
-    st.caption("OI describes outstanding contracts, not which side is directionally dominant. Partial exchange coverage is not full-market OI.")
-
-with options_tab:
-    st.subheader("Options Research Panel — Nearest Valid Expiry")
-    if options_metrics and options_metrics.get("expiry_date"):
-        metric_status = options_metrics.get("metric_status") or {}
-        st.caption(
-            f"Expiry: {options_metrics.get('expiry_date')} | "
-            f"Source collected: {options_metrics.get('source_collected_at') or 'N/A'} | "
-            f"Calculated: {options_metrics.get('calculated_at') or 'N/A'} | "
-            f"Chain: {metric_status.get('chain', 'UNKNOWN')}"
-        )
-        om1, om2, om3 = st.columns(3)
-        om1.metric(
-            "Max Pain (theoretical)",
-            f"${float(options_metrics['max_pain_strike']):,.0f}"
-            if options_metrics.get("max_pain_strike") is not None else "N/A",
-        )
-        om2.metric(
-            "ATM Straddle",
-            f"${float(options_metrics['atm_straddle_price']):,.2f}"
-            if options_metrics.get("atm_straddle_price") is not None else "N/A",
-            f"{float(options_metrics['atm_straddle_pct_spot']):.2f}% of spot"
-            if options_metrics.get("atm_straddle_pct_spot") is not None else None,
-        )
-        om3.metric(
-            "Local OI PCR (±10%)",
-            f"{float(options_metrics['local_oi_pcr']):.3f}"
-            if options_metrics.get("local_oi_pcr") is not None else "N/A",
-        )
-        om4, om5, om6, om7 = st.columns(4)
-        om4.metric(
-            "Gross Call GEX Concentration",
-            f"${float(options_metrics['call_gex_wall_strike']):,.0f}"
-            if options_metrics.get("call_gex_wall_strike") is not None else "N/A",
-        )
-        om5.metric(
-            "Call GEX (model-derived)",
-            f"${float(options_metrics['call_gex_wall_value']):,.2f}"
-            if options_metrics.get("call_gex_wall_value") is not None else "N/A",
-        )
-        om6.metric(
-            "Gross Put GEX Concentration",
-            f"${float(options_metrics['put_gex_wall_strike']):,.0f}"
-            if options_metrics.get("put_gex_wall_strike") is not None else "N/A",
-        )
-        om7.metric(
-            "Put GEX (model-derived)",
-            f"${float(options_metrics['put_gex_wall_value']):,.2f}"
-            if options_metrics.get("put_gex_wall_value") is not None else "N/A",
-        )
-        st.caption(
-            "GEX is model-derived using a 0.001 BTC-per-contract multiplier and standard API gamma. "
-            "Gross unsigned OI concentration only; this does not identify dealer positioning or net gamma."
-        )
-        st.caption(
-            f"ATM strike: ${float(options_metrics['atm_strike']):,.0f}"
-            if options_metrics.get("atm_strike") is not None else "ATM strike: N/A"
-        )
-        st.caption(
-            "Metric quality: " + " | ".join(
-                f"{key}: {value}" for key, value in metric_status.items()
-            )
-        )
-    else:
-        st.info(
-            "No complete-chain derived options snapshot is available for an active expiry. "
-            f"Status: {options_metrics.get('status', 'N/A') if options_metrics else 'N/A'}"
-        )
+        c3.metric("30m OI Delta", "N/A", layer2_data["status"], delta_color="off")
 
     st.markdown("---")
-    st.subheader("Options Positioning — Five Existing Research Filters")
-    if opt_forensics and "data" in opt_forensics:
-        st.caption(f"Latest successful snapshot: {opt_forensics['timestamp']}")
-        
-        # Each filter is deliberately summarized in one sentence; raw measurements remain in Raw Data.
-        if walls_res and walls_res.get("status") == "OK":
-            walls = walls_res.get("walls", [])
-            if walls:
-                wall_text = "; ".join(
-                    f"{wall['type']} local concentration at ${wall['strike']:,.0f} (OI {wall['oi']:,.0f})"
-                    for wall in walls
+    st.subheader("Confluence Table")
+    st.caption("Reference framework: read price acceptance/rejection first; use derivatives only to qualify the context.")
+    confluence_rows = [
+        {
+            "AMT / Price Action": "Price accepts above prior value",
+            "Derivatives Evidence": "OI rising; funding and basis provide supporting context",
+            "Interpretation": "Positioning accompanies the auction, but does not prove direction; require continued price acceptance.",
+        },
+        {
+            "AMT / Price Action": "Price rejects at prior VAH",
+            "Derivatives Evidence": "Nearby call OI concentration and/or call IV rising",
+            "Interpretation": "Potential overhead risk; wait for price-action confirmation of rejection.",
+        },
+        {
+            "AMT / Price Action": "Price accepts below prior VAL",
+            "Derivatives Evidence": "OI rising and basis weakening",
+            "Interpretation": "Positioning accompanies the downside auction; derivatives alone do not establish a short.",
+        },
+        {
+            "AMT / Price Action": "Price returns into prior value",
+            "Derivatives Evidence": "OI declining",
+            "Interpretation": "May reflect position reduction; treat as rotation/balance unless price establishes acceptance elsewhere.",
+        },
+        {
+            "AMT / Price Action": "Balanced auction",
+            "Derivatives Evidence": "Mixed, neutral, stale, or incomplete futures/options evidence",
+            "Interpretation": "No compelling directional evidence; preserve the AMT read and wait for clearer price behaviour.",
+        },
+    ]
+    st.dataframe(pd.DataFrame(confluence_rows), use_container_width=True, hide_index=True)
+
+    futures_tab, options_tab, raw_tab = st.tabs(["Futures", "Options", "Raw Data"])
+
+    with futures_tab:
+        st.subheader("Futures Positioning")
+        st.caption("Aggregate OI is limited to the exchanges contributing to this snapshot; coverage is shown explicitly.")
+        f1, f2, f3, f4 = st.columns(4)
+        f1.metric(
+            "Aggregate OI",
+            f"${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data["current_oi_usd"] is not None else "N/A",
+        )
+        f2.metric(
+            "Weighted Basis",
+            f"{layer2_data['basis_pct']:+.4f}%" if layer2_data["basis_pct"] is not None else "N/A",
+        )
+        f3.metric(
+            "Weighted Funding",
+            f"{layer2_data['funding_rate']:+.4f}%" if layer2_data["funding_rate"] is not None else "N/A",
+        )
+        f4.metric("Exchange Coverage", layer2_data.get("coverage", "UNKNOWN"))
+        st.caption(f"OI delta validation status: {layer2_data['status']}")
+        if layer2_data["status"] == "OK":
+            st.write(
+                f"Validated 30m change: ${layer2_data['delta_usd']:+,.0f} "
+                f"({layer2_data['delta_pct']:+.2f}%)."
+            )
+        elif "REJECTED_BASELINE" in layer2_data["status"]:
+            st.warning("30m OI change rejected because the comparison interval was outside the accepted 25–35 minute window.")
+        elif layer2_data["status"] == "COVERAGE_MISMATCH":
+            st.warning("30m OI change unavailable because exchange contributor coverage changed.")
+        else:
+            st.info("A validated 30m OI comparison is not currently available.")
+        st.caption("OI describes outstanding contracts, not which side is directionally dominant. Partial exchange coverage is not full-market OI.")
+
+    with options_tab:
+        st.subheader("Options Research Panel — Nearest Valid Expiry")
+        if options_metrics and options_metrics.get("expiry_date"):
+            metric_status = options_metrics.get("metric_status") or {}
+            st.caption(
+                f"Expiry: {options_metrics.get('expiry_date')} | "
+                f"Source collected: {options_metrics.get('source_collected_at') or 'N/A'} | "
+                f"Calculated: {options_metrics.get('calculated_at') or 'N/A'} | "
+                f"Chain: {metric_status.get('chain', 'UNKNOWN')}"
+            )
+            om1, om2, om3 = st.columns(3)
+            om1.metric(
+                "Max Pain (theoretical)",
+                f"${float(options_metrics['max_pain_strike']):,.0f}"
+                if options_metrics.get("max_pain_strike") is not None else "N/A",
+            )
+            om2.metric(
+                "ATM Straddle",
+                f"${float(options_metrics['atm_straddle_price']):,.2f}"
+                if options_metrics.get("atm_straddle_price") is not None else "N/A",
+                f"{float(options_metrics['atm_straddle_pct_spot']):.2f}% of spot"
+                if options_metrics.get("atm_straddle_pct_spot") is not None else None,
+            )
+            om3.metric(
+                "Local OI PCR (±10%)",
+                f"{float(options_metrics['local_oi_pcr']):.3f}"
+                if options_metrics.get("local_oi_pcr") is not None else "N/A",
+            )
+            om4, om5, om6, om7 = st.columns(4)
+            om4.metric(
+                "Gross Call GEX Concentration",
+                f"${float(options_metrics['call_gex_wall_strike']):,.0f}"
+                if options_metrics.get("call_gex_wall_strike") is not None else "N/A",
+            )
+            om5.metric(
+                "Call GEX (model-derived)",
+                f"${float(options_metrics['call_gex_wall_value']):,.2f}"
+                if options_metrics.get("call_gex_wall_value") is not None else "N/A",
+            )
+            om6.metric(
+                "Gross Put GEX Concentration",
+                f"${float(options_metrics['put_gex_wall_strike']):,.0f}"
+                if options_metrics.get("put_gex_wall_strike") is not None else "N/A",
+            )
+            om7.metric(
+                "Put GEX (model-derived)",
+                f"${float(options_metrics['put_gex_wall_value']):,.2f}"
+                if options_metrics.get("put_gex_wall_value") is not None else "N/A",
+            )
+            st.caption(
+                "GEX is model-derived using a 0.001 BTC-per-contract multiplier and standard API gamma. "
+                "Gross unsigned OI concentration only; this does not identify dealer positioning or net gamma."
+            )
+            st.caption(
+                f"ATM strike: ${float(options_metrics['atm_strike']):,.0f}"
+                if options_metrics.get("atm_strike") is not None else "ATM strike: N/A"
+            )
+            st.caption(
+                "Metric quality: " + " | ".join(
+                    f"{key}: {value}" for key, value in metric_status.items()
                 )
-                st.write(f"**1. Nearby OI concentration:** {wall_text}; this is a local five-strike comparison, not proof of a price barrier.")
+            )
+        else:
+            st.info(
+                "No complete-chain derived options snapshot is available for an active expiry. "
+                f"Status: {options_metrics.get('status', 'N/A') if options_metrics else 'N/A'}"
+            )
+
+        st.markdown("---")
+        st.subheader("Options Positioning — Five Existing Research Filters")
+        if opt_forensics and "data" in opt_forensics:
+            st.caption(f"Latest successful snapshot: {opt_forensics['timestamp']}")
+            
+            # Each filter is deliberately summarized in one sentence; raw measurements remain in Raw Data.
+            if walls_res and walls_res.get("status") == "OK":
+                walls = walls_res.get("walls", [])
+                if walls:
+                    wall_text = "; ".join(
+                        f"{wall['type']} local concentration at ${wall['strike']:,.0f} (OI {wall['oi']:,.0f})"
+                        for wall in walls
+                    )
+                    st.write(f"**1. Nearby OI concentration:** {wall_text}; this is a local five-strike comparison, not proof of a price barrier.")
+                else:
+                    st.write("**1. Nearby OI concentration:** No distinct local OI concentration was detected among the five nearest strikes.")
             else:
-                st.write("**1. Nearby OI concentration:** No distinct local OI concentration was detected among the five nearest strikes.")
-        else:
-            st.write("**1. Nearby OI concentration:** Unavailable or insufficient data to assess the five nearest strikes.")
+                st.write("**1. Nearby OI concentration:** Unavailable or insufficient data to assess the five nearest strikes.")
 
-        if iv_analysis and iv_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-            st.write(
-                f"**2. Implied-volatility skew:** Nearby average call IV is {iv_analysis['avg_call_iv']*100:.2f}% "
-                f"versus put IV {iv_analysis['avg_put_iv']*100:.2f}% (relative skew {iv_analysis['skew_pct']:+.2f}%, "
-                f"{iv_analysis['status']}); this five-strike average is a rough context measure, not delta-matched skew."
+            if iv_analysis and iv_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+                st.write(
+                    f"**2. Implied-volatility skew:** Nearby average call IV is {iv_analysis['avg_call_iv']*100:.2f}% "
+                    f"versus put IV {iv_analysis['avg_put_iv']*100:.2f}% (relative skew {iv_analysis['skew_pct']:+.2f}%, "
+                    f"{iv_analysis['status']}); this five-strike average is a rough context measure, not delta-matched skew."
+                )
+            else:
+                st.write("**2. Implied-volatility skew:** Unavailable or insufficient IV data.")
+
+            if vol_analysis and vol_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+                st.write(
+                    f"**3. Options Turnover Relative to Open Interest:** Call volume/OI is {vol_analysis['call_ratio']:.3f}x "
+                    f"and put volume/OI is {vol_analysis['put_ratio']:.3f}x ({vol_analysis['status']}); volume does not distinguish opening from closing trades."
+                )
+            else:
+                st.write("**3. Options Turnover Relative to Open Interest:** Unavailable or insufficient volume/OI data.")
+
+            if migration_analysis and migration_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+                st.write(
+                    f"**4. OI peak-strike migration:** Call peak shifted {migration_analysis['call_shift']:+,.0f} "
+                    f"and put peak shifted {migration_analysis['put_shift']:+,.0f} ({migration_analysis['status']}); "
+                    f"this compares only the maximum-OI strikes, not the full strike distribution."
+                )
+            elif migration_analysis and migration_analysis.get("status") == "INSUFFICIENT_DATA":
+                st.write("**4. OI peak-strike migration:** Waiting for a second successful snapshot with usable OI on both sides.")
+            else:
+                st.write("**4. OI peak-strike migration:** Unavailable because the current or previous snapshot is missing required data.")
+
+            if aggressor_analysis and aggressor_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+                st.write(
+                    f"**5. Taker activity (raw):** Combined nearby taker buys are {aggressor_analysis['buy_vol']:,.0f} "
+                    f"versus sells {aggressor_analysis['sell_vol']:,.0f} ({aggressor_analysis['status']}); "
+                    f"calls and puts are combined, so this is not a validated BTC-direction signal."
+                )
+            else:
+                st.write("**5. Taker activity (raw):** Unavailable or insufficient taker-volume data.")
+        elif opt_forensics and "error" in opt_forensics:
+            st.error(f"Error loading options data: {opt_forensics['error']}")
+        else:
+            st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
+
+    with raw_tab:
+        st.subheader("Raw Options Chain — 10 Nearest Strikes")
+        if opt_forensics and "data" in opt_forensics:
+            closest_df = get_nearest_strikes(opt_df, current_price, count=10)
+            st.dataframe(
+                closest_df.drop(columns=["distance"], errors="ignore"),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
+                    "Call OI": st.column_config.NumberColumn("Call OI", format="%d"),
+                    "Put OI": st.column_config.NumberColumn("Put OI", format="%d"),
+                    "Call Vol": st.column_config.NumberColumn("Call Vol", format="%d"),
+                    "Put Vol": st.column_config.NumberColumn("Put Vol", format="%d"),
+                    "Call IV": st.column_config.NumberColumn("Call IV", format="%.4f"),
+                    "Put IV": st.column_config.NumberColumn("Put IV", format="%.4f"),
+                },
             )
+        elif opt_forensics and "error" in opt_forensics:
+            st.error(f"Error loading options data: {opt_forensics['error']}")
         else:
-            st.write("**2. Implied-volatility skew:** Unavailable or insufficient IV data.")
+            st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
 
-        if vol_analysis and vol_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-            st.write(
-                f"**3. Options Turnover Relative to Open Interest:** Call volume/OI is {vol_analysis['call_ratio']:.3f}x "
-                f"and put volume/OI is {vol_analysis['put_ratio']:.3f}x ({vol_analysis['status']}); volume does not distinguish opening from closing trades."
+        st.markdown("---")
+        with st.expander("📋 Copy/Paste Text Report for AI Support"):
+            st.write("Click the copy icon in the top right of the box below to copy this for support.")
+
+            report_lines = []
+            report_lines.append("--- BTC TERMINAL REPORT ---")
+            report_lines.append(f"Time (UTC): {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
+            report_lines.append(f"Price: ${current_price:,.2f}")
+            report_lines.append(f"AMT State: {shadow_state['confirmed_state'] if shadow_state else 'N/A'}")
+            report_lines.append(
+                f"Project Echo: {shadow_state.get('project_echo_code', 'N/A')} / "
+                f"{shadow_state.get('project_echo_name', 'N/A')}" if shadow_state else "Project Echo: N/A"
             )
-        else:
-            st.write("**3. Options Turnover Relative to Open Interest:** Unavailable or insufficient volume/OI data.")
+            report_lines.append(f"Coverage: {layer2_data['coverage']}")
 
-        if migration_analysis and migration_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-            st.write(
-                f"**4. OI peak-strike migration:** Call peak shifted {migration_analysis['call_shift']:+,.0f} "
-                f"and put peak shifted {migration_analysis['put_shift']:+,.0f} ({migration_analysis['status']}); "
-                f"this compares only the maximum-OI strikes, not the full strike distribution."
-            )
-        elif migration_analysis and migration_analysis.get("status") == "INSUFFICIENT_DATA":
-            st.write("**4. OI peak-strike migration:** Waiting for a second successful snapshot with usable OI on both sides.")
-        else:
-            st.write("**4. OI peak-strike migration:** Unavailable because the current or previous snapshot is missing required data.")
+            report_lines.append("\n--- LAYER 2 (FUTURES) ---")
+            report_lines.append(f"OI: ${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data["current_oi_usd"] else "OI: N/A")
+            report_lines.append(f"30m Delta: {layer2_data['status']} {layer2_data.get('delta_pct', '')}")
+            report_lines.append(f"Basis: {layer2_data['basis_pct']}")
+            report_lines.append(f"Funding: {layer2_data['funding_rate']}")
 
-        if aggressor_analysis and aggressor_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-            st.write(
-                f"**5. Taker activity (raw):** Combined nearby taker buys are {aggressor_analysis['buy_vol']:,.0f} "
-                f"versus sells {aggressor_analysis['sell_vol']:,.0f} ({aggressor_analysis['status']}); "
-                f"calls and puts are combined, so this is not a validated BTC-direction signal."
-            )
-        else:
-            st.write("**5. Taker activity (raw):** Unavailable or insufficient taker-volume data.")
-    elif opt_forensics and "error" in opt_forensics:
-        st.error(f"Error loading options data: {opt_forensics['error']}")
-    else:
-        st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
+            report_lines.append("\n--- LAYER 3 (OPTIONS) ---")
+            report_lines.append(f"Walls: {walls_res}")
+            report_lines.append(f"IV Skew: {iv_analysis}")
+            report_lines.append(f"Options Turnover Relative to Open Interest: {vol_analysis}")
+            report_lines.append(f"Migration: {migration_analysis}")
+            report_lines.append(f"Aggressor Flow: {aggressor_analysis}")
+            report_lines.append("\\n--- OPTIONS DERIVED METRICS ---")
+            report_lines.append(f"Expiry: {options_metrics.get('expiry_date') if options_metrics else 'N/A'}")
+            report_lines.append(f"Max Pain: {options_metrics.get('max_pain_strike') if options_metrics else None}")
+            report_lines.append(f"ATM Straddle: {options_metrics.get('atm_straddle_price') if options_metrics else None}")
+            report_lines.append(f"Local OI PCR: {options_metrics.get('local_oi_pcr') if options_metrics else None}")
+            report_lines.append(f"Gross Call GEX: {options_metrics.get('call_gex_wall_strike') if options_metrics else None}")
+            report_lines.append(f"Gross Put GEX: {options_metrics.get('put_gex_wall_strike') if options_metrics else None}")
+            report_lines.append(f"Metric Status: {options_metrics.get('metric_status') if options_metrics else None}")
 
-with raw_tab:
-    st.subheader("Raw Options Chain — 10 Nearest Strikes")
-    if opt_forensics and "data" in opt_forensics:
-        closest_df = get_nearest_strikes(opt_df, current_price, count=10)
-        st.dataframe(
-            closest_df.drop(columns=["distance"], errors="ignore"),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
-                "Call OI": st.column_config.NumberColumn("Call OI", format="%d"),
-                "Put OI": st.column_config.NumberColumn("Put OI", format="%d"),
-                "Call Vol": st.column_config.NumberColumn("Call Vol", format="%d"),
-                "Put Vol": st.column_config.NumberColumn("Put Vol", format="%d"),
-                "Call IV": st.column_config.NumberColumn("Call IV", format="%.4f"),
-                "Put IV": st.column_config.NumberColumn("Put IV", format="%.4f"),
-            },
-        )
-    elif opt_forensics and "error" in opt_forensics:
-        st.error(f"Error loading options data: {opt_forensics['error']}")
-    else:
-        st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
+            final_report = "\n".join(report_lines)
+            st.code(final_report, language="text")
 
-    st.markdown("---")
-    with st.expander("📋 Copy/Paste Text Report for AI Support"):
-        st.write("Click the copy icon in the top right of the box below to copy this for support.")
 
-        report_lines = []
-        report_lines.append("--- BTC TERMINAL REPORT ---")
-        report_lines.append(f"Time (UTC): {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
-        report_lines.append(f"Price: ${current_price:,.2f}")
-        report_lines.append(f"AMT State: {shadow_state['confirmed_state'] if shadow_state else 'N/A'}")
-        report_lines.append(
-            f"Project Echo: {shadow_state.get('project_echo_code', 'N/A')} / "
-            f"{shadow_state.get('project_echo_name', 'N/A')}" if shadow_state else "Project Echo: N/A"
-        )
-        report_lines.append(f"Coverage: {layer2_data['coverage']}")
-
-        report_lines.append("\n--- LAYER 2 (FUTURES) ---")
-        report_lines.append(f"OI: ${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data["current_oi_usd"] else "OI: N/A")
-        report_lines.append(f"30m Delta: {layer2_data['status']} {layer2_data.get('delta_pct', '')}")
-        report_lines.append(f"Basis: {layer2_data['basis_pct']}")
-        report_lines.append(f"Funding: {layer2_data['funding_rate']}")
-
-        report_lines.append("\n--- LAYER 3 (OPTIONS) ---")
-        report_lines.append(f"Walls: {walls_res}")
-        report_lines.append(f"IV Skew: {iv_analysis}")
-        report_lines.append(f"Options Turnover Relative to Open Interest: {vol_analysis}")
-        report_lines.append(f"Migration: {migration_analysis}")
-        report_lines.append(f"Aggressor Flow: {aggressor_analysis}")
-        report_lines.append("\\n--- OPTIONS DERIVED METRICS ---")
-        report_lines.append(f"Expiry: {options_metrics.get('expiry_date') if options_metrics else 'N/A'}")
-        report_lines.append(f"Max Pain: {options_metrics.get('max_pain_strike') if options_metrics else None}")
-        report_lines.append(f"ATM Straddle: {options_metrics.get('atm_straddle_price') if options_metrics else None}")
-        report_lines.append(f"Local OI PCR: {options_metrics.get('local_oi_pcr') if options_metrics else None}")
-        report_lines.append(f"Gross Call GEX: {options_metrics.get('call_gex_wall_strike') if options_metrics else None}")
-        report_lines.append(f"Gross Put GEX: {options_metrics.get('put_gex_wall_strike') if options_metrics else None}")
-        report_lines.append(f"Metric Status: {options_metrics.get('metric_status') if options_metrics else None}")
-
-        final_report = "\n".join(report_lines)
-        st.code(final_report, language="text")
+render_live_dashboard()
