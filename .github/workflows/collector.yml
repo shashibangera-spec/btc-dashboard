@@ -1,9 +1,6 @@
 name: BTC Futures OI Collector
 
 on:
-  schedule:
-    # Runs twice every hour at minute 7 and minute 37 (UTC).
-    - cron: '7,37 * * * *'
   workflow_dispatch:
 
 permissions:
