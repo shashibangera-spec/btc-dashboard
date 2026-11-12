@@ -651,8 +651,10 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     if walls_res and walls_res.get("status") == "OK":
                         nearby_walls = walls_res.get("walls", [])
                         if nearby_walls:
-                            wall_strikes = ", ".join(f"${float(w['strike']):,.0f}" for w in nearby_walls)
-                            st.metric("Detected strike", f"🟢 {wall_strikes}")
+                            wall_strikes = list(dict.fromkeys(
+                                f"${float(w['strike']):,.0f}" for w in nearby_walls
+                            ))
+                            st.metric("Detected strike", f"🟢 {' / '.join(wall_strikes)}")
                             st.caption("Local concentration detected; not a guaranteed barrier.")
                         else:
                             st.metric("Detected strike", "🔴 None")
