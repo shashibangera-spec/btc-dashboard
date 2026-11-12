@@ -48,7 +48,7 @@ def get_persistent_state():
         "alert_history": [],
         "options_flow_history": [],
         "wall_status_log": [],
-        "inverted_gamma_history": [], # Keeping internal key unchanged for cache safety
+        "inverted_gamma_history": [], 
         "active_inverted_event": None, 
         "last_inverted_status": False, 
         "session_alert_log": {}, 
@@ -224,7 +224,6 @@ def fetch_futures_context():
                 spot_price = float(ticker.get("spot_price", 0))
                 oi_usd = float(ticker.get("oi_value_usd", 0))
                 
-                # CODER FIX: Do not turn missing spot data into zero premium
                 if spot_price > 0:
                     sp_prem = ((mark_price - spot_price) / spot_price) * 100
                 else:
@@ -589,7 +588,6 @@ def find_oi_clusters(strike_ladder, df_opt, opt_type, spot_price, straddle_price
 def fetch_delta_options():
     BASE_URL = "https://api.india.delta.exchange/v2"
     
-    # CODER FIX: Proper pagination loop
     def fetch_paginated_data(url):
         results = []
         seen_cursors = set()
@@ -700,8 +698,7 @@ def fetch_delta_options():
                 ts_val = ticker.get("timestamp") or ticker.get("updated_at")
                 
                 chain.append({
-                    "Symbol": sym, # CODER FIX: Added symbol to track completeness
-                    "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, 
+                    "Symbol": sym, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, 
                     "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val
                 })
             except (ValueError, TypeError):
@@ -710,7 +707,6 @@ def fetch_delta_options():
         df = pd.DataFrame(chain)
         if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, None, False
 
-        # CODER FIX: Completeness validation
         expected_symbol_set = set(str(sym) for sym in expected_symbols)
         received_symbol_set = set(df["Symbol"].dropna().astype(str)) if not df.empty else set()
         oi_values = pd.to_numeric(df["OI_Contracts"], errors="coerce") if not df.empty else pd.Series()
@@ -793,7 +789,6 @@ if oi_usd is not None:
         if abs(closest_entry["time"] - target_time) <= 300 and closest_entry["oi"] > 0:
             oi_delta_pct = ((oi_usd - closest_entry["oi"]) / closest_entry["oi"]) * 100
 
-    # CODER FIX: Factual Futures Flow Labels
     oi_label = "OI Change Unavailable"
     if not pd.isna(oi_delta_pct):
         if oi_delta_pct > 0: oi_label = "OI Rising"
@@ -949,7 +944,6 @@ if not options_df.empty and latest_price > 0:
         total_puts_vol = temp_filt['Volume_Put'].sum()
         pcr_volume = total_puts_vol / total_calls_vol if total_calls_vol > 0 else 0
 
-        # CODER FIX: Max Pain withheld if chain is incomplete
         if is_chain_complete and not options_df.empty:
             all_strikes = options_df['Strike'].tolist()
             all_call_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Call'].fillna(0)))
@@ -971,7 +965,6 @@ if not options_df.empty and latest_price > 0:
             true_max_pain = np.nan
 
         if straddle_valid and raw_chain_df is not None and strike_ladder is not None:
-            # CODER FIX: Lock straddle math to the start of the session
             base_straddle = p_state["session_start_straddle"] if p_state["session_start_straddle"] else straddle_price
             near_call, mid_call, far_call = find_oi_clusters(strike_ladder, raw_chain_df, "Call", latest_price, base_straddle)
             near_put, mid_put, far_put = find_oi_clusters(strike_ladder, raw_chain_df, "Put", latest_price, base_straddle)
@@ -1376,10 +1369,42 @@ with tab_dashboard:
         tc3.metric("Price Location", loc, f"${latest_price:,.0f}", delta_color=loc_color)
         
         tc4.metric("AMT State", current_amt_name, f"Code {current_amt_state}")
+
+        # --- QUANTITATIVE CONFLUENCE CALCULATIONS ---
+        latest_dev_poc = np.nan
+        if journal_res is not None:
+            journal_df_check, _, _ = journal_res
+            if not journal_df_check.empty:
+                latest_dev_poc = journal_df_check.iloc[-1]['Dev POC']
+
+        prior_va_width = final_vah - final_val if not pd.isna(final_vah) and not pd.isna(final_val) else np.nan
+        straddle_ratio = straddle_price / prior_va_width if not pd.isna(prior_va_width) and prior_va_width > 0 and not pd.isna(straddle_price) and straddle_valid else np.nan
+        mp_poc_distance = true_max_pain - latest_dev_poc if not pd.isna(true_max_pain) and not pd.isna(latest_dev_poc) else np.nan
+        # --------------------------------------------
+
+        # --- QUANTITATIVE CONFLUENCE UI ---
+        st.markdown("#### 📐 Quantitative Confluence")
+        qc1, qc2, qc3 = st.columns(3)
+
+        if not pd.isna(straddle_ratio):
+            sr_color = "normal" if straddle_ratio > 1.0 else "off"
+            qc1.metric("Straddle Ratio (vs Prior VA)", f"{straddle_ratio:.2f}x", "Expected Move > Prior Value" if straddle_ratio > 1.0 else "Expected Move < Prior Value", delta_color=sr_color)
+        else:
+            qc1.metric("Straddle Ratio (vs Prior VA)", "N/A")
+
+        if not pd.isna(mp_poc_distance):
+            qc2.metric("Max Pain vs Dev POC", f"${mp_poc_distance:,.0f}")
+        else:
+            qc2.metric("Max Pain vs Dev POC", "N/A")
+
+        if not pd.isna(prior_va_width) and not pd.isna(straddle_price) and straddle_valid:
+            qc3.metric("VA Width vs Straddle", f"${prior_va_width:,.0f} / ${straddle_price:,.0f}")
+        else:
+            qc3.metric("VA Width vs Straddle", "N/A")
+        # ----------------------------------
         
         verdict = ""
         
-        # CODER FIX: Verdicts based on factual observations, not inferred positioning
         if loc == "Above VAH":
             verdict = f"Price is above prior VAH. Futures observation: ({ctx})."
         elif loc == "Below VAL":
@@ -1406,7 +1431,6 @@ with tab_dashboard:
                 oi_d_color = "normal" if oi_delta_pct > 0 else "inverse" if oi_delta_pct < 0 else "off"
                 fc2.metric("OI Delta (30m)", f"{oi_delta_pct:+.2f}%", "Building" if oi_delta_pct > 0 else "Unwinding" if oi_delta_pct < 0 else "Stable", delta_color=oi_d_color)
             
-            # CODER FIX: Handle missing spot data safely
             if sp_prem is not None and np.isfinite(sp_prem):
                 sp_color = "normal" if sp_prem > 0 else "inverse" if sp_prem < 0 else "off"
                 fc3.metric("Spot/Perp Premium", f"{sp_prem:+.3f}%", "Perp Premium" if sp_prem > 0 else "Perp Discount" if sp_prem < 0 else "Flat", delta_color=sp_color)
@@ -1649,6 +1673,10 @@ with tab_dashboard:
         atm_call_iv_text = f"{atm_row['IV_Call']:.2f}%" if atm_row is not None and not pd.isna(atm_row['IV_Call']) else "N/A"
         atm_put_iv_text = f"{atm_row['IV_Put']:.2f}%" if atm_row is not None and not pd.isna(atm_row['IV_Put']) else "N/A"
         skew_text = f"{atm_row['IV_Call'] - atm_row['IV_Put']:+.2f}%" if atm_row is not None and not pd.isna(atm_row['IV_Call']) and not pd.isna(atm_row['IV_Put']) else "N/A"
+        
+        straddle_ratio_text = f"{straddle_ratio:.2f}x" if not pd.isna(straddle_ratio) else "N/A"
+        mp_poc_text = f"${mp_poc_distance:,.0f}" if not pd.isna(mp_poc_distance) else "N/A"
+        va_width_text = f"${prior_va_width:,.0f}" if not pd.isna(prior_va_width) else "N/A"
 
         snapshot_text = f"""
 === BTC TERMINAL SNAPSHOT ===
@@ -1665,6 +1693,11 @@ Funding Rate: {funding_text}
 [TAPE READ & CONFLUENCE]
 Structure: {proxy_status} | Flow: {ctx} | Location: {loc} | AMT: {current_amt_name}
 Verdict: {verdict}
+
+[QUANTITATIVE CONFLUENCE]
+Straddle Ratio (vs Prior VA): {straddle_ratio_text}
+Max Pain vs Dev POC: {mp_poc_text}
+Prior VA Width: {va_width_text}
 
 [FUTURES CONTEXT]
 OI (USD): {f"${oi_usd/1e6:.2f}M" if oi_usd is not None else "N/A"}
