@@ -1,5 +1,6 @@
 import os
 import sys
+import math
 from datetime import datetime, timezone
 
 from supabase import create_client
@@ -140,9 +141,9 @@ def main():
             "prior_vah": float(vah),
             "prior_poc": float(poc),
             "prior_val": float(val),
-            "developing_poc": float(developing_poc) if pd.notna(developing_poc) else None,
-            "developing_vah": float(developing_vah) if pd.notna(developing_vah) else None,
-            "developing_val": float(developing_val) if pd.notna(developing_val) else None,
+            "developing_poc": float(developing_poc) if math.isfinite(float(developing_poc)) else None,
+            "developing_vah": float(developing_vah) if math.isfinite(float(developing_vah)) else None,
+            "developing_val": float(developing_val) if math.isfinite(float(developing_val)) else None,
             "tpo_row_size": 50.0,
             "value_area_percent": 0.70,
             "atr_21": float(row["atr"]),
