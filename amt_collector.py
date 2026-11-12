@@ -38,7 +38,13 @@ def main():
     config = {"version": "v1.0", "atr_period": 21, "atr_multiplier": 0.50, "minimum_buffer": 50, "discovery_closes": 2, "reentry_closes": 1, "balance_crossings": 2, "balance_window": 5}
     
     amt_engine = ResearchStateEngine(configuration=config, initial_state=IN_VALUE)
-    today_df = completed_df[completed_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str]
+    
+    # Explicit deterministic chronological ordering
+    today_df = (
+        completed_df[completed_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str]
+        .sort_values('Date')
+        .reset_index(drop=True)
+    )
 
     client = create_client(supabase_url, supabase_key)
     
@@ -62,13 +68,11 @@ def main():
             "candle_open_time": row['Date'].isoformat(),
             "candle_close_time": close_dt.isoformat(),
             
-            # --- ADDED PRICE & VOLUME FIELDS HERE ---
             "open_price": float(row['open']),
             "high_price": float(row['high']),
             "low_price": float(row['low']),
             "close_price": float(row['close']),
             "volume": float(row['volume']),
-            # ----------------------------------------
             
             "profile_date": last_prev_day,
             "profile_id": frozen_profile["profile_id"],
