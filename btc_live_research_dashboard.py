@@ -86,7 +86,7 @@ def fetch_layer2_supabase_data():
         return {**empty_result, "status": f"ERROR: {exc}"}
 
 def process_options_snapshot(client, snapshot_id):
-    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_price, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).execute()
+    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_price, spot_price, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).execute()
     if not chain.data: return None
     
     df = pd.DataFrame(chain.data)
@@ -94,8 +94,11 @@ def process_options_snapshot(client, snapshot_id):
     
     pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
     pivot_oi_usd = df.pivot_table(index='strike_price', columns='option_type', values='oi_value_usd', aggfunc='sum').reset_index()
-    pivot_premium = df.pivot_table(index='strike_price', columns='option_type', values='mark_price', aggfunc='mean')
-    # Keep both side columns present even if a snapshot has no valid mark for one side.
+    # Display-only USD premium per BTC: Delta mark_price is BTC-denominated.
+    # Convert using the snapshot's spot_price; do not apply the 0.001 BTC contract multiplier.
+    df["premium_usd_display"] = df["mark_price"] * df["spot_price"]
+    pivot_premium = df.pivot_table(index='strike_price', columns='option_type', values='premium_usd_display', aggfunc='mean')
+    # Keep both side columns present even if a snapshot has no valid mark/spot for one side.
     pivot_premium = pivot_premium.reindex(columns=['CALL', 'PUT']).reset_index()
     pivot_premium.rename(columns={'CALL': 'Mark_Call', 'PUT': 'Mark_Put'}, inplace=True)
     pivot_oi_usd.rename(columns={'CALL': 'OI_USD_Call', 'PUT': 'OI_USD_Put'}, inplace=True)
