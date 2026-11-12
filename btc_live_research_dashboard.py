@@ -850,6 +850,14 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
             # Presentation-only Delta-style order-book layout.
             # Keep the existing evidence labels and source values; this block only
             # renames, formats, orders, and styles the dataframe for display.
+            # Reuse the already-calculated options ATM strike and latest market price.
+            try:
+                atm_value = options_metrics.get("atm_strike") if options_metrics else None
+                atm_strike = float(atm_value) if atm_value is not None and np.isfinite(float(atm_value)) else None
+            except (TypeError, ValueError, OverflowError):
+                atm_strike = None
+            latest_price = float(current_price)
+
             evidence_df.insert(0, "Signal", evidence_df.apply(build_evidence, axis=1))
             evidence_df = evidence_df.rename(columns={
                 "strike_price": "Strike",
@@ -858,14 +866,6 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 "Mark_Call": "Call Prem",
                 "Mark_Put": "Put Prem",
             })
-
-            # Reuse the already-calculated options ATM strike and latest market price.
-            try:
-                atm_value = options_metrics.get("atm_strike") if options_metrics else None
-                atm_strike = float(atm_value) if atm_value is not None and np.isfinite(float(atm_value)) else None
-            except (TypeError, ValueError, OverflowError):
-                atm_strike = None
-            latest_price = float(current_price)
 
             # Ensure optional display fields exist even when one side is absent.
             display_columns = [
