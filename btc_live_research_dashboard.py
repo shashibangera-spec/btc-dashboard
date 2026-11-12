@@ -369,6 +369,55 @@ def render_live_dashboard():
     migration_analysis = analyze_oi_migration(opt_df, prev_opt_df)
     aggressor_analysis = analyze_aggressor_trades(opt_df, current_price)
 
+    # --- COPY/PASTE LIVE REPORT FOR AI ANALYSIS ---
+    report_options = options_metrics or {}
+    report_shadow_state = shadow_state or {}
+    report_walls = (
+        "; ".join(
+            f"{wall.get('type', 'OI')} local OI concentration: {float(wall['strike']):,.0f} (OI {float(wall['oi']):,.0f})"
+            for wall in (walls_res.get("walls", []) if walls_res and walls_res.get("status") == "OK" else [])
+        ) or "N/A"
+    )
+    report_text = f"""--- BTC TERMINAL LIVE REPORT ---
+Time (UTC): {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}
+
+[AMT COCKPIT]
+Current Price: USD {float(current_price):,.2f}
+AMT State: {report_shadow_state.get('confirmed_state') or 'N/A'}
+Developing State: {report_shadow_state.get('developing_state') or 'N/A'}
+Project Echo: {report_shadow_state.get('project_echo_code') or 'N/A'} / {report_shadow_state.get('project_echo_name') or 'N/A'} (v{report_shadow_state.get('project_echo_version') or 'N/A'})
+Prior VAH: {f'USD {float(vah):,.2f}' if pd.notna(vah) else 'N/A'}
+Prior POC: {f'USD {float(poc):,.2f}' if pd.notna(poc) else 'N/A'}
+Prior VAL: {f'USD {float(val):,.2f}' if pd.notna(val) else 'N/A'}
+
+[FUTURES RESEARCH]
+Aggregate OI: {f'USD {float(layer2_data["current_oi_usd"])/1e9:.2f}B' if layer2_data.get('current_oi_usd') is not None else 'N/A'}
+30m OI Delta Status: {layer2_data.get('status', 'N/A')}
+30m OI Delta: {f'{float(layer2_data["delta_pct"]):+.2f}% ({float(layer2_data["delta_usd"]):+,.0f} USD)' if layer2_data.get('status') == 'OK' and layer2_data.get('delta_pct') is not None and layer2_data.get('delta_usd') is not None else 'N/A'}
+Weighted Basis: {f'{float(layer2_data["basis_pct"]):+.4f}%' if layer2_data.get('basis_pct') is not None else 'N/A'}
+Weighted Funding: {f'{float(layer2_data["funding_rate"]):+.4f}%' if layer2_data.get('funding_rate') is not None else 'N/A'}
+Exchange Coverage: {layer2_data.get('coverage', 'UNKNOWN')}
+
+[OPTIONS RESEARCH]
+Expiry: {report_options.get('expiry_date') or 'N/A'}
+Options Metric Status: {report_options.get('status', 'N/A')}
+Max Pain (theoretical): {f'USD {float(report_options["max_pain_strike"]):,.0f}' if report_options.get('max_pain_strike') is not None else 'N/A'}
+ATM Straddle: {f'USD {float(report_options["atm_straddle_price"]):,.2f}' if report_options.get('atm_straddle_price') is not None else 'N/A'}
+ATM Straddle (% Spot): {f'{float(report_options["atm_straddle_pct_spot"]):.2f}%' if report_options.get('atm_straddle_pct_spot') is not None else 'N/A'}
+Local OI PCR (±10%): {f'{float(report_options["local_oi_pcr"]):.3f}' if report_options.get('local_oi_pcr') is not None else 'N/A'}
+Gross Call GEX Concentration Wall: {f'USD {float(report_options["call_gex_wall_strike"]):,.0f}' if report_options.get('call_gex_wall_strike') is not None else 'N/A'}
+Call GEX (model-derived, unsigned): {f'{float(report_options["call_gex_wall_value"]):,.2f}' if report_options.get('call_gex_wall_value') is not None else 'N/A'}
+Gross Put GEX Concentration Wall: {f'USD {float(report_options["put_gex_wall_strike"]):,.0f}' if report_options.get('put_gex_wall_strike') is not None else 'N/A'}
+Put GEX (model-derived, unsigned): {f'{float(report_options["put_gex_wall_value"]):,.2f}' if report_options.get('put_gex_wall_value') is not None else 'N/A'}
+Nearby OI Concentrations: {report_walls}
+Metric Quality: {report_options.get('metric_status', 'N/A')}
+
+Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX is unsigned and does not identify dealer positioning or net gamma. AMT/price action remains primary; derivatives are context only."""
+
+    with st.expander("📋 Copy/Paste Text Report for AI", expanded=False):
+        st.caption("Copy the text block below and paste it into your AI chat for analysis.")
+        st.code(report_text, language="text")
+
     # --- RENDER UI: AMT-FIRST CONFLUENCE COCKPIT ---
     st.markdown("### AMT + Price Action Lead; Derivatives Provide Context")
     st.caption("Futures and options are research measurements, not standalone directional signals.")
@@ -624,44 +673,6 @@ def render_live_dashboard():
         else:
             st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
 
-        st.markdown("---")
-        with st.expander("📋 Copy/Paste Text Report for AI Support"):
-            st.write("Click the copy icon in the top right of the box below to copy this for support.")
-
-            report_lines = []
-            report_lines.append("--- BTC TERMINAL REPORT ---")
-            report_lines.append(f"Time (UTC): {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
-            report_lines.append(f"Price: ${current_price:,.2f}")
-            report_lines.append(f"AMT State: {shadow_state['confirmed_state'] if shadow_state else 'N/A'}")
-            report_lines.append(
-                f"Project Echo: {shadow_state.get('project_echo_code', 'N/A')} / "
-                f"{shadow_state.get('project_echo_name', 'N/A')}" if shadow_state else "Project Echo: N/A"
-            )
-            report_lines.append(f"Coverage: {layer2_data['coverage']}")
-
-            report_lines.append("\n--- LAYER 2 (FUTURES) ---")
-            report_lines.append(f"OI: ${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data["current_oi_usd"] else "OI: N/A")
-            report_lines.append(f"30m Delta: {layer2_data['status']} {layer2_data.get('delta_pct', '')}")
-            report_lines.append(f"Basis: {layer2_data['basis_pct']}")
-            report_lines.append(f"Funding: {layer2_data['funding_rate']}")
-
-            report_lines.append("\n--- LAYER 3 (OPTIONS) ---")
-            report_lines.append(f"Walls: {walls_res}")
-            report_lines.append(f"IV Skew: {iv_analysis}")
-            report_lines.append(f"Options Turnover Relative to Open Interest: {vol_analysis}")
-            report_lines.append(f"Migration: {migration_analysis}")
-            report_lines.append(f"Aggressor Flow: {aggressor_analysis}")
-            report_lines.append("\\n--- OPTIONS DERIVED METRICS ---")
-            report_lines.append(f"Expiry: {options_metrics.get('expiry_date') if options_metrics else 'N/A'}")
-            report_lines.append(f"Max Pain: {options_metrics.get('max_pain_strike') if options_metrics else None}")
-            report_lines.append(f"ATM Straddle: {options_metrics.get('atm_straddle_price') if options_metrics else None}")
-            report_lines.append(f"Local OI PCR: {options_metrics.get('local_oi_pcr') if options_metrics else None}")
-            report_lines.append(f"Gross Call GEX: {options_metrics.get('call_gex_wall_strike') if options_metrics else None}")
-            report_lines.append(f"Gross Put GEX: {options_metrics.get('put_gex_wall_strike') if options_metrics else None}")
-            report_lines.append(f"Metric Status: {options_metrics.get('metric_status') if options_metrics else None}")
-
-            final_report = "\n".join(report_lines)
-            st.code(final_report, language="text")
 
 
 render_live_dashboard()
