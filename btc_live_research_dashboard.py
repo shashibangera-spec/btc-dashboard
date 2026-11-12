@@ -94,7 +94,9 @@ def process_options_snapshot(client, snapshot_id):
     
     pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
     pivot_oi_usd = df.pivot_table(index='strike_price', columns='option_type', values='oi_value_usd', aggfunc='sum').reset_index()
-    pivot_premium = df.pivot_table(index='strike_price', columns='option_type', values='mark_price', aggfunc='mean').reset_index()
+    pivot_premium = df.pivot_table(index='strike_price', columns='option_type', values='mark_price', aggfunc='mean')
+    # Keep both side columns present even if a snapshot has no valid mark for one side.
+    pivot_premium = pivot_premium.reindex(columns=['CALL', 'PUT']).reset_index()
     pivot_premium.rename(columns={'CALL': 'Mark_Call', 'PUT': 'Mark_Put'}, inplace=True)
     pivot_oi_usd.rename(columns={'CALL': 'OI_USD_Call', 'PUT': 'OI_USD_Put'}, inplace=True)
     pivot_iv = df.pivot_table(index='strike_price', columns='option_type', values='mark_iv', aggfunc='mean').reset_index()
@@ -833,12 +835,17 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 "Mark_Call": "Call Prem",
                 "Mark_Put": "Put Prem",
             })
-            evidence_columns = list(evidence_df.columns)
-            evidence_columns.remove("Call Prem")
-            evidence_columns.remove("Put Prem")
-            strike_index = evidence_columns.index("strike_price") + 1
-            evidence_columns[strike_index:strike_index] = ["Call Prem", "Put Prem"]
-            evidence_df = evidence_df[evidence_columns]
+            # Guarantee both display columns exist, then place them directly after Strike.
+            # This remains safe when the source snapshot has missing/NULL mark prices.
+            if "Call Prem" not in evidence_df.columns:
+                evidence_df["Call Prem"] = pd.NA
+            if "Put Prem" not in evidence_df.columns:
+                evidence_df["Put Prem"] = pd.NA
+            call_premium = evidence_df.pop("Call Prem")
+            put_premium = evidence_df.pop("Put Prem")
+            strike_index = evidence_df.columns.get_loc("strike_price") + 1
+            evidence_df.insert(strike_index, "Call Prem", call_premium)
+            evidence_df.insert(strike_index + 1, "Put Prem", put_premium)
 
             def highlight_evidence(row):
                 styles = pd.Series("", index=row.index)
