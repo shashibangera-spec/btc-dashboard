@@ -642,7 +642,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
         if opt_forensics and "data" in opt_forensics:
             st.caption(f"Latest successful snapshot: {opt_forensics['timestamp']}")
             st.caption("Five-strike research snapshot; these measurements describe options positioning, not BTC direction.")
-            filter_cols = st.columns(5)
+            filter_cols = st.columns(3)
 
             # 1. Nearby OI concentration
             with filter_cols[0]:
@@ -688,8 +688,11 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                         st.metric("Call / Put", "N/A")
                         st.caption("Insufficient volume/OI data.")
 
+            # Second row: two wider cards for migration and taker activity.
+            filter_cols_row2 = st.columns(2)
+
             # 4. Peak-strike migration. Mixed peak movement is shown as Stable (not a directional signal).
-            with filter_cols[3]:
+            with filter_cols_row2[0]:
                 with st.container(border=True):
                     st.markdown("**4. OI Migration**")
                     if migration_analysis and migration_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
@@ -707,7 +710,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                         st.caption("Requires two usable snapshots.")
 
             # 5. Combined nearby taker activity.
-            with filter_cols[4]:
+            with filter_cols_row2[1]:
                 with st.container(border=True):
                     st.markdown("**5. Taker Activity**")
                     if aggressor_analysis and aggressor_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
