@@ -42,17 +42,34 @@ def number(value: Any) -> Optional[float]:
     if not math.isfinite(result): return None
     return result
 
+def boolean(value: Any, default: bool = False) -> bool:
+    if value is None: return default
+    if isinstance(value, bool): return value
+    if isinstance(value, (int, float)): return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y"}: return True
+        if normalized in {"false", "0", "no", "n"}: return False
+    return default
+
 def timestamp(value: Any) -> str:
     if value is None: return ""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+        if not math.isfinite(value):
+            raise InputError(f"Invalid numeric timestamp: {value}")
+        try:
+            return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError) as exc:
+            raise InputError(f"Invalid numeric timestamp: {value}") from exc
+            
     raw = str(value).strip()
     if not raw: return ""
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).isoformat()
-    except ValueError: return raw
+    except (ValueError, OverflowError, OSError) as exc:
+        raise InputError(f"Invalid string timestamp: {raw!r}") from exc
 
 def first(data: dict, *keys: str, default=None):
     for key in keys:
@@ -69,6 +86,16 @@ class Parameters:
     reentry_closes: int = 1
     balance_crossings: int = 2
     balance_window: int = 5
+
+    def __post_init__(self):
+        if self.atr_period < 1: raise InputError("atr_period must be >= 1.")
+        if self.atr_multiplier < 0: raise InputError("atr_multiplier must be >= 0.")
+        if self.minimum_buffer < 0: raise InputError("minimum_buffer must be >= 0.")
+        if self.discovery_closes < 1: raise InputError("discovery_closes must be >= 1.")
+        if self.reentry_closes < 1: raise InputError("reentry_closes must be >= 1.")
+        if self.balance_crossings < 1: raise InputError("balance_crossings must be >= 1.")
+        if self.balance_window < 1: raise InputError("balance_window must be >= 1.")
+        if self.balance_window < self.balance_crossings: raise InputError("balance_window must be >= balance_crossings.")
 
     @classmethod
     def from_dict(cls, data: Optional[dict]) -> "Parameters":
@@ -102,7 +129,7 @@ class Profile:
         if profile_id is None: raise InputError("Profile ID is missing.")
         if vah is None or poc is None or val is None: raise InputError("Profile requires numeric VAH, POC and VAL.")
         if not val <= poc <= vah: raise InputError("Profile must satisfy VAL <= POC <= VAH.")
-        frozen = bool(first(data, "frozen", "is_frozen", default=True))
+        frozen = boolean(first(data, "frozen", "is_frozen", default=True), default=True)
         return cls(profile_id=str(profile_id), vah=vah, poc=poc, val=val, frozen=frozen)
 
 class ResearchStateEngine:
@@ -274,39 +301,59 @@ class ResearchStateEngine:
         if not key[3]: raise InputError("Candle is missing open_time_utc/open_time/timestamp.")
         if key in self.seen_candle_keys:
             return {"candle_key": list(key), "ignored": True, "reason": "DUPLICATE_CANDLE", "confirmed_state": self.confirmed_state, "events": []}
-        completed = first(candle, "completed", "is_closed", default=True)
+        completed = boolean(first(candle, "completed", "is_closed", default=True), default=True)
         if completed is False:
             return {"candle_key": list(key), "ignored": False, "completed": False, "developing_state": "PROVISIONAL_OBSERVATION", "confirmed_state": self.confirmed_state, "discovery_counter": self.discovery_count, "events": [], "reason": "INTRABAR_NOT_ELIGIBLE_FOR_CONFIRMATION"}
-        self.seen_candle_keys.add(key)
+        
         event_start = len(self.events)
-        profile = self.resolve_profile(candle, document)
-        if profile is None: return self.unavailable_result(key, "MISSING_PROFILE", event_start)
-        self.apply_profile(profile, key)
-        params = self.resolve_parameters(candle, document)
-        if params.version != self.current_parameter_version:
-            old_version = self.current_parameter_version
-            self.current_parameter_version = params.version
-            self.emit("PARAMETER_VERSION_OBSERVED", key, details={"old_version": old_version, "new_version": params.version})
+        
+        # 1. Validate inputs first. No engine state may be mutated before this passes.
         invalid, invalid_reason = self.candle_is_invalid(candle)
         if invalid: return self.unavailable_result(key, invalid_reason, event_start)
         atr = number(first(candle, "atr", "ATR"))
         if atr is None or atr <= 0: return self.unavailable_result(key, "INVALID_OR_MISSING_ATR", event_start)
-        if not profile.frozen: return self.unavailable_result(key, "PROFILE_NOT_FROZEN", event_start)
         close = number(first(candle, "close", "CLOSE"))
         if close is None: return self.unavailable_result(key, "INVALID_CLOSE", event_start)
+        
+        profile = self.resolve_profile(candle, document)
+        if profile is None: return self.unavailable_result(key, "MISSING_PROFILE", event_start)
+        if not profile.frozen: return self.unavailable_result(key, "PROFILE_NOT_FROZEN", event_start)
+        params = self.resolve_parameters(candle, document)
+        
+        # 2. Commit to processing. Dedup key is only claimed once the candle is accepted.
+        self.seen_candle_keys.add(key)
+        self.apply_profile(profile, key)
+        
+        if params.version != self.current_parameter_version:
+            old_version = self.current_parameter_version
+            self.current_parameter_version = params.version
+            self.emit("PARAMETER_VERSION_OBSERVED", key, details={"old_version": old_version, "new_version": params.version})
+        
         self.valid_candle_index += 1
         buffer = max(params.minimum_buffer, atr * params.atr_multiplier)
+        
         developing_state, transition_event, lower_threshold, upper_threshold = self.process_discovery(close, profile, params, buffer, key)
         crossing = self.process_poc(close, profile, params, key)
+        
+        # 3. Transition Priority (Preserve IN_VALUE -> BALANCE, block same-candle overwrites)
         balance_transition = None
-        if len(self.poc_crossings) >= params.balance_crossings:
+        balance_eligible_states = {IN_VALUE, REENTRY_CONFIRMED}
+        
+        if (
+            transition_event is None 
+            and self.confirmed_state in balance_eligible_states 
+            and len(self.poc_crossings) >= params.balance_crossings
+        ):
             balance_transition = self.transition(BALANCE_CONFIRMED, key, {"poc_crossings_in_window": len(self.poc_crossings), "window_valid_candles": params.balance_window, "poc": profile.poc, "profile_id": profile.profile_id})
             developing_state = BALANCE_CONFIRMED
-        elif self.confirmed_state == BALANCE_CONFIRMED: developing_state = BALANCE_CONFIRMED
+        elif self.confirmed_state == BALANCE_CONFIRMED:
+            developing_state = BALANCE_CONFIRMED
+            
         options = first(candle, "options_hypothesis", "options_context")
         options_hypothesis = None
         if isinstance(options, str): options_hypothesis = options
         elif isinstance(options, dict): options_hypothesis = first(options, "hypothesis", "state")
+        
         result = {
             "candle_key": list(key), "ignored": False, "completed": True, "data_status": "VALID",
             "developing_state": developing_state, "confirmed_state": self.confirmed_state,
@@ -375,7 +422,7 @@ def _fixture_profile_override(candle: dict, document: dict) -> dict:
     if raw_profile is None: raw_profile = document.get("default_profile")
     if isinstance(raw_profile, dict):
         profile = dict(raw_profile)
-        profile["frozen"] = bool(first(row, "profile_frozen", "frozen", default=True))
+        profile["frozen"] = boolean(first(row, "profile_frozen", "frozen", default=True), default=True)
         row["profile"] = profile
     return row
 
@@ -446,7 +493,6 @@ def run_external_fixture(document: dict) -> dict:
         test_id = str(first(test_case, "test_id", "id", default=f"T{test_index + 1:02d}"))
         description = str(first(test_case, "description", "name", default=""))
         
-        # Handle the special T12 "runs" structure
         if "runs" in test_case:
             all_runs_passed = True
             run_failures = []
