@@ -729,6 +729,47 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     else:
                         st.metric("Buy / Sell", "N/A")
                         st.caption("Insufficient taker-volume data.")
+        # --- LAYER 2: OI CONCENTRATION MAP ---
+        st.markdown("---")
+        st.subheader("📊 OI Concentration Map")
+        st.caption("Visual concentration across the same 10 nearest strikes shown in the evidence table. Call OI extends left; Put OI extends right.")
+        if opt_forensics and "data" in opt_forensics:
+            chart_df = get_nearest_strikes(opt_df, current_price, count=10).copy()
+            if not chart_df.empty and "Call OI" in chart_df.columns and "Put OI" in chart_df.columns:
+                chart_df["Call OI"] = pd.to_numeric(chart_df["Call OI"], errors="coerce").fillna(0)
+                chart_df["Put OI"] = pd.to_numeric(chart_df["Put OI"], errors="coerce").fillna(0)
+                chart_df["Call OI Display"] = -chart_df["Call OI"]
+                chart_df["Strike"] = chart_df["strike_price"].map(lambda x: "$" + format(float(x), ",.0f"))
+                oi_chart_data = chart_df.melt(
+                    id_vars=["Strike"],
+                    value_vars=["Call OI Display", "Put OI"],
+                    var_name="Side",
+                    value_name="OI",
+                )
+                oi_chart_data["Side"] = oi_chart_data["Side"].replace({
+                    "Call OI Display": "Call OI",
+                    "Put OI": "Put OI",
+                })
+                st.vega_lite_chart(
+                    oi_chart_data,
+                    {
+                        "mark": "bar",
+                        "encoding": {
+                            "y": {"field": "Strike", "type": "ordinal", "sort": None, "title": "Strike"},
+                            "x": {"field": "OI", "type": "quantitative", "title": "OI (Call left / Put right)"},
+                            "color": {"field": "Side", "type": "nominal", "legend": {"title": None}},
+                            "tooltip": [
+                                {"field": "Strike", "type": "nominal"},
+                                {"field": "Side", "type": "nominal"},
+                                {"field": "OI", "type": "quantitative", "format": ",.0f"},
+                            ],
+                        },
+                        "height": 420,
+                    },
+                    use_container_width=True,
+                )
+            else:
+                st.info("No usable Call/Put OI columns are available for the concentration map.")
         elif opt_forensics and "error" in opt_forensics:
             st.error(f"Error loading options data: {opt_forensics['error']}")
         else:
@@ -737,12 +778,68 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
     with raw_tab:
         st.subheader("Raw Options Chain — 10 Nearest Strikes")
         if opt_forensics and "data" in opt_forensics:
-            closest_df = get_nearest_strikes(opt_df, current_price, count=10)
+            closest_df = get_nearest_strikes(opt_df, current_price, count=10).copy()
+            evidence_df = closest_df.drop(columns=["distance"], errors="ignore").copy()
+
+            # Presentation-only evidence markers: reuse existing analyzer/derived outputs.
+            nearby_strikes = set()
+            if walls_res and walls_res.get("status") == "OK":
+                nearby_strikes = {
+                    float(w["strike"])
+                    for w in walls_res.get("walls", [])
+                    if w.get("strike") is not None
+                }
+
+            max_pain_strike = None
+            if options_metrics and options_metrics.get("max_pain_strike") is not None:
+                try:
+                    max_pain_strike = float(options_metrics["max_pain_strike"])
+                except (TypeError, ValueError):
+                    max_pain_strike = None
+
+            max_call_oi = evidence_df["Call OI"].max() if "Call OI" in evidence_df.columns else None
+            max_put_oi = evidence_df["Put OI"].max() if "Put OI" in evidence_df.columns else None
+
+            def build_evidence(row):
+                labels = []
+                try:
+                    strike_value = float(row.get("strike_price"))
+                except (TypeError, ValueError):
+                    strike_value = None
+                if strike_value is not None and strike_value in nearby_strikes:
+                    labels.append("📍 Nearby OI")
+                if max_pain_strike is not None and strike_value == max_pain_strike:
+                    labels.append("🎯 Max Pain")
+                if max_call_oi is not None and pd.notna(row.get("Call OI")) and row.get("Call OI") == max_call_oi:
+                    labels.append("🔵 Max Call OI")
+                if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI") == max_put_oi:
+                    labels.append("🟠 Max Put OI")
+                return " · ".join(labels)
+
+            evidence_df.insert(0, "Signal / Evidence", evidence_df.apply(build_evidence, axis=1))
+
+            def highlight_evidence(row):
+                styles = pd.Series("", index=row.index)
+                if max_call_oi is not None and pd.notna(row.get("Call OI")) and row.get("Call OI") == max_call_oi:
+                    styles["Call OI"] = "background-color: #dbeeff; font-weight: 700"
+                if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI") == max_put_oi:
+                    styles["Put OI"] = "background-color: #ffe6cc; font-weight: 700"
+                try:
+                    strike_value = float(row.get("strike_price"))
+                except (TypeError, ValueError):
+                    strike_value = None
+                if max_pain_strike is not None and strike_value == max_pain_strike:
+                    styles["strike_price"] = "background-color: #fff5cc; font-weight: 700"
+                return styles
+
+            styled_evidence = evidence_df.style.apply(highlight_evidence, axis=1)
+            st.caption("📍 Nearby OI · 🎯 Max Pain · 🔵 Max Call OI · 🟠 Max Put OI")
             st.dataframe(
-                closest_df.drop(columns=["distance"], errors="ignore"),
+                styled_evidence,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
+                    "Signal / Evidence": st.column_config.TextColumn("Signal / Evidence", width="large"),
                     "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
                     "Call OI": st.column_config.NumberColumn("Call OI", format="%d"),
                     "Put OI": st.column_config.NumberColumn("Put OI", format="%d"),
