@@ -157,18 +157,23 @@ def analyze_neighboring_strikes(df, current_price):
     if closest.empty: return {"status": "UNAVAILABLE", "reason": "NO_DATA"}
     if 'Call OI' not in closest.columns or 'Put OI' not in closest.columns:
         return {"status": "UNAVAILABLE", "reason": "MISSING_COLUMNS"}
-    if closest['Call OI'].dropna().empty and closest['Put OI'].dropna().empty:
-        return {"status": "INSUFFICIENT_DATA", "reason": "ALL_NULL"}
+    if closest['Call OI'].dropna().empty or closest['Put OI'].dropna().empty:
+        return {"status": "INSUFFICIENT_DATA", "reason": "NULL_OI_SIDE"}
     
+    usable = closest.dropna(subset=['strike_price', 'Call OI', 'Put OI'])
+    if len(usable) < 3:
+        return {"status": "INSUFFICIENT_DATA", "reason": "FEWER_THAN_3_USABLE_STRIKES"}
+    
+    closest = usable.sort_values('strike_price')
     walls = []
     if 'Call OI' in closest.columns:
-        call_ois = closest['Call OI'].fillna(0).tolist()
+        call_ois = closest['Call OI'].tolist()
         for i in range(1, len(call_ois) - 1):
             neighbor_avg = (call_ois[i-1] + call_ois[i+1]) / 2
             if call_ois[i] > (neighbor_avg * 1.5) and call_ois[i] > 500:
                 walls.append({"strike": closest.iloc[i]['strike_price'], "type": "CALL", "oi": call_ois[i]})
     if 'Put OI' in closest.columns:
-        put_ois = closest['Put OI'].fillna(0).tolist()
+        put_ois = closest['Put OI'].tolist()
         for i in range(1, len(put_ois) - 1):
             neighbor_avg = (put_ois[i-1] + put_ois[i+1]) / 2
             if put_ois[i] > (neighbor_avg * 1.5) and put_ois[i] > 500:
@@ -186,6 +191,7 @@ def analyze_iv_skew(df, current_price):
     avg_call_iv = closest['Call IV'].mean()
     avg_put_iv = closest['Put IV'].mean()
     if pd.isna(avg_call_iv) or pd.isna(avg_put_iv): return {"status": "INSUFFICIENT_DATA", "reason": "CALCULATION_FAILED"}
+    if avg_put_iv == 0: return {"status": "INSUFFICIENT_DATA", "reason": "ZERO_PUT_IV"}
     
     skew = avg_call_iv - avg_put_iv
     skew_pct = (skew / avg_put_iv) * 100
@@ -201,6 +207,9 @@ def analyze_volume_vs_oi(df, current_price):
     if not all(col in closest.columns for col in req_cols):
         return {"status": "UNAVAILABLE", "reason": "MISSING_COLUMNS"}
         
+    if closest['Call Vol'].dropna().empty or closest['Put Vol'].dropna().empty:
+        return {"status": "INSUFFICIENT_DATA", "reason": "NULL_VOLUME"}
+    
     total_call_vol = closest['Call Vol'].sum()
     total_call_oi = closest['Call OI'].sum()
     total_put_vol = closest['Put Vol'].sum()
@@ -220,7 +229,7 @@ def analyze_volume_vs_oi(df, current_price):
 def analyze_oi_migration(current_df, previous_df):
     if current_df is None or previous_df is None or current_df.empty or previous_df.empty:
         return {"status": "UNAVAILABLE", "reason": "MISSING_DATA"}
-    if 'Call OI' not in current_df.columns or 'Put OI' not in current_df.columns or 'Call OI' not in previous_df.columns or 'Put OI' not in previous_df.columns:
+    if 'Call OI' not in current_df.columns or 'Put OI' not in current_df.columns or 'Call OI' not in previous_df.columns or 'Put OI' not in previous_df.columns or 'strike_price' not in current_df.columns or 'strike_price' not in previous_df.columns:
         return {"status": "UNAVAILABLE", "reason": "MISSING_COLUMNS"}
     if current_df['Call OI'].dropna().empty or current_df['Put OI'].dropna().empty or previous_df['Call OI'].dropna().empty or previous_df['Put OI'].dropna().empty:
         return {"status": "INSUFFICIENT_DATA", "reason": "NULL_VALUES"}
@@ -243,10 +252,8 @@ def analyze_aggressor_trades(df, current_price):
     total_taker_buy = closest['taker_buy_volume'].sum()
     total_taker_sell = closest['taker_sell_volume'].sum()
     
-    if pd.isna(total_taker_buy) and pd.isna(total_taker_sell): return {"status": "INSUFFICIENT_DATA", "reason": "ALL_NULL"}
-        
-    total_taker_buy = total_taker_buy if not pd.isna(total_taker_buy) else 0
-    total_taker_sell = total_taker_sell if not pd.isna(total_taker_sell) else 0
+    if pd.isna(total_taker_buy) or pd.isna(total_taker_sell):
+        return {"status": "INSUFFICIENT_DATA", "reason": "NULL_TAKER_VOLUME"}
     
     status = "NEUTRAL_FLOW"
     if total_taker_buy > (total_taker_sell * 1.3) and total_taker_buy > 10: status = "AGGRESSIVE_BUYING"
