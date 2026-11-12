@@ -402,6 +402,12 @@ def render_live_dashboard():
     else:
         c3.metric("30m OI Delta", "N/A", layer2_data["status"], delta_color="off")
 
+    # Prior-session AMT reference levels, calculated from the completed prior session above.
+    level1, level2, level3 = st.columns(3)
+    level1.metric("Prior VAH", f"${vah:,.2f}" if pd.notna(vah) else "N/A")
+    level2.metric("Prior POC", f"${poc:,.2f}" if pd.notna(poc) else "N/A")
+    level3.metric("Prior VAL", f"${val:,.2f}" if pd.notna(val) else "N/A")
+
     st.markdown("---")
     st.subheader("Confluence Table")
     st.caption("Reference framework: read price acceptance/rejection first; use derivatives only to qualify the context.")
