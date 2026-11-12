@@ -933,6 +933,50 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     "Put Prem": st.column_config.TextColumn("Put Prem"),
                 },
             )
+
+            # Separate research view for aggressor-side volume; the compact
+            # Calls–Strike–Puts order-book table above remains unchanged.
+            st.markdown("---")
+            st.subheader("Aggressor Taker Volume (10 Nearest Strikes)")
+            taker_columns = ["strike_price", "taker_buy_volume", "taker_sell_volume"]
+            if all(column in closest_df.columns for column in taker_columns):
+                taker_df = closest_df.loc[:, taker_columns].copy()
+                taker_df = taker_df.rename(columns={"strike_price": "Strike"})
+                taker_df["taker_buy_volume"] = pd.to_numeric(
+                    taker_df["taker_buy_volume"], errors="coerce"
+                )
+                taker_df["taker_sell_volume"] = pd.to_numeric(
+                    taker_df["taker_sell_volume"], errors="coerce"
+                )
+
+                def highlight_taker_strike(row):
+                    styles = pd.Series("", index=row.index)
+                    styles["Strike"] = (
+                        "background-color: #eef1f4; color: #20252b; "
+                        "font-weight: 700; border-left: 1px solid #c7cdd4; "
+                        "border-right: 1px solid #c7cdd4"
+                    )
+                    return styles
+
+                styled_taker = taker_df.style.apply(
+                    highlight_taker_strike, axis=1
+                ).format({
+                    "Strike": lambda value: "" if pd.isna(value) else f"${value:,.0f}",
+                    "taker_buy_volume": lambda value: "" if pd.isna(value) else f"{value:,.0f}",
+                    "taker_sell_volume": lambda value: "" if pd.isna(value) else f"{value:,.0f}",
+                })
+                st.dataframe(
+                    styled_taker,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Strike": st.column_config.TextColumn("Strike"),
+                        "taker_buy_volume": st.column_config.TextColumn("taker_buy_volume"),
+                        "taker_sell_volume": st.column_config.TextColumn("taker_sell_volume"),
+                    },
+                )
+            else:
+                st.info("Aggressor taker-volume fields are unavailable in this snapshot.")
         elif opt_forensics and "error" in opt_forensics:
             st.error(f"Error loading options data: {opt_forensics['error']}")
         else:
