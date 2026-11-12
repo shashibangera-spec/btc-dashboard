@@ -459,35 +459,61 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
 
     st.markdown("---")
     st.subheader("Confluence Table")
-    st.caption("Reference framework: read price acceptance/rejection first; use derivatives only to qualify the context.")
-    confluence_rows = [
-        {
-            "AMT / Price Action": "Price accepts above prior value",
-            "Derivatives Evidence": "OI rising; funding and basis provide supporting context",
-            "Interpretation": "Positioning accompanies the auction, but does not prove direction; require continued price acceptance.",
-        },
-        {
-            "AMT / Price Action": "Price rejects at prior VAH",
-            "Derivatives Evidence": "Nearby call OI concentration and/or call IV rising",
-            "Interpretation": "Potential overhead risk; wait for price-action confirmation of rejection.",
-        },
-        {
-            "AMT / Price Action": "Price accepts below prior VAL",
-            "Derivatives Evidence": "OI rising and basis weakening",
-            "Interpretation": "Positioning accompanies the downside auction; derivatives alone do not establish a short.",
-        },
-        {
-            "AMT / Price Action": "Price returns into prior value",
-            "Derivatives Evidence": "OI declining",
-            "Interpretation": "May reflect position reduction; treat as rotation/balance unless price establishes acceptance elsewhere.",
-        },
-        {
-            "AMT / Price Action": "Balanced auction",
-            "Derivatives Evidence": "Mixed, neutral, stale, or incomplete futures/options evidence",
-            "Interpretation": "No compelling directional evidence; preserve the AMT read and wait for clearer price behaviour.",
-        },
-    ]
-    st.dataframe(pd.DataFrame(confluence_rows), use_container_width=True, hide_index=True)
+    st.caption("AMT determines the auction read; derivatives qualify context and do not act as standalone signals.")
+    current_amt_state = str((shadow_state or {}).get("confirmed_state") or "N/A").upper()
+    state_message = (
+        f"Current AMT state: {current_amt_state}. Downside discovery is a condition to monitor, not a short signal."
+        if "BELOW" in current_amt_state or "DOWNSIDE" in current_amt_state
+        else f"Current AMT state: {current_amt_state}. Upside acceptance still requires price confirmation."
+        if "ABOVE" in current_amt_state or "UPSIDE" in current_amt_state
+        else f"Current AMT state: {current_amt_state}. Use the reference conditions below only when price confirms them."
+    )
+    with st.container(border=True):
+        if "BELOW" in current_amt_state or "DOWNSIDE" in current_amt_state:
+            st.warning(state_message)
+        elif "ABOVE" in current_amt_state or "UPSIDE" in current_amt_state:
+            st.success(state_message)
+        else:
+            st.info(state_message)
+        confluence_rows = [
+            {
+                "AMT / Price Action": "Accepts above prior value",
+                "Derivatives context": "OI rising; basis and funding",
+                "Read-through": "Exposure is expanding alongside the auction; require continued acceptance.",
+            },
+            {
+                "AMT / Price Action": "Rejects at prior VAH",
+                "Derivatives context": "Nearby call OI; call IV",
+                "Read-through": "Potential overhead context; confirm rejection in price.",
+            },
+            {
+                "AMT / Price Action": "Accepts below prior VAL",
+                "Derivatives context": "OI rising; basis weakening",
+                "Read-through": "Exposure accompanies downside discovery; not a standalone short signal.",
+            },
+            {
+                "AMT / Price Action": "Re-enters prior value",
+                "Derivatives context": "OI declining",
+                "Read-through": "May indicate position reduction; assess whether value is reclaimed.",
+            },
+            {
+                "AMT / Price Action": "Balanced auction",
+                "Derivatives context": "Mixed, neutral, stale or incomplete data",
+                "Read-through": "Keep the AMT read; wait for clearer price behaviour.",
+            },
+        ]
+        confluence_df = pd.DataFrame(confluence_rows)
+        st.dataframe(
+            confluence_df,
+            use_container_width=True,
+            hide_index=True,
+            height=245,
+            column_config={
+                "AMT / Price Action": st.column_config.TextColumn("AMT / Price Action", width="medium"),
+                "Derivatives context": st.column_config.TextColumn("Derivatives context", width="medium"),
+                "Read-through": st.column_config.TextColumn("Read-through", width="large"),
+            },
+        )
 
     futures_tab, options_tab, raw_tab = st.tabs(["Futures", "Options", "Raw Data"])
 
@@ -594,57 +620,89 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
         st.subheader("Options Positioning — Five Existing Research Filters")
         if opt_forensics and "data" in opt_forensics:
             st.caption(f"Latest successful snapshot: {opt_forensics['timestamp']}")
-            
-            # Each filter is deliberately summarized in one sentence; raw measurements remain in Raw Data.
-            if walls_res and walls_res.get("status") == "OK":
-                walls = walls_res.get("walls", [])
-                if walls:
-                    wall_text = "; ".join(
-                        f"{wall['type']} local concentration at ${wall['strike']:,.0f} (OI {wall['oi']:,.0f})"
-                        for wall in walls
-                    )
-                    st.write(f"**1. Nearby OI concentration:** {wall_text}; this is a local five-strike comparison, not proof of a price barrier.")
-                else:
-                    st.write("**1. Nearby OI concentration:** No distinct local OI concentration was detected among the five nearest strikes.")
-            else:
-                st.write("**1. Nearby OI concentration:** Unavailable or insufficient data to assess the five nearest strikes.")
+            st.caption("Five-strike research snapshot; these measurements describe options positioning, not BTC direction.")
+            filter_cols = st.columns(5)
 
-            if iv_analysis and iv_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-                st.write(
-                    f"**2. Implied-volatility skew:** Nearby average call IV is {iv_analysis['avg_call_iv']*100:.2f}% "
-                    f"versus put IV {iv_analysis['avg_put_iv']*100:.2f}% (relative skew {iv_analysis['skew_pct']:+.2f}%, "
-                    f"{iv_analysis['status']}); this five-strike average is a rough context measure, not delta-matched skew."
-                )
-            else:
-                st.write("**2. Implied-volatility skew:** Unavailable or insufficient IV data.")
+            # 1. Nearby OI concentration
+            with filter_cols[0]:
+                with st.container(border=True):
+                    st.markdown("**1. Nearby OI**")
+                    if walls_res and walls_res.get("status") == "OK":
+                        nearby_walls = walls_res.get("walls", [])
+                        if nearby_walls:
+                            wall_strikes = ", ".join(f"${float(w['strike']):,.0f}" for w in nearby_walls)
+                            st.metric("Detected strike", f"🟢 {wall_strikes}")
+                            st.caption("Local concentration detected; not a guaranteed barrier.")
+                        else:
+                            st.metric("Detected strike", "🔴 None")
+                            st.caption("No local OI peak detected.")
+                    else:
+                        st.metric("Detected strike", "N/A")
+                        st.caption("Insufficient OI data.")
 
-            if vol_analysis and vol_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-                st.write(
-                    f"**3. Options Turnover Relative to Open Interest:** Call volume/OI is {vol_analysis['call_ratio']:.3f}x "
-                    f"and put volume/OI is {vol_analysis['put_ratio']:.3f}x ({vol_analysis['status']}); volume does not distinguish opening from closing trades."
-                )
-            else:
-                st.write("**3. Options Turnover Relative to Open Interest:** Unavailable or insufficient volume/OI data.")
+            # 2. IV skew: positive means call IV exceeds put IV.
+            with filter_cols[1]:
+                with st.container(border=True):
+                    st.markdown("**2. IV Skew**")
+                    if iv_analysis and iv_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+                        skew_value = float(iv_analysis["skew_pct"])
+                        skew_color = "green" if skew_value > 0 else "red" if skew_value < 0 else "gray"
+                        skew_label = "Call > Put" if skew_value > 0 else "Put > Call" if skew_value < 0 else "Equal"
+                        st.markdown(f"<div style='font-size:1.65rem;font-weight:700;color:{skew_color}'>{skew_value:+.2f}%</div>", unsafe_allow_html=True)
+                        st.caption(f"{skew_label} IV (relative to put IV); five-strike average.")
+                    else:
+                        st.metric("Relative skew", "N/A")
+                        st.caption("Insufficient IV data.")
 
-            if migration_analysis and migration_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-                st.write(
-                    f"**4. OI peak-strike migration:** Call peak shifted {migration_analysis['call_shift']:+,.0f} "
-                    f"and put peak shifted {migration_analysis['put_shift']:+,.0f} ({migration_analysis['status']}); "
-                    f"this compares only the maximum-OI strikes, not the full strike distribution."
-                )
-            elif migration_analysis and migration_analysis.get("status") == "INSUFFICIENT_DATA":
-                st.write("**4. OI peak-strike migration:** Waiting for a second successful snapshot with usable OI on both sides.")
-            else:
-                st.write("**4. OI peak-strike migration:** Unavailable because the current or previous snapshot is missing required data.")
+            # 3. Options turnover relative to OI.
+            with filter_cols[2]:
+                with st.container(border=True):
+                    st.markdown("**3. Turnover / OI**")
+                    if vol_analysis and vol_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+                        whale_flag = max(float(vol_analysis["call_ratio"]), float(vol_analysis["put_ratio"])) > 0.5
+                        st.metric("Call / Put", f"{vol_analysis['call_ratio']:.2f}x / {vol_analysis['put_ratio']:.2f}x")
+                        st.markdown("🐋 **Elevated turnover**" if whale_flag else "**No high-turnover flag**")
+                        st.caption("Volume/OI; does not identify opening versus closing.")
+                    else:
+                        st.metric("Call / Put", "N/A")
+                        st.caption("Insufficient volume/OI data.")
 
-            if aggressor_analysis and aggressor_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-                st.write(
-                    f"**5. Taker activity (raw):** Combined nearby taker buys are {aggressor_analysis['buy_vol']:,.0f} "
-                    f"versus sells {aggressor_analysis['sell_vol']:,.0f} ({aggressor_analysis['status']}); "
-                    f"calls and puts are combined, so this is not a validated BTC-direction signal."
-                )
-            else:
-                st.write("**5. Taker activity (raw):** Unavailable or insufficient taker-volume data.")
+            # 4. Peak-strike migration. Mixed peak movement is shown as Stable (not a directional signal).
+            with filter_cols[3]:
+                with st.container(border=True):
+                    st.markdown("**4. OI Migration**")
+                    if migration_analysis and migration_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+                        migration_status = migration_analysis.get("status")
+                        if migration_status == "BULLISH_MIGRATION":
+                            migration_label, migration_arrow = "Up", "⬆️"
+                        elif migration_status == "BEARISH_MIGRATION":
+                            migration_label, migration_arrow = "Down", "⬇️"
+                        else:
+                            migration_label, migration_arrow = "Stable", "➡️"
+                        st.metric("Peak-strike shift", f"{migration_arrow} {migration_label}")
+                        st.caption(f"Call {migration_analysis['call_shift']:+,.0f} | Put {migration_analysis['put_shift']:+,.0f}")
+                    else:
+                        st.metric("Peak-strike shift", "N/A")
+                        st.caption("Requires two usable snapshots.")
+
+            # 5. Combined nearby taker activity.
+            with filter_cols[4]:
+                with st.container(border=True):
+                    st.markdown("**5. Taker Activity**")
+                    if aggressor_analysis and aggressor_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+                        buy_volume = float(aggressor_analysis["buy_vol"])
+                        sell_volume = float(aggressor_analysis["sell_vol"])
+                        if aggressor_analysis["status"] == "AGGRESSIVE_BUYING":
+                            taker_color, taker_label = "green", "Buy dominant"
+                        elif aggressor_analysis["status"] == "AGGRESSIVE_SELLING":
+                            taker_color, taker_label = "red", "Sell dominant"
+                        else:
+                            taker_color, taker_label = "gray", "No clear dominance"
+                        st.markdown(f"<div style='font-size:1.05rem;font-weight:700;color:{taker_color}'>Buy {buy_volume:,.0f}<br>Sell {sell_volume:,.0f}</div>", unsafe_allow_html=True)
+                        st.caption(taker_label + "; calls and puts combined.")
+                    else:
+                        st.metric("Buy / Sell", "N/A")
+                        st.caption("Insufficient taker-volume data.")
         elif opt_forensics and "error" in opt_forensics:
             st.error(f"Error loading options data: {opt_forensics['error']}")
         else:
