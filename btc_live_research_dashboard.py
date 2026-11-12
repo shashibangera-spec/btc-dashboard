@@ -932,7 +932,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     "Put OI (USD)": st.column_config.TextColumn("Put OI (USD)"),
                     "Put Prem": st.column_config.TextColumn("Put Prem"),
                 },
-            )            )
+            )
         elif opt_forensics and "error" in opt_forensics:
             st.error(f"Error loading options data: {opt_forensics['error']}")
         else:
