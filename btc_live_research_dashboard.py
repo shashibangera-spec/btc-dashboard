@@ -325,7 +325,7 @@ def fetch_amt_shadow_state():
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
         client = create_client(url, key)
-        res = client.table("amt_snapshots").select("candle_open_time, confirmed_state, developing_state, project_echo_code, project_echo_name, project_echo_version").order("candle_open_time", desc=True).limit(1).execute()
+        res = client.table("amt_snapshots").select("candle_open_time, confirmed_state, developing_state, project_echo_code, project_echo_name, project_echo_version, developing_poc, developing_vah, developing_val").order("candle_open_time", desc=True).limit(1).execute()
         if res.data: return res.data[0]
         return None
     except: return None
@@ -389,6 +389,9 @@ Project Echo: {report_shadow_state.get('project_echo_code') or 'N/A'} / {report_
 Prior VAH: {f'USD {float(vah):,.2f}' if pd.notna(vah) else 'N/A'}
 Prior POC: {f'USD {float(poc):,.2f}' if pd.notna(poc) else 'N/A'}
 Prior VAL: {f'USD {float(val):,.2f}' if pd.notna(val) else 'N/A'}
+Developing VAH: {f'USD {float(report_shadow_state["developing_vah"]):,.2f}' if report_shadow_state.get('developing_vah') is not None else 'N/A'}
+Developing POC: {f'USD {float(report_shadow_state["developing_poc"]):,.2f}' if report_shadow_state.get('developing_poc') is not None else 'N/A'}
+Developing VAL: {f'USD {float(report_shadow_state["developing_val"]):,.2f}' if report_shadow_state.get('developing_val') is not None else 'N/A'}
 
 [FUTURES RESEARCH]
 Aggregate OI: {f'USD {float(layer2_data["current_oi_usd"])/1e9:.2f}B' if layer2_data.get('current_oi_usd') is not None else 'N/A'}
@@ -456,6 +459,24 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
     level1.metric("Prior VAH", f"${vah:,.2f}" if pd.notna(vah) else "N/A")
     level2.metric("Prior POC", f"${poc:,.2f}" if pd.notna(poc) else "N/A")
     level3.metric("Prior VAL", f"${val:,.2f}" if pd.notna(val) else "N/A")
+
+    # Developing intraday profile levels, calculated by amt_collector.py.
+    developing_levels = st.columns(3)
+    developing_poc = shadow_state.get("developing_poc") if shadow_state else None
+    developing_vah = shadow_state.get("developing_vah") if shadow_state else None
+    developing_val = shadow_state.get("developing_val") if shadow_state else None
+    developing_levels[0].metric(
+        "Developing VAH",
+        f"${float(developing_vah):,.2f}" if developing_vah is not None else "N/A",
+    )
+    developing_levels[1].metric(
+        "Developing POC",
+        f"${float(developing_poc):,.2f}" if developing_poc is not None else "N/A",
+    )
+    developing_levels[2].metric(
+        "Developing VAL",
+        f"${float(developing_val):,.2f}" if developing_val is not None else "N/A",
+    )
 
     st.markdown("---")
     st.subheader("Confluence Table")
