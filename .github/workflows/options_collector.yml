@@ -1,9 +1,6 @@
 name: BTC Options OI Collector
 
 on:
-  schedule:
-    # Runs at 08 and 38 minutes every hour (UTC).
-    - cron: "8,38 * * * *"
   workflow_dispatch:
 
 permissions:
