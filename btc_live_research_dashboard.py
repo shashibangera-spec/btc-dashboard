@@ -147,9 +147,20 @@ def get_cached_binance_data():
 
 # --- OPTIONS CLASSIFIERS (With Semantic Guards) ---
 def get_nearest_strikes(df, current_price, count=5):
-    if df is None or df.empty: return pd.DataFrame()
+    if df is None or df.empty or 'strike_price' not in df.columns:
+        return pd.DataFrame()
+    try:
+        price = float(current_price)
+    except (TypeError, ValueError, OverflowError):
+        return pd.DataFrame()
+    if not np.isfinite(price):
+        return pd.DataFrame()
     df_copy = df.copy()
-    df_copy['distance'] = abs(df_copy['strike_price'] - current_price)
+    df_copy['strike_price'] = pd.to_numeric(df_copy['strike_price'], errors='coerce')
+    df_copy = df_copy[np.isfinite(df_copy['strike_price'])]
+    if df_copy.empty:
+        return pd.DataFrame()
+    df_copy['distance'] = abs(df_copy['strike_price'] - price)
     return df_copy.nsmallest(count, 'distance').sort_values('strike_price')
 
 def analyze_neighboring_strikes(df, current_price):
@@ -249,8 +260,8 @@ def analyze_aggressor_trades(df, current_price):
     if 'taker_buy_volume' not in closest.columns or 'taker_sell_volume' not in closest.columns:
         return {"status": "UNAVAILABLE", "reason": "MISSING_COLUMNS"}
         
-    total_taker_buy = closest['taker_buy_volume'].sum()
-    total_taker_sell = closest['taker_sell_volume'].sum()
+    total_taker_buy = closest['taker_buy_volume'].sum(min_count=1)
+    total_taker_sell = closest['taker_sell_volume'].sum(min_count=1)
     
     if pd.isna(total_taker_buy) or pd.isna(total_taker_sell):
         return {"status": "INSUFFICIENT_DATA", "reason": "NULL_TAKER_VOLUME"}
