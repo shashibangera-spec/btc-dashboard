@@ -317,179 +317,199 @@ vol_analysis = analyze_volume_vs_oi(opt_df, current_price)
 migration_analysis = analyze_oi_migration(opt_df, prev_opt_df)
 aggressor_analysis = analyze_aggressor_trades(opt_df, current_price)
 
-# --- RENDER UI: CONSENSUS OVERVIEW ---
-st.markdown("### 📊 Options Forensics Consensus")
-st.caption("This is a multi-dimensional overview, not a predictive Buy/Sell signal. AMT determines structure; Options provide positioning context.")
+# --- RENDER UI: AMT-FIRST CONFLUENCE COCKPIT ---
+st.markdown("### AMT + Price Action Lead; Derivatives Provide Context")
+st.caption("Futures and options are research measurements, not standalone directional signals.")
 
+# Top cockpit: three primary readouts.
 c1, c2, c3 = st.columns(3)
-c1.metric("AMT Structure", shadow_state["confirmed_state"] if shadow_state else "N/A")
-c2.metric("Coverage", layer2_data["coverage"])
-c3.metric("Current Price", f"${current_price:,.2f}")
+c1.metric("Current Price", f"${current_price:,.2f}")
+c2.metric("AMT State", shadow_state["confirmed_state"] if shadow_state else "N/A")
 
-cons1, cons2, cons3, cons4, cons5 = st.columns(5)
-with cons1:
-    if walls_res and walls_res.get("status") == "OK":
-        if walls_res.get("walls"): st.warning("🧱 **Walls Detected**")
-        else: st.info("⚖️ Unclassified")
-    else:
-        st.info("⚖️ Data Unavailable")
-with cons2:
-    if iv_analysis and iv_analysis.get('status') == "BULLISH_URGENCY": st.success("🌪️ **Bullish IV**")
-    elif iv_analysis and iv_analysis.get('status') == "BEARISH_URGENCY": st.error("🌪️ **Bearish IV**")
-    elif iv_analysis and iv_analysis.get('status') in ["UNAVAILABLE", "INSUFFICIENT_DATA"]: st.info("🌪️ Data Unavailable")
-    else: st.info("🌪️ Neutral IV")
-with cons3:
-    if vol_analysis and vol_analysis.get('direction') == "BULLISH_ACTIVITY": st.success("🐋 **Bullish Vol**")
-    elif vol_analysis and vol_analysis.get('direction') == "BEARISH_ACTIVITY": st.error("🐋 **Bearish Vol**")
-    elif vol_analysis and vol_analysis.get('status') in ["UNAVAILABLE", "INSUFFICIENT_DATA"]: st.info("🐋 Data Unavailable")
-    else: st.info("🐋 Stale/Neutral")
-with cons4:
-    if migration_analysis and migration_analysis.get('status') == "BULLISH_MIGRATION": st.success("🚚 **Bullish Shift**")
-    elif migration_analysis and migration_analysis.get('status') == "BEARISH_MIGRATION": st.error("🚚 **Bearish Shift**")
-    elif migration_analysis and migration_analysis.get('status') in ["UNAVAILABLE", "INSUFFICIENT_DATA"]: st.info("🚚 Data Unavailable")
-    else: st.info("🚚 Stable OI")
-with cons5:
-    if aggressor_analysis and aggressor_analysis.get('status') == "AGGRESSIVE_BUYING": st.success("⚔️ **Taker Buys**")
-    elif aggressor_analysis and aggressor_analysis.get('status') == "AGGRESSIVE_SELLING": st.error("⚔️ **Taker Sells**")
-    elif aggressor_analysis and aggressor_analysis.get('status') in ["UNAVAILABLE", "INSUFFICIENT_DATA"]: st.info("⚔️ Data Unavailable")
-    else: st.info("⚔️ Neutral Flow")
-
-st.markdown("---")
-st.subheader("🗺️ Layer 1: Auction Market Theory")
-p1, p2, p3, p4 = st.columns(4)
-p1.metric("Prior VAH", f"${vah:,.2f}" if not pd.isna(vah) else "N/A")
-p2.metric("Prior POC", f"${poc:,.2f}" if not pd.isna(poc) else "N/A")
-p3.metric("Prior VAL", f"${val:,.2f}" if not pd.isna(val) else "N/A")
-p4.metric("ATR (21)", f"${completed_df.iloc[-1]['atr']:,.2f}")
-
-if shadow_state:
-    st.info(f"**Certified AMT State:** {shadow_state['confirmed_state']} (Last Updated: {shadow_state['candle_open_time']})")
-
-st.markdown("---")
-st.subheader("📈 Layer 2: Futures Positioning (Historical Snapshot)")
-
-f1, f2, f3, f4 = st.columns(4)
-f1.metric("Aggregate OI", f"${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data["current_oi_usd"] else "N/A")
-
-if layer2_data["status"] == "OK":
-    f2.metric("30m OI Delta", f"{layer2_data['delta_pct']:+.2f}%", f"${layer2_data['delta_usd']:+,.0f}")
-elif "REJECTED_BASELINE" in layer2_data["status"]:
-    f2.metric("30m OI Delta", "REJECTED", "Gap not 25-35m", delta_color="inverse")
-elif layer2_data["status"] == "COVERAGE_MISMATCH":
-    f2.metric("30m OI Delta", "UNAVAILABLE", "Coverage changed", delta_color="off")
-else:
-    f2.metric("30m OI Delta", "PENDING", layer2_data["status"], delta_color="off")
-
-f3.metric("Weighted Basis", f"{layer2_data['basis_pct']:+.4f}%" if layer2_data['basis_pct'] is not None else "N/A")
-f4.metric("Weighted Funding", f"{layer2_data['funding_rate']:+.4f}%" if layer2_data['funding_rate'] is not None else "N/A")
-
-st.markdown("---")
-st.subheader("🔍 Layer 3: Options Forensics (Delta India)")
-
-if opt_forensics and "data" in opt_forensics:
-    st.caption(f"Latest Snapshot: {opt_forensics['timestamp']}")
-    
-    st.markdown("#### 🧱 Filter 1: Neighboring Strike Analysis (OI Walls)")
-    if walls_res and walls_res.get("status") == "OK":
-        walls = walls_res.get("walls", [])
-        if walls:
-            for wall in walls:
-                st.warning(f"**{wall['type']} WALL DETECTED at ${wall['strike']:,.0f}** (OI: {wall['oi']:,.0f})")
-        else:
-            st.success("**Unclassified Concentration:** No distinct OI walls found near current price.")
-    else:
-        st.info("**UNAVAILABLE:** Not enough data to detect OI walls.")
-
-    st.markdown("#### 🌪️ Filter 2: Implied Volatility Skew (Urgency)")
-    if iv_analysis and iv_analysis.get('status') not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Avg Call IV (Nearby)", f"{iv_analysis['avg_call_iv']*100:.2f}%")
-        c2.metric("Avg Put IV (Nearby)", f"{iv_analysis['avg_put_iv']*100:.2f}%")
-        delta_color = "normal" if iv_analysis['skew_pct'] > 0 else "inverse"
-        c3.metric("IV Skew (Call - Put)", f"{iv_analysis['skew_pct']:+.2f}%", delta_color=delta_color)
-        if iv_analysis['status'] == "BULLISH_URGENCY": st.error(f"**BULLISH_URGENCY:** Call IV is significantly higher than Put IV. Traders are paying a premium for upside.")
-        elif iv_analysis['status'] == "BEARISH_URGENCY": st.warning(f"**BEARISH_URGENCY:** Put IV is significantly higher than Call IV. Traders are paying a premium for downside protection.")
-        else: st.info(f"**NEUTRAL:** Volatility is balanced. Market is pricing a neutral outcome.")
-    else: st.info("**UNAVAILABLE:** Cannot calculate IV skew due to missing data.")
-
-    st.markdown("#### 🐋 Filter 3: Volume vs OI (Fresh Money Detector)")
-    if vol_analysis and vol_analysis.get('status') not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-        v1, v2 = st.columns(2)
-        v1.metric("Call Vol/OI Ratio", f"{vol_analysis['call_ratio']:.2f}x")
-        v2.metric("Put Vol/OI Ratio", f"{vol_analysis['put_ratio']:.2f}x")
-        if vol_analysis['status'] == "FRESH_MONEY_ENTERING":
-            if vol_analysis['direction'] == "BULLISH_ACTIVITY": st.success(f"**FRESH MONEY: BULLISH** - Traders are actively opening new Call positions today.")
-            elif vol_analysis['direction'] == "BEARISH_ACTIVITY": st.error(f"**FRESH MONEY: BEARISH** - Traders are actively opening new Put positions today.")
-            else: st.info(f"**FRESH MONEY: NEUTRAL** - Traders are actively opening new positions today.")
-        else: st.info(f"**STALE POSITIONING:** Volume is low relative to OI. Existing positions are being held, but no significant new money is entering.")
-    else: st.info("**UNAVAILABLE:** Cannot calculate Volume vs OI due to missing data.")
-
-    st.markdown("#### 🚚 Filter 4: OI Migration (Sentiment Shift)")
-    if migration_analysis and migration_analysis.get('status') not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-        if migration_analysis['status'] == "BULLISH_MIGRATION": st.success(f"**BULLISH MIGRATION:** Both Call and Put walls moved HIGHER. Sentiment is shifting Bullish.")
-        elif migration_analysis['status'] == "BEARISH_MIGRATION": st.error(f"**BEARISH MIGRATION:** Both Call and Put walls moved LOWER. Sentiment is shifting Bearish.")
-        elif migration_analysis['status'] == "MILD_BULLISH": st.info(f"**MILD BULLISH MIGRATION:** Call wall moved higher while Put wall stayed/lowered.")
-        else: st.info(f"**STABLE MIGRATION:** Peak OI strikes have not moved significantly.")
-    elif migration_analysis and migration_analysis.get('status') == "INSUFFICIENT_DATA":
-        st.warning("**PENDING:** Waiting for a second historical successful snapshot to calculate migration.")
-    else: st.info("**UNAVAILABLE:** Missing required data to calculate migration.")
-
-    st.markdown("#### ⚔️ Filter 5: Aggressor Trades (Directional Taker Flow)")
-    if aggressor_analysis and aggressor_analysis.get('status') not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-        a1, a2 = st.columns(2)
-        a1.metric("Taker Buy Vol", f"{aggressor_analysis['buy_vol']:,.0f}")
-        a2.metric("Taker Sell Vol", f"{aggressor_analysis['sell_vol']:,.0f}")
-        
-        if aggressor_analysis['status'] == "AGGRESSIVE_BUYING": st.success(f"**AGGRESSIVE BUYING:** Buyers are lifting the ask. (Buys: {aggressor_analysis['buy_vol']:,.0f} vs Sells: {aggressor_analysis['sell_vol']:,.0f})")
-        elif aggressor_analysis['status'] == "AGGRESSIVE_SELLING": st.error(f"**AGGRESSIVE SELLING:** Sellers are hitting the bid. (Sells: {aggressor_analysis['sell_vol']:,.0f} vs Buys: {aggressor_analysis['buy_vol']:,.0f})")
-        else: st.info(f"**NEUTRAL FLOW:** Taker buys and sells are relatively balanced.")
-    else: st.info("**UNAVAILABLE:** Missing required data to calculate aggressor flow.")
-
-    st.markdown("#### Raw Options Chain (Closest 10 Strikes)")
-    closest_df = get_nearest_strikes(opt_df, current_price, count=10)
-    st.dataframe(
-        closest_df.drop(columns=['distance'], errors='ignore'), 
-        use_container_width=True, 
-        hide_index=True,
-        column_config={
-            "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
-            "Call OI": st.column_config.NumberColumn("Call OI", format="%d"),
-            "Put OI": st.column_config.NumberColumn("Put OI", format="%d"),
-            "Call Vol": st.column_config.NumberColumn("Call Vol", format="%d"),
-            "Put Vol": st.column_config.NumberColumn("Put Vol", format="%d"),
-            "Call IV": st.column_config.NumberColumn("Call IV", format="%.4f"),
-            "Put IV": st.column_config.NumberColumn("Put IV", format="%.4f"),
-        }
+if layer2_data["status"] == "OK" and layer2_data.get("delta_pct") is not None:
+    c3.metric(
+        "30m OI Delta",
+        f"{layer2_data['delta_pct']:+.2f}%",
+        f"${layer2_data['delta_usd']:+,.0f}",
     )
-elif opt_forensics and "error" in opt_forensics:
-    st.error(f"Error loading options data: {opt_forensics['error']}")
+elif "REJECTED_BASELINE" in layer2_data["status"]:
+    c3.metric("30m OI Delta", "REJECTED", "Baseline gap outside 25–35m", delta_color="off")
+elif layer2_data["status"] == "COVERAGE_MISMATCH":
+    c3.metric("30m OI Delta", "UNAVAILABLE", "Contributor coverage changed", delta_color="off")
 else:
-    st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
+    c3.metric("30m OI Delta", "N/A", layer2_data["status"], delta_color="off")
 
-# --- TEXT EXPORT FOR AI SUPPORT ---
 st.markdown("---")
-with st.expander("📋 Copy/Paste Text Report for AI Support"):
-    st.write("Click the copy icon in the top right of the box below to copy this for support.")
-    
-    report_lines = []
-    report_lines.append(f"--- BTC TERMINAL REPORT ---")
-    report_lines.append(f"Time (UTC): {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
-    report_lines.append(f"Price: ${current_price:,.2f}")
-    report_lines.append(f"AMT State: {shadow_state['confirmed_state'] if shadow_state else 'N/A'}")
-    report_lines.append(f"Coverage: {layer2_data['coverage']}")
-    
-    report_lines.append(f"\n--- LAYER 2 (FUTURES) ---")
-    report_lines.append(f"OI: ${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data['current_oi_usd'] else "OI: N/A")
-    report_lines.append(f"30m Delta: {layer2_data['status']} {layer2_data.get('delta_pct', '')}")
-    report_lines.append(f"Basis: {layer2_data['basis_pct']}")
-    report_lines.append(f"Funding: {layer2_data['funding_rate']}")
-    
-    report_lines.append(f"\n--- LAYER 3 (OPTIONS) ---")
-    report_lines.append(f"Walls: {walls_res}")
-    report_lines.append(f"IV Skew: {iv_analysis}")
-    report_lines.append(f"Vol vs OI: {vol_analysis}")
-    report_lines.append(f"Migration: {migration_analysis}")
-    report_lines.append(f"Aggressor Flow: {aggressor_analysis}")
-    
-    final_report = "\n".join(report_lines)
-    st.code(final_report, language="text")
+st.subheader("Confluence Table")
+st.caption("Reference framework: read price acceptance/rejection first; use derivatives only to qualify the context.")
+confluence_rows = [
+    {
+        "AMT / Price Action": "Price accepts above prior value",
+        "Derivatives Evidence": "OI rising; funding and basis provide supporting context",
+        "Interpretation": "Positioning accompanies the auction, but does not prove direction; require continued price acceptance.",
+    },
+    {
+        "AMT / Price Action": "Price rejects at prior VAH",
+        "Derivatives Evidence": "Nearby call OI concentration and/or call IV rising",
+        "Interpretation": "Potential overhead risk; wait for price-action confirmation of rejection.",
+    },
+    {
+        "AMT / Price Action": "Price accepts below prior VAL",
+        "Derivatives Evidence": "OI rising and basis weakening",
+        "Interpretation": "Positioning accompanies the downside auction; derivatives alone do not establish a short.",
+    },
+    {
+        "AMT / Price Action": "Price returns into prior value",
+        "Derivatives Evidence": "OI declining",
+        "Interpretation": "May reflect position reduction; treat as rotation/balance unless price establishes acceptance elsewhere.",
+    },
+    {
+        "AMT / Price Action": "Balanced auction",
+        "Derivatives Evidence": "Mixed, neutral, stale, or incomplete futures/options evidence",
+        "Interpretation": "No compelling directional evidence; preserve the AMT read and wait for clearer price behaviour.",
+    },
+]
+st.dataframe(pd.DataFrame(confluence_rows), use_container_width=True, hide_index=True)
+
+futures_tab, options_tab, raw_tab = st.tabs(["Futures", "Options", "Raw Data"])
+
+with futures_tab:
+    st.subheader("Futures Positioning")
+    st.caption("Aggregate OI is limited to the exchanges contributing to this snapshot; coverage is shown explicitly.")
+    f1, f2, f3, f4 = st.columns(4)
+    f1.metric(
+        "Aggregate OI",
+        f"${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data["current_oi_usd"] is not None else "N/A",
+    )
+    f2.metric(
+        "Weighted Basis",
+        f"{layer2_data['basis_pct']:+.4f}%" if layer2_data["basis_pct"] is not None else "N/A",
+    )
+    f3.metric(
+        "Weighted Funding",
+        f"{layer2_data['funding_rate']:+.4f}%" if layer2_data["funding_rate"] is not None else "N/A",
+    )
+    f4.metric("Exchange Coverage", layer2_data.get("coverage", "UNKNOWN"))
+    st.caption(f"OI delta validation status: {layer2_data['status']}")
+    if layer2_data["status"] == "OK":
+        st.write(
+            f"Validated 30m change: ${layer2_data['delta_usd']:+,.0f} "
+            f"({layer2_data['delta_pct']:+.2f}%)."
+        )
+    elif "REJECTED_BASELINE" in layer2_data["status"]:
+        st.warning("30m OI change rejected because the comparison interval was outside the accepted 25–35 minute window.")
+    elif layer2_data["status"] == "COVERAGE_MISMATCH":
+        st.warning("30m OI change unavailable because exchange contributor coverage changed.")
+    else:
+        st.info("A validated 30m OI comparison is not currently available.")
+    st.caption("OI describes outstanding contracts, not which side is directionally dominant. Partial exchange coverage is not full-market OI.")
+
+with options_tab:
+    st.subheader("Options Positioning — Five Research Filters")
+    if opt_forensics and "data" in opt_forensics:
+        st.caption(f"Latest successful snapshot: {opt_forensics['timestamp']}")
+        
+        # Each filter is deliberately summarized in one sentence; raw measurements remain in Raw Data.
+        if walls_res and walls_res.get("status") == "OK":
+            walls = walls_res.get("walls", [])
+            if walls:
+                wall_text = "; ".join(
+                    f"{wall['type']} local concentration at ${wall['strike']:,.0f} (OI {wall['oi']:,.0f})"
+                    for wall in walls
+                )
+                st.write(f"**1. Nearby OI concentration:** {wall_text}; this is a local five-strike comparison, not proof of a price barrier.")
+            else:
+                st.write("**1. Nearby OI concentration:** No distinct local OI concentration was detected among the five nearest strikes.")
+        else:
+            st.write("**1. Nearby OI concentration:** Unavailable or insufficient data to assess the five nearest strikes.")
+
+        if iv_analysis and iv_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+            st.write(
+                f"**2. Implied-volatility skew:** Nearby average call IV is {iv_analysis['avg_call_iv']*100:.2f}% "
+                f"versus put IV {iv_analysis['avg_put_iv']*100:.2f}% (relative skew {iv_analysis['skew_pct']:+.2f}%, "
+                f"{iv_analysis['status']}); this five-strike average is a rough context measure, not delta-matched skew."
+            )
+        else:
+            st.write("**2. Implied-volatility skew:** Unavailable or insufficient IV data.")
+
+        if vol_analysis and vol_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+            st.write(
+                f"**3. Options Turnover Relative to Open Interest:** Call volume/OI is {vol_analysis['call_ratio']:.3f}x "
+                f"and put volume/OI is {vol_analysis['put_ratio']:.3f}x ({vol_analysis['status']}); volume does not distinguish opening from closing trades."
+            )
+        else:
+            st.write("**3. Options Turnover Relative to Open Interest:** Unavailable or insufficient volume/OI data.")
+
+        if migration_analysis and migration_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+            st.write(
+                f"**4. OI peak-strike migration:** Call peak shifted {migration_analysis['call_shift']:+,.0f} "
+                f"and put peak shifted {migration_analysis['put_shift']:+,.0f} ({migration_analysis['status']}); "
+                f"this compares only the maximum-OI strikes, not the full strike distribution."
+            )
+        elif migration_analysis and migration_analysis.get("status") == "INSUFFICIENT_DATA":
+            st.write("**4. OI peak-strike migration:** Waiting for a second successful snapshot with usable OI on both sides.")
+        else:
+            st.write("**4. OI peak-strike migration:** Unavailable because the current or previous snapshot is missing required data.")
+
+        if aggressor_analysis and aggressor_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+            st.write(
+                f"**5. Taker activity (raw):** Combined nearby taker buys are {aggressor_analysis['buy_vol']:,.0f} "
+                f"versus sells {aggressor_analysis['sell_vol']:,.0f} ({aggressor_analysis['status']}); "
+                f"calls and puts are combined, so this is not a validated BTC-direction signal."
+            )
+        else:
+            st.write("**5. Taker activity (raw):** Unavailable or insufficient taker-volume data.")
+    elif opt_forensics and "error" in opt_forensics:
+        st.error(f"Error loading options data: {opt_forensics['error']}")
+    else:
+        st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
+
+with raw_tab:
+    st.subheader("Raw Options Chain — 10 Nearest Strikes")
+    if opt_forensics and "data" in opt_forensics:
+        closest_df = get_nearest_strikes(opt_df, current_price, count=10)
+        st.dataframe(
+            closest_df.drop(columns=["distance"], errors="ignore"),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
+                "Call OI": st.column_config.NumberColumn("Call OI", format="%d"),
+                "Put OI": st.column_config.NumberColumn("Put OI", format="%d"),
+                "Call Vol": st.column_config.NumberColumn("Call Vol", format="%d"),
+                "Put Vol": st.column_config.NumberColumn("Put Vol", format="%d"),
+                "Call IV": st.column_config.NumberColumn("Call IV", format="%.4f"),
+                "Put IV": st.column_config.NumberColumn("Put IV", format="%.4f"),
+            },
+        )
+    elif opt_forensics and "error" in opt_forensics:
+        st.error(f"Error loading options data: {opt_forensics['error']}")
+    else:
+        st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
+
+    st.markdown("---")
+    with st.expander("📋 Copy/Paste Text Report for AI Support"):
+        st.write("Click the copy icon in the top right of the box below to copy this for support.")
+
+        report_lines = []
+        report_lines.append("--- BTC TERMINAL REPORT ---")
+        report_lines.append(f"Time (UTC): {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
+        report_lines.append(f"Price: ${current_price:,.2f}")
+        report_lines.append(f"AMT State: {shadow_state['confirmed_state'] if shadow_state else 'N/A'}")
+        report_lines.append(f"Coverage: {layer2_data['coverage']}")
+
+        report_lines.append("\\n--- LAYER 2 (FUTURES) ---")
+        report_lines.append(f"OI: ${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data["current_oi_usd"] else "OI: N/A")
+        report_lines.append(f"30m Delta: {layer2_data['status']} {layer2_data.get('delta_pct', '')}")
+        report_lines.append(f"Basis: {layer2_data['basis_pct']}")
+        report_lines.append(f"Funding: {layer2_data['funding_rate']}")
+
+        report_lines.append("\\n--- LAYER 3 (OPTIONS) ---")
+        report_lines.append(f"Walls: {walls_res}")
+        report_lines.append(f"IV Skew: {iv_analysis}")
+        report_lines.append(f"Options Turnover Relative to Open Interest: {vol_analysis}")
+        report_lines.append(f"Migration: {migration_analysis}")
+        report_lines.append(f"Aggressor Flow: {aggressor_analysis}")
+
+        final_report = "\\n".join(report_lines)
+        st.code(final_report, language="text")
