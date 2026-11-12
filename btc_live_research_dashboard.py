@@ -85,8 +85,10 @@ def fetch_layer2_supabase_data():
     except Exception as exc:
         return {**empty_result, "status": f"ERROR: {exc}"}
 
-def process_options_snapshot(client, snapshot_id):
-    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_price, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).execute()
+def process_options_snapshot(client, snapshot_id, expiry_date):
+    # Keep the raw chain on one expiry. A collector snapshot contains many expiries;
+    # grouping only by strike would incorrectly add OI and blend premiums across expiries.
+    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_price, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).eq("expiry_date", expiry_date).execute()
     if not chain.data: return None
     
     df = pd.DataFrame(chain.data)
@@ -137,14 +139,30 @@ def fetch_options_forensics():
         
         latest_snapshot = snapshots[0]
         previous_snapshot = snapshots[1] if len(snapshots) > 1 else None
-        
-        current_df = process_options_snapshot(client, latest_snapshot["snapshot_id"])
-        previous_df = process_options_snapshot(client, previous_snapshot["snapshot_id"]) if previous_snapshot else None
-        
+
+        # Use the same nearest valid expiry selected by the existing options metrics panel.
+        # Never combine multiple expiry chains into one strike-level OI/premium row.
+        selected_metrics = fetch_nearest_valid_options_metrics()
+        selected_expiry = selected_metrics.get("expiry_date") if selected_metrics else None
+        if not selected_expiry:
+            return {
+                "snapshot_id": latest_snapshot["snapshot_id"],
+                "timestamp": latest_snapshot["completed_at"],
+                "previous_timestamp": previous_snapshot["completed_at"] if previous_snapshot else None,
+                "expiry_date": None,
+                "data": None,
+                "previous_data": None,
+                "status": "NO_SELECTED_EXPIRY"
+            }
+
+        current_df = process_options_snapshot(client, latest_snapshot["snapshot_id"], selected_expiry)
+        previous_df = process_options_snapshot(client, previous_snapshot["snapshot_id"], selected_expiry) if previous_snapshot else None
+
         return {
             "snapshot_id": latest_snapshot["snapshot_id"],
             "timestamp": latest_snapshot["completed_at"],
             "previous_timestamp": previous_snapshot["completed_at"] if previous_snapshot else None,
+            "expiry_date": selected_expiry,
             "data": current_df,
             "previous_data": previous_df
         }
