@@ -167,11 +167,11 @@ def fetch_nearest_valid_options_metrics():
         if not rows:
             return {**empty, "status": "NO_DERIVED_ROWS", "source_collected_at": run.get("completed_at")}
         today = datetime.datetime.now(timezone.utc).date()
-        future_rows = [
-            row for row in rows
-            if pd.to_datetime(row.get("expiry_date"), errors="coerce") is not pd.NaT
-            and pd.to_datetime(row.get("expiry_date"), errors="coerce").date() >= today
-        ]
+        future_rows = []
+        for row in rows:
+            expiry_value = pd.to_datetime(row.get("expiry_date"), errors="coerce")
+            if pd.notna(expiry_value) and expiry_value.date() >= today:
+                future_rows.append(row)
         valid_rows = [
             row for row in future_rows
             if isinstance(row.get("metric_status"), dict)
