@@ -810,20 +810,28 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     labels.append("📍 Nearby OI")
                 if max_pain_strike is not None and strike_value == max_pain_strike:
                     labels.append("🎯 Max Pain")
-                if max_call_oi is not None and pd.notna(row.get("Call OI")) and row.get("Call OI") == max_call_oi:
+                if max_call_oi is not None and pd.notna(row.get("Call OI")) and row.get("Call OI (Contracts)") == max_call_oi:
                     labels.append("🔵 Max Call OI")
-                if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI") == max_put_oi:
+                if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI (Contracts)") == max_put_oi:
                     labels.append("🟠 Max Put OI")
                 return " · ".join(labels)
 
+            # Presentation-only labels: preserve the raw contract counts and expose the
+            # existing USD notional fields alongside them without changing any calculations.
             evidence_df.insert(0, "Signal / Evidence", evidence_df.apply(build_evidence, axis=1))
+            evidence_df = evidence_df.rename(columns={
+                "Call OI": "Call OI (Contracts)",
+                "Put OI": "Put OI (Contracts)",
+                "OI_USD_Call": "Call OI (USD)",
+                "OI_USD_Put": "Put OI (USD)",
+            })
 
             def highlight_evidence(row):
                 styles = pd.Series("", index=row.index)
-                if max_call_oi is not None and pd.notna(row.get("Call OI")) and row.get("Call OI") == max_call_oi:
-                    styles["Call OI"] = "background-color: #dbeeff; color: black; font-weight: 700"
-                if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI") == max_put_oi:
-                    styles["Put OI"] = "background-color: #ffe6cc; color: black; font-weight: 700"
+                if max_call_oi is not None and pd.notna(row.get("Call OI")) and row.get("Call OI (Contracts)") == max_call_oi:
+                    styles["Call OI (Contracts)"] = "background-color: #dbeeff; color: black; font-weight: 700"
+                if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI (Contracts)") == max_put_oi:
+                    styles["Put OI (Contracts)"] = "background-color: #ffe6cc; color: black; font-weight: 700"
                 try:
                     strike_value = float(row.get("strike_price"))
                 except (TypeError, ValueError):
@@ -841,8 +849,10 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 column_config={
                     "Signal / Evidence": st.column_config.TextColumn("Signal / Evidence", width="large"),
                     "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
-                    "Call OI": st.column_config.NumberColumn("Call OI", format="%d"),
-                    "Put OI": st.column_config.NumberColumn("Put OI", format="%d"),
+                    "Call OI (Contracts)": st.column_config.NumberColumn("Call OI (Contracts)", format="%d"),
+                    "Put OI (Contracts)": st.column_config.NumberColumn("Put OI (Contracts)", format="%d"),
+                    "Call OI (USD)": st.column_config.NumberColumn("Call OI (USD)", format="$%.2f"),
+                    "Put OI (USD)": st.column_config.NumberColumn("Put OI (USD)", format="$%.2f"),
                     "Call Vol": st.column_config.NumberColumn("Call Vol", format="%d"),
                     "Put Vol": st.column_config.NumberColumn("Put Vol", format="%d"),
                     "Call IV": st.column_config.NumberColumn("Call IV", format="%.4f"),
