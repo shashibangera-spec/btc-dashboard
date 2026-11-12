@@ -133,13 +133,59 @@ def fetch_options_forensics():
         previous_df = process_options_snapshot(client, previous_snapshot["snapshot_id"]) if previous_snapshot else None
         
         return {
-            "timestamp": latest_snapshot["completed_at"], 
+            "snapshot_id": latest_snapshot["snapshot_id"],
+            "timestamp": latest_snapshot["completed_at"],
             "previous_timestamp": previous_snapshot["completed_at"] if previous_snapshot else None,
             "data": current_df,
             "previous_data": previous_df
         }
     except Exception as e:
         return {"error": str(e)}
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_nearest_valid_options_metrics():
+    """Latest collector run, then nearest future expiry with a complete source chain."""
+    empty = {"status": "NO_DERIVED_METRICS", "expiry_date": None, "metric_status": {}}
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+        client = create_client(url, key)
+        runs = client.table("options_collection_runs").select(
+            "snapshot_id, completed_at, status"
+        ).in_("status", ["SUCCESS", "PARTIAL"]).order("completed_at", desc=True).limit(1).execute()
+        if not runs.data:
+            return empty
+        run = runs.data[0]
+        derived = client.table("options_derived_snapshots").select(
+            "snapshot_id,expiry_date,calculated_at,source_collected_at,underlying_spot_price,"
+            "max_pain_strike,atm_strike,atm_straddle_price,atm_straddle_pct_spot,"
+            "call_gex_wall_strike,call_gex_wall_value,put_gex_wall_strike,put_gex_wall_value,"
+            "gex_contract_multiplier,local_oi_pcr,local_put_oi_contracts,local_call_oi_contracts,"
+            "local_oi_band_pct,metric_version,metric_status"
+        ).eq("snapshot_id", run["snapshot_id"]).order("expiry_date", desc=False).execute()
+        rows = derived.data or []
+        if not rows:
+            return {**empty, "status": "NO_DERIVED_ROWS", "source_collected_at": run.get("completed_at")}
+        today = datetime.datetime.now(timezone.utc).date()
+        future_rows = [
+            row for row in rows
+            if pd.to_datetime(row.get("expiry_date"), errors="coerce") is not pd.NaT
+            and pd.to_datetime(row.get("expiry_date"), errors="coerce").date() >= today
+        ]
+        valid_rows = [
+            row for row in future_rows
+            if isinstance(row.get("metric_status"), dict)
+            and row["metric_status"].get("chain") == "OK"
+        ]
+        selected = valid_rows[0] if valid_rows else (future_rows[0] if future_rows else rows[0])
+        selected = dict(selected)
+        selected["run_completed_at"] = run.get("completed_at")
+        selected["run_status"] = run.get("status")
+        selected["status"] = "OK" if selected.get("metric_status", {}).get("chain") == "OK" else "INCOMPLETE_CHAIN"
+        return selected
+    except Exception as exc:
+        return {**empty, "status": f"ERROR: {exc}"}
+
 
 @st.cache_data(ttl=60)
 def get_cached_binance_data():
@@ -298,7 +344,7 @@ def fetch_amt_shadow_state():
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
         client = create_client(url, key)
-        res = client.table("amt_snapshots").select("candle_open_time, confirmed_state").order("candle_open_time", desc=True).limit(1).execute()
+        res = client.table("amt_snapshots").select("candle_open_time, confirmed_state, developing_state, project_echo_code, project_echo_name, project_echo_version").order("candle_open_time", desc=True).limit(1).execute()
         if res.data: return res.data[0]
         return None
     except: return None
@@ -306,6 +352,7 @@ def fetch_amt_shadow_state():
 shadow_state = fetch_amt_shadow_state()
 layer2_data = fetch_layer2_supabase_data()
 opt_forensics = fetch_options_forensics()
+options_metrics = fetch_nearest_valid_options_metrics()
 
 opt_df = opt_forensics["data"] if opt_forensics and "data" in opt_forensics else None
 prev_opt_df = opt_forensics.get("previous_data") if opt_forensics else None
@@ -325,6 +372,17 @@ st.caption("Futures and options are research measurements, not standalone direct
 c1, c2, c3 = st.columns(3)
 c1.metric("Current Price", f"${current_price:,.2f}")
 c2.metric("AMT State", shadow_state["confirmed_state"] if shadow_state else "N/A")
+
+if shadow_state:
+    echo_label = shadow_state.get("project_echo_name") or shadow_state.get("project_echo_code") or "N/A"
+    st.caption(
+        f"Project Echo: {echo_label} "
+        f"({shadow_state.get('project_echo_code') or 'NO_CODE'}; "
+        f"version {shadow_state.get('project_echo_version') or 'N/A'}) | "
+        f"Developing state: {shadow_state.get('developing_state') or 'N/A'}"
+    )
+else:
+    st.caption("Project Echo: N/A — no AMT snapshot available.")
 
 if layer2_data["status"] == "OK" and layer2_data.get("delta_pct") is not None:
     c3.metric(
@@ -405,7 +463,75 @@ with futures_tab:
     st.caption("OI describes outstanding contracts, not which side is directionally dominant. Partial exchange coverage is not full-market OI.")
 
 with options_tab:
-    st.subheader("Options Positioning — Five Research Filters")
+    st.subheader("Options Research Panel — Nearest Valid Expiry")
+    if options_metrics and options_metrics.get("expiry_date"):
+        metric_status = options_metrics.get("metric_status") or {}
+        st.caption(
+            f"Expiry: {options_metrics.get('expiry_date')} | "
+            f"Source collected: {options_metrics.get('source_collected_at') or 'N/A'} | "
+            f"Calculated: {options_metrics.get('calculated_at') or 'N/A'} | "
+            f"Chain: {metric_status.get('chain', 'UNKNOWN')}"
+        )
+        om1, om2, om3 = st.columns(3)
+        om1.metric(
+            "Max Pain (theoretical)",
+            f"${float(options_metrics['max_pain_strike']):,.0f}"
+            if options_metrics.get("max_pain_strike") is not None else "N/A",
+        )
+        om2.metric(
+            "ATM Straddle",
+            f"${float(options_metrics['atm_straddle_price']):,.2f}"
+            if options_metrics.get("atm_straddle_price") is not None else "N/A",
+            f"{float(options_metrics['atm_straddle_pct_spot']):.2f}% of spot"
+            if options_metrics.get("atm_straddle_pct_spot") is not None else None,
+        )
+        om3.metric(
+            "Local OI PCR (±10%)",
+            f"{float(options_metrics['local_oi_pcr']):.3f}"
+            if options_metrics.get("local_oi_pcr") is not None else "N/A",
+        )
+        om4, om5, om6, om7 = st.columns(4)
+        om4.metric(
+            "Gross Call GEX Concentration",
+            f"${float(options_metrics['call_gex_wall_strike']):,.0f}"
+            if options_metrics.get("call_gex_wall_strike") is not None else "N/A",
+        )
+        om5.metric(
+            "Call GEX (model-derived)",
+            f"${float(options_metrics['call_gex_wall_value']):,.2f}"
+            if options_metrics.get("call_gex_wall_value") is not None else "N/A",
+        )
+        om6.metric(
+            "Gross Put GEX Concentration",
+            f"${float(options_metrics['put_gex_wall_strike']):,.0f}"
+            if options_metrics.get("put_gex_wall_strike") is not None else "N/A",
+        )
+        om7.metric(
+            "Put GEX (model-derived)",
+            f"${float(options_metrics['put_gex_wall_value']):,.2f}"
+            if options_metrics.get("put_gex_wall_value") is not None else "N/A",
+        )
+        st.caption(
+            "GEX is model-derived using a 0.001 BTC-per-contract multiplier and standard API gamma. "
+            "Gross unsigned OI concentration only; this does not identify dealer positioning or net gamma."
+        )
+        st.caption(
+            f"ATM strike: ${float(options_metrics['atm_strike']):,.0f}"
+            if options_metrics.get("atm_strike") is not None else "ATM strike: N/A"
+        )
+        st.caption(
+            "Metric quality: " + " | ".join(
+                f"{key}: {value}" for key, value in metric_status.items()
+            )
+        )
+    else:
+        st.info(
+            "No complete-chain derived options snapshot is available for an active expiry. "
+            f"Status: {options_metrics.get('status', 'N/A') if options_metrics else 'N/A'}"
+        )
+
+    st.markdown("---")
+    st.subheader("Options Positioning — Five Existing Research Filters")
     if opt_forensics and "data" in opt_forensics:
         st.caption(f"Latest successful snapshot: {opt_forensics['timestamp']}")
         
@@ -496,6 +622,10 @@ with raw_tab:
         report_lines.append(f"Time (UTC): {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
         report_lines.append(f"Price: ${current_price:,.2f}")
         report_lines.append(f"AMT State: {shadow_state['confirmed_state'] if shadow_state else 'N/A'}")
+        report_lines.append(
+            f"Project Echo: {shadow_state.get('project_echo_code', 'N/A')} / "
+            f"{shadow_state.get('project_echo_name', 'N/A')}" if shadow_state else "Project Echo: N/A"
+        )
         report_lines.append(f"Coverage: {layer2_data['coverage']}")
 
         report_lines.append("\n--- LAYER 2 (FUTURES) ---")
@@ -510,6 +640,14 @@ with raw_tab:
         report_lines.append(f"Options Turnover Relative to Open Interest: {vol_analysis}")
         report_lines.append(f"Migration: {migration_analysis}")
         report_lines.append(f"Aggressor Flow: {aggressor_analysis}")
+        report_lines.append("\\n--- OPTIONS DERIVED METRICS ---")
+        report_lines.append(f"Expiry: {options_metrics.get('expiry_date') if options_metrics else 'N/A'}")
+        report_lines.append(f"Max Pain: {options_metrics.get('max_pain_strike') if options_metrics else None}")
+        report_lines.append(f"ATM Straddle: {options_metrics.get('atm_straddle_price') if options_metrics else None}")
+        report_lines.append(f"Local OI PCR: {options_metrics.get('local_oi_pcr') if options_metrics else None}")
+        report_lines.append(f"Gross Call GEX: {options_metrics.get('call_gex_wall_strike') if options_metrics else None}")
+        report_lines.append(f"Gross Put GEX: {options_metrics.get('put_gex_wall_strike') if options_metrics else None}")
+        report_lines.append(f"Metric Status: {options_metrics.get('metric_status') if options_metrics else None}")
 
         final_report = "\n".join(report_lines)
         st.code(final_report, language="text")
