@@ -821,15 +821,15 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
             def highlight_evidence(row):
                 styles = pd.Series("", index=row.index)
                 if max_call_oi is not None and pd.notna(row.get("Call OI")) and row.get("Call OI") == max_call_oi:
-                    styles["Call OI"] = "background-color: #dbeeff; color: white; font-weight: 700"
+                    styles["Call OI"] = "background-color: #dbeeff; color: black; font-weight: 700"
                 if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI") == max_put_oi:
-                    styles["Put OI"] = "background-color: #ffe6cc; color: white; font-weight: 700"
+                    styles["Put OI"] = "background-color: #ffe6cc; color: black; font-weight: 700"
                 try:
                     strike_value = float(row.get("strike_price"))
                 except (TypeError, ValueError):
                     strike_value = None
                 if max_pain_strike is not None and strike_value == max_pain_strike:
-                    styles["strike_price"] = "background-color: #fff5cc; color: white; font-weight: 700"
+                    styles["strike_price"] = "background-color: #fff5cc; color: black; font-weight: 700"
                 return styles
 
             styled_evidence = evidence_df.style.apply(highlight_evidence, axis=1)
