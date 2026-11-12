@@ -86,13 +86,15 @@ def fetch_layer2_supabase_data():
         return {**empty_result, "status": f"ERROR: {exc}"}
 
 def process_options_snapshot(client, snapshot_id):
-    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).execute()
+    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).execute()
     if not chain.data: return None
     
     df = pd.DataFrame(chain.data)
     if df.empty: return None
     
     pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
+    pivot_oi_usd = df.pivot_table(index='strike_price', columns='option_type', values='oi_value_usd', aggfunc='sum').reset_index()
+    pivot_oi_usd.rename(columns={'CALL': 'OI_USD_Call', 'PUT': 'OI_USD_Put'}, inplace=True)
     pivot_iv = df.pivot_table(index='strike_price', columns='option_type', values='mark_iv', aggfunc='mean').reset_index()
     pivot_vol = df.pivot_table(index='strike_price', columns='option_type', values='volume_24h', aggfunc='sum').reset_index()
     
@@ -100,7 +102,8 @@ def process_options_snapshot(client, snapshot_id):
     pivot_iv.rename(columns={'CALL': 'Call IV', 'PUT': 'Put IV'}, inplace=True)
     pivot_vol.rename(columns={'CALL': 'Call Vol', 'PUT': 'Put Vol'}, inplace=True)
     
-    merged = pd.merge(pivot_oi, pivot_iv, on='strike_price', how='outer')
+    merged = pd.merge(pivot_oi, pivot_oi_usd, on='strike_price', how='outer')
+    merged = pd.merge(merged, pivot_iv, on='strike_price', how='outer')
     merged = pd.merge(merged, pivot_vol, on='strike_price', how='outer')
     
     if 'taker_buy_volume' in df.columns:
@@ -810,9 +813,9 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     labels.append("📍 Nearby OI")
                 if max_pain_strike is not None and strike_value == max_pain_strike:
                     labels.append("🎯 Max Pain")
-                if max_call_oi is not None and pd.notna(row.get("Call OI")) and row.get("Call OI (Contracts)") == max_call_oi:
+                if max_call_oi is not None and pd.notna(row.get("Call OI")) and row.get("Call OI") == max_call_oi:
                     labels.append("🔵 Max Call OI")
-                if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI (Contracts)") == max_put_oi:
+                if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI") == max_put_oi:
                     labels.append("🟠 Max Put OI")
                 return " · ".join(labels)
 
@@ -821,8 +824,8 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
             evidence_df.insert(0, "Signal / Evidence", evidence_df.apply(build_evidence, axis=1))
             evidence_df = evidence_df.rename(columns={
                 "Call OI": "Call OI (Contracts)",
-                "Put OI": "Put OI (Contracts)",
                 "OI_USD_Call": "Call OI (USD)",
+                "Put OI": "Put OI (Contracts)",
                 "OI_USD_Put": "Put OI (USD)",
             })
 
@@ -840,7 +843,12 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     styles["strike_price"] = "background-color: #fff5cc; color: black; font-weight: 700"
                 return styles
 
-            styled_evidence = evidence_df.style.apply(highlight_evidence, axis=1)
+            styled_evidence = evidence_df.style.apply(highlight_evidence, axis=1).format({
+                "Call OI (USD)": lambda value: "" if pd.isna(value) else f"${value / 1_000_000:,.2f}M",
+                "Put OI (USD)": lambda value: "" if pd.isna(value) else f"${value / 1_000_000:,.2f}M",
+                "taker_buy_volume": lambda value: "" if pd.isna(value) else f"{value:,.0f}",
+                "taker_sell_volume": lambda value: "" if pd.isna(value) else f"{value:,.0f}",
+            })
             st.caption("📍 Nearby OI · 🎯 Max Pain · 🔵 Max Call OI · 🟠 Max Put OI")
             st.dataframe(
                 styled_evidence,
@@ -849,12 +857,12 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 column_config={
                     "Signal / Evidence": st.column_config.TextColumn("Signal / Evidence", width="large"),
                     "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
-                    "Call OI (Contracts)": st.column_config.NumberColumn("Call OI (Contracts)", format="%d"),
-                    "Put OI (Contracts)": st.column_config.NumberColumn("Put OI (Contracts)", format="%d"),
-                    "Call OI (USD)": st.column_config.NumberColumn("Call OI (USD)", format="$%.2f"),
-                    "Put OI (USD)": st.column_config.NumberColumn("Put OI (USD)", format="$%.2f"),
-                    "Call Vol": st.column_config.NumberColumn("Call Vol", format="%d"),
-                    "Put Vol": st.column_config.NumberColumn("Put Vol", format="%d"),
+                    "Call OI (Contracts)": st.column_config.NumberColumn("Call OI (Contracts)", format="%,.0f"),
+                    "Put OI (Contracts)": st.column_config.NumberColumn("Put OI (Contracts)", format="%,.0f"),
+                    "Call OI (USD)": st.column_config.TextColumn("Call OI (USD)"),
+                    "Put OI (USD)": st.column_config.TextColumn("Put OI (USD)"),
+                    "Call Vol": st.column_config.NumberColumn("Call Vol", format="%,.0f"),
+                    "Put Vol": st.column_config.NumberColumn("Put Vol", format="%,.0f"),
                     "Call IV": st.column_config.NumberColumn("Call IV", format="%.4f"),
                     "Put IV": st.column_config.NumberColumn("Put IV", format="%.4f"),
                 },
