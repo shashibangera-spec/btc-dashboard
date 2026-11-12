@@ -841,6 +841,10 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     labels.append("🔵 Max Call OI")
                 if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI") == max_put_oi:
                     labels.append("🟠 Max Put OI")
+                # CMP anchor uses the already-selected nearest-expiry ATM strike
+                # and the latest completed-candle market price.
+                if atm_strike is not None and strike_value is not None and np.isclose(strike_value, atm_strike):
+                    labels.append(f"⚡ CMP: ${latest_price:,.2f}")
                 return " · ".join(labels)
 
             # Presentation-only Delta-style order-book layout.
@@ -854,6 +858,14 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 "Mark_Call": "Call Prem",
                 "Mark_Put": "Put Prem",
             })
+
+            # Reuse the already-calculated options ATM strike and latest market price.
+            try:
+                atm_value = options_metrics.get("atm_strike") if options_metrics else None
+                atm_strike = float(atm_value) if atm_value is not None and np.isfinite(float(atm_value)) else None
+            except (TypeError, ValueError, OverflowError):
+                atm_strike = None
+            latest_price = float(current_price)
 
             # Ensure optional display fields exist even when one side is absent.
             display_columns = [
@@ -878,6 +890,19 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
 
             def highlight_order_book(row):
                 styles = pd.Series("", index=row.index)
+
+                # CMP row takes precedence over every other evidence highlight.
+                try:
+                    strike_value = float(row.get("Strike"))
+                except (TypeError, ValueError, OverflowError):
+                    strike_value = None
+                if (
+                    atm_strike is not None
+                    and strike_value is not None
+                    and np.isclose(strike_value, atm_strike)
+                ):
+                    styles[:] = "background-color: #6A1B9A; color: white; font-weight: bold"
+                    return styles
 
                 # Keep the existing max-OI evidence emphasis, now on USD notional.
                 if max_call_oi is not None and pd.notna(row.get("Call OI (USD)")):
