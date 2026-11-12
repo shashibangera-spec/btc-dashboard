@@ -86,7 +86,7 @@ def fetch_layer2_supabase_data():
         return {**empty_result, "status": f"ERROR: {exc}"}
 
 def process_options_snapshot(client, snapshot_id):
-    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).execute()
+    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_price, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).execute()
     if not chain.data: return None
     
     df = pd.DataFrame(chain.data)
@@ -94,6 +94,8 @@ def process_options_snapshot(client, snapshot_id):
     
     pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
     pivot_oi_usd = df.pivot_table(index='strike_price', columns='option_type', values='oi_value_usd', aggfunc='sum').reset_index()
+    pivot_premium = df.pivot_table(index='strike_price', columns='option_type', values='mark_price', aggfunc='mean').reset_index()
+    pivot_premium.rename(columns={'CALL': 'Mark_Call', 'PUT': 'Mark_Put'}, inplace=True)
     pivot_oi_usd.rename(columns={'CALL': 'OI_USD_Call', 'PUT': 'OI_USD_Put'}, inplace=True)
     pivot_iv = df.pivot_table(index='strike_price', columns='option_type', values='mark_iv', aggfunc='mean').reset_index()
     pivot_vol = df.pivot_table(index='strike_price', columns='option_type', values='volume_24h', aggfunc='sum').reset_index()
@@ -103,6 +105,7 @@ def process_options_snapshot(client, snapshot_id):
     pivot_vol.rename(columns={'CALL': 'Call Vol', 'PUT': 'Put Vol'}, inplace=True)
     
     merged = pd.merge(pivot_oi, pivot_oi_usd, on='strike_price', how='outer')
+    merged = pd.merge(merged, pivot_premium, on='strike_price', how='outer')
     merged = pd.merge(merged, pivot_iv, on='strike_price', how='outer')
     merged = pd.merge(merged, pivot_vol, on='strike_price', how='outer')
     
@@ -827,7 +830,15 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 "OI_USD_Call": "Call OI (USD)",
                 "Put OI": "Put OI (Contracts)",
                 "OI_USD_Put": "Put OI (USD)",
+                "Mark_Call": "Call Prem",
+                "Mark_Put": "Put Prem",
             })
+            evidence_columns = list(evidence_df.columns)
+            evidence_columns.remove("Call Prem")
+            evidence_columns.remove("Put Prem")
+            strike_index = evidence_columns.index("strike_price") + 1
+            evidence_columns[strike_index:strike_index] = ["Call Prem", "Put Prem"]
+            evidence_df = evidence_df[evidence_columns]
 
             def highlight_evidence(row):
                 styles = pd.Series("", index=row.index)
@@ -846,6 +857,8 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
             styled_evidence = evidence_df.style.apply(highlight_evidence, axis=1).format({
                 "Call OI (USD)": lambda value: "" if pd.isna(value) else f"${value / 1_000_000:,.2f}M",
                 "Put OI (USD)": lambda value: "" if pd.isna(value) else f"${value / 1_000_000:,.2f}M",
+                "Call Prem": lambda value: "" if pd.isna(value) else f"${value:,.2f}",
+                "Put Prem": lambda value: "" if pd.isna(value) else f"${value:,.2f}",
                 "taker_buy_volume": lambda value: "" if pd.isna(value) else f"{value:,.0f}",
                 "taker_sell_volume": lambda value: "" if pd.isna(value) else f"{value:,.0f}",
             })
@@ -857,6 +870,8 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 column_config={
                     "Signal / Evidence": st.column_config.TextColumn("Signal / Evidence", width="large"),
                     "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
+                    "Call Prem": st.column_config.TextColumn("Call Prem"),
+                    "Put Prem": st.column_config.TextColumn("Put Prem"),
                     "Call OI (Contracts)": st.column_config.NumberColumn("Call OI (Contracts)", format="%,.0f"),
                     "Put OI (Contracts)": st.column_config.NumberColumn("Put OI (Contracts)", format="%,.0f"),
                     "Call OI (USD)": st.column_config.TextColumn("Call OI (USD)"),
