@@ -94,7 +94,13 @@ def main():
     client = create_client(supabase_url, supabase_key)
 
     # Process each completed candle and save to Supabase.
-    for _, row in today_df.iterrows():
+    for candle_index, (_, row) in enumerate(today_df.iterrows()):
+        # Recalculate the developing profile from today's first completed candle
+        # through the current candle (inclusive). This is observational data only;
+        # the ResearchStateEngine inputs and state transitions remain unchanged.
+        developing_slice = today_df.iloc[:candle_index + 1]
+        developing_vah, developing_val, developing_poc = calculate_tpo(developing_slice)
+
         candle = {
             "exchange": "BINANCE",
             "symbol": "BTCUSDT",
@@ -134,6 +140,9 @@ def main():
             "prior_vah": float(vah),
             "prior_poc": float(poc),
             "prior_val": float(val),
+            "developing_poc": float(developing_poc) if pd.notna(developing_poc) else None,
+            "developing_vah": float(developing_vah) if pd.notna(developing_vah) else None,
+            "developing_val": float(developing_val) if pd.notna(developing_val) else None,
             "tpo_row_size": 50.0,
             "value_area_percent": 0.70,
             "atr_21": float(row["atr"]),
