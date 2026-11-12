@@ -88,6 +88,22 @@ class Parameters:
     balance_window: int = 5
 
     def __post_init__(self):
+        numeric_values = {
+            "atr_period": self.atr_period,
+            "atr_multiplier": self.atr_multiplier,
+            "minimum_buffer": self.minimum_buffer,
+            "discovery_closes": self.discovery_closes,
+            "reentry_closes": self.reentry_closes,
+            "balance_crossings": self.balance_crossings,
+            "balance_window": self.balance_window,
+        }
+        for name, value in numeric_values.items():
+            try:
+                finite = math.isfinite(float(value))
+            except (TypeError, ValueError, OverflowError):
+                finite = False
+            if not finite:
+                raise InputError(f"{name} must be a finite numeric value.")
         if self.atr_period < 1: raise InputError("atr_period must be >= 1.")
         if self.atr_multiplier < 0: raise InputError("atr_multiplier must be >= 0.")
         if self.minimum_buffer < 0: raise InputError("minimum_buffer must be >= 0.")
