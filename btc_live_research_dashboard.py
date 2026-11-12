@@ -498,18 +498,18 @@ with raw_tab:
         report_lines.append(f"AMT State: {shadow_state['confirmed_state'] if shadow_state else 'N/A'}")
         report_lines.append(f"Coverage: {layer2_data['coverage']}")
 
-        report_lines.append("\\n--- LAYER 2 (FUTURES) ---")
+        report_lines.append("\n--- LAYER 2 (FUTURES) ---")
         report_lines.append(f"OI: ${layer2_data['current_oi_usd']/1e9:.2f}B" if layer2_data["current_oi_usd"] else "OI: N/A")
         report_lines.append(f"30m Delta: {layer2_data['status']} {layer2_data.get('delta_pct', '')}")
         report_lines.append(f"Basis: {layer2_data['basis_pct']}")
         report_lines.append(f"Funding: {layer2_data['funding_rate']}")
 
-        report_lines.append("\\n--- LAYER 3 (OPTIONS) ---")
+        report_lines.append("\n--- LAYER 3 (OPTIONS) ---")
         report_lines.append(f"Walls: {walls_res}")
         report_lines.append(f"IV Skew: {iv_analysis}")
         report_lines.append(f"Options Turnover Relative to Open Interest: {vol_analysis}")
         report_lines.append(f"Migration: {migration_analysis}")
         report_lines.append(f"Aggressor Flow: {aggressor_analysis}")
 
-        final_report = "\\n".join(report_lines)
+        final_report = "\n".join(report_lines)
         st.code(final_report, language="text")
