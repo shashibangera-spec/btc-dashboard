@@ -843,50 +843,77 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     labels.append("🟠 Max Put OI")
                 return " · ".join(labels)
 
-            # Presentation-only labels: preserve the raw contract counts and expose the
-            # existing USD notional fields alongside them without changing any calculations.
-            evidence_df.insert(0, "Signal / Evidence", evidence_df.apply(build_evidence, axis=1))
+            # Presentation-only Delta-style order-book layout.
+            # Keep the existing evidence labels and source values; this block only
+            # renames, formats, orders, and styles the dataframe for display.
+            evidence_df.insert(0, "Signal", evidence_df.apply(build_evidence, axis=1))
             evidence_df = evidence_df.rename(columns={
-                "Call OI": "Call OI (Contracts)",
+                "strike_price": "Strike",
                 "OI_USD_Call": "Call OI (USD)",
-                "Put OI": "Put OI (Contracts)",
                 "OI_USD_Put": "Put OI (USD)",
                 "Mark_Call": "Call Prem",
                 "Mark_Put": "Put Prem",
             })
-            # Guarantee both display columns exist, then place them directly after Strike.
-            # This remains safe when the source snapshot has missing/NULL mark prices.
-            if "Call Prem" not in evidence_df.columns:
-                evidence_df["Call Prem"] = pd.NA
-            if "Put Prem" not in evidence_df.columns:
-                evidence_df["Put Prem"] = pd.NA
-            call_premium = evidence_df.pop("Call Prem")
-            put_premium = evidence_df.pop("Put Prem")
-            strike_index = evidence_df.columns.get_loc("strike_price") + 1
-            evidence_df.insert(strike_index, "Call Prem", call_premium)
-            evidence_df.insert(strike_index + 1, "Put Prem", put_premium)
 
-            def highlight_evidence(row):
+            # Ensure optional display fields exist even when one side is absent.
+            display_columns = [
+                "Signal",
+                "Call Prem",
+                "Call OI (USD)",
+                "Call Vol",
+                "Call IV",
+                "Strike",
+                "Put IV",
+                "Put Vol",
+                "Put OI (USD)",
+                "Put Prem",
+            ]
+            for column in display_columns:
+                if column not in evidence_df.columns:
+                    evidence_df[column] = pd.NA
+
+            # Contract-count columns and taker-volume diagnostics remain available
+            # to the research calculations, but are intentionally omitted here.
+            display_df = evidence_df.loc[:, display_columns].copy()
+
+            def highlight_order_book(row):
                 styles = pd.Series("", index=row.index)
-                if max_call_oi is not None and pd.notna(row.get("Call OI")) and row.get("Call OI (Contracts)") == max_call_oi:
-                    styles["Call OI (Contracts)"] = "background-color: #dbeeff; color: black; font-weight: 700"
-                if max_put_oi is not None and pd.notna(row.get("Put OI")) and row.get("Put OI (Contracts)") == max_put_oi:
-                    styles["Put OI (Contracts)"] = "background-color: #ffe6cc; color: black; font-weight: 700"
+
+                # Keep the existing max-OI evidence emphasis, now on USD notional.
+                if max_call_oi is not None and pd.notna(row.get("Call OI (USD)")):
+                    call_contracts = closest_df.loc[
+                        closest_df["strike_price"] == row.get("Strike"), "Call OI"
+                    ]
+                    if not call_contracts.empty and pd.notna(call_contracts.iloc[0]) and call_contracts.iloc[0] == max_call_oi:
+                        styles["Call OI (USD)"] = "background-color: #dbeeff; color: black; font-weight: 700"
+                if max_put_oi is not None and pd.notna(row.get("Put OI (USD)")):
+                    put_contracts = closest_df.loc[
+                        closest_df["strike_price"] == row.get("Strike"), "Put OI"
+                    ]
+                    if not put_contracts.empty and pd.notna(put_contracts.iloc[0]) and put_contracts.iloc[0] == max_put_oi:
+                        styles["Put OI (USD)"] = "background-color: #ffe6cc; color: black; font-weight: 700"
+
+                # A neutral grey strike column visually separates Calls and Puts.
+                strike_style = "background-color: #eef1f4; color: #20252b; font-weight: 700; border-left: 1px solid #c7cdd4; border-right: 1px solid #c7cdd4"
                 try:
-                    strike_value = float(row.get("strike_price"))
+                    strike_value = float(row.get("Strike"))
                 except (TypeError, ValueError):
                     strike_value = None
                 if max_pain_strike is not None and strike_value == max_pain_strike:
-                    styles["strike_price"] = "background-color: #fff5cc; color: black; font-weight: 700"
+                    strike_style += "; box-shadow: inset 0 0 0 1px #b7a45a"
+                styles["Strike"] = strike_style
                 return styles
 
-            styled_evidence = evidence_df.style.apply(highlight_evidence, axis=1).format({
+            styled_evidence = display_df.style.apply(highlight_order_book, axis=1).format({
                 "Call OI (USD)": lambda value: "" if pd.isna(value) else f"${value / 1_000_000:,.2f}M",
                 "Put OI (USD)": lambda value: "" if pd.isna(value) else f"${value / 1_000_000:,.2f}M",
                 "Call Prem": lambda value: "" if pd.isna(value) else f"${value:,.2f}",
                 "Put Prem": lambda value: "" if pd.isna(value) else f"${value:,.2f}",
-                "taker_buy_volume": lambda value: "" if pd.isna(value) else f"{value:,.0f}",
-                "taker_sell_volume": lambda value: "" if pd.isna(value) else f"{value:,.0f}",
+                "Call Vol": lambda value: "" if pd.isna(value) else f"{value:,.0f}",
+                "Put Vol": lambda value: "" if pd.isna(value) else f"{value:,.0f}",
+                "Call IV": lambda value: "" if pd.isna(value) else f"{value:.4f}",
+                "Put IV": lambda value: "" if pd.isna(value) else f"{value:.4f}",
+                "Strike": lambda value: "" if pd.isna(value) else f"${value:,.0f}",
             })
             st.caption("📍 Nearby OI · 🎯 Max Pain · 🔵 Max Call OI · 🟠 Max Put OI")
             st.dataframe(
@@ -894,20 +921,18 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "Signal / Evidence": st.column_config.TextColumn("Signal / Evidence", width="large"),
-                    "strike_price": st.column_config.NumberColumn("Strike", format="$%d"),
+                    "Signal": st.column_config.TextColumn("Signal", width="large"),
                     "Call Prem": st.column_config.TextColumn("Call Prem"),
-                    "Put Prem": st.column_config.TextColumn("Put Prem"),
-                    "Call OI (Contracts)": st.column_config.NumberColumn("Call OI (Contracts)", format="%,.0f"),
-                    "Put OI (Contracts)": st.column_config.NumberColumn("Put OI (Contracts)", format="%,.0f"),
                     "Call OI (USD)": st.column_config.TextColumn("Call OI (USD)"),
+                    "Call Vol": st.column_config.TextColumn("Call Vol"),
+                    "Call IV": st.column_config.TextColumn("Call IV"),
+                    "Strike": st.column_config.TextColumn("Strike"),
+                    "Put IV": st.column_config.TextColumn("Put IV"),
+                    "Put Vol": st.column_config.TextColumn("Put Vol"),
                     "Put OI (USD)": st.column_config.TextColumn("Put OI (USD)"),
-                    "Call Vol": st.column_config.NumberColumn("Call Vol", format="%,.0f"),
-                    "Put Vol": st.column_config.NumberColumn("Put Vol", format="%,.0f"),
-                    "Call IV": st.column_config.NumberColumn("Call IV", format="%.4f"),
-                    "Put IV": st.column_config.NumberColumn("Put IV", format="%.4f"),
+                    "Put Prem": st.column_config.TextColumn("Put Prem"),
                 },
-            )
+            )            )
         elif opt_forensics and "error" in opt_forensics:
             st.error(f"Error loading options data: {opt_forensics['error']}")
         else:
