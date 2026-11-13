@@ -711,10 +711,30 @@ Time: {datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')} IST
 [VITAL SIGNS]
 Price: ${latest_price:,.2f}
 AMT State: {current_amt_name} (Code {current_amt_state})
-Funding Rate: {funding_rate if funding_rate else 'N/A'}
+Funding Rate: {funding_rate if funding_rate is not None else 'N/A'}
 
 [AMT MAP]
 Prior VAH: ${final_vah:,.2f} | Prior POC: ${final_poc:,.2f} | Prior VAL: ${final_val:,.2f}
+Developing VAH: {journal_df_check.iloc[-1]['Dev VAH'] if not journal_df_check.empty else 'N/A'} | Developing POC: {journal_df_check.iloc[-1]['Dev POC'] if not journal_df_check.empty else 'N/A'} | Developing VAL: {journal_df_check.iloc[-1]['Dev VAL'] if not journal_df_check.empty else 'N/A'}
+
+[FUTURES CONTEXT]
+Aggregate OI: {f"${oi_usd/1e6:.2f}M" if oi_usd else 'N/A'}
+Spot/Perp Premium: {f"{sp_prem:+.3f}%" if sp_prem is not None else 'N/A'}
+
+[QUANTITATIVE CONFLUENCE]
+Straddle Ratio: {f"{straddle_ratio:.2f}x" if not pd.isna(straddle_ratio) else 'N/A'}
+Max Pain vs Dev POC: {f"${mp_poc_distance:,.0f}" if not pd.isna(mp_poc_distance) else 'N/A'}
+
+[OPTIONS SNAPSHOT]
+Expiry: {loaded_expiry}
+ATM Strike: ${atm_strike:,.0f}
+ATM Straddle: {f"${straddle_price:,.2f}" if straddle_valid else 'N/A'}
+Max Pain: {f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else 'N/A'}
+Local OI PCR: {pcr:.2f}
+Gamma Walls: Call {f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else 'N/A'} / Put {f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else 'N/A'}
+
+[RECENT ALERTS]
+(Alert history removed in cleanup phase)
 """
         st.code(snapshot_text, language="text")
 
