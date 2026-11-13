@@ -38,8 +38,7 @@ def get_persistent_state():
         "inverted_gamma_history": [], 
         "active_inverted_event": None, 
         "last_inverted_status": False, 
-        "trade_journal": "",
-        "options_flow_history": [],
+        "trade_journal": ""
     }
 p_state = get_persistent_state()
 
@@ -196,7 +195,6 @@ def calculate_session_journey(df, prev_vah, prev_val):
     return pd.DataFrame(sessions)
 
 def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc):
-    # [Logic is identical to your original code, keeping it intact for accuracy]
     if df.empty: return pd.DataFrame(), manual_valid, {}
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low']); df['tr1'] = abs(df['high'] - df['prev_close']); df['tr2'] = abs(df['low'] - df['prev_close'])
@@ -494,6 +492,7 @@ call_oi_wall, put_oi_wall, call_gamma_wall, put_gamma_wall = None, None, None, N
 pcr, pcr_volume, atm_row = 0.0, 0.0, None
 near_call, mid_call, far_call, near_put, mid_put, far_put = [], [], [], [], [], []
 straddle_valid = False
+filtered_options = pd.DataFrame()
 
 if not options_df.empty and latest_price > 0:
     options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * latest_price * dynamic_contract_size
@@ -661,31 +660,62 @@ with tab_options:
 with tab_raw:
     if not filtered_options.empty:
         st.subheader("Raw Options Chain — 10 Nearest Strikes")
-        # Reorder columns for Delta-style layout
-        display_df = filtered_options[['Strike', 'Call_Prem', 'Call OI (USD)', 'Volume_Call', 'IV_Call', 'IV_Put', 'Volume_Put', 'Put OI (USD)', 'Put_Prem']].copy()
         
-        # Styling function
+        # Create a copy for display to avoid modifying the original
+        display_df = filtered_options.copy()
+        
+        # Convert USD OI to Millions for clean display
+        display_df['Call_OI_M'] = display_df['OI_USD_Call'] / 1e6
+        display_df['Put_OI_M'] = display_df['OI_USD_Put'] / 1e6
+        
+        # Select and reorder columns using actual variable names
+        display_df = display_df[[
+            'Strike', 
+            'Mark_Call', 
+            'Call_OI_M', 
+            'Volume_Call', 
+            'IV_Call', 
+            'IV_Put', 
+            'Volume_Put', 
+            'Put_OI_M', 
+            'Mark_Put'
+        ]]
+        
+        # Styling function (Purple anchor for CMP)
         def highlight_cmp_and_walls(row):
-            styles = [''] * len(row)
             if row['Strike'] == atm_strike:
-                # Highlight the CMP row in purple
                 return ['background-color: #6A1B9A; color: white; font-weight: bold'] * len(row)
-            return styles
+            return [''] * len(row)
 
         styled_df = display_df.style.apply(highlight_cmp_and_walls, axis=1)
+        
+        # Render with proper formatting
         st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config={
             "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
-            "Call_Prem": st.column_config.NumberColumn("Call Prem", format="$%.2f"),
-            "Call OI (USD)": st.column_config.NumberColumn("Call OI (USD)", format="$%.2fM"),
+            "Mark_Call": st.column_config.NumberColumn("Call Prem", format="$%.2f"),
+            "Call_OI_M": st.column_config.NumberColumn("Call OI (USD)", format="$%.2fM"),
             "Volume_Call": st.column_config.NumberColumn("Call Vol", format="%d"),
             "IV_Call": st.column_config.NumberColumn("Call IV", format="%.1f%%"),
             "IV_Put": st.column_config.NumberColumn("Put IV", format="%.1f%%"),
             "Volume_Put": st.column_config.NumberColumn("Put Vol", format="%d"),
-            "Put OI (USD)": st.column_config.NumberColumn("Put OI (USD)", format="$%.2fM"),
-            "Put_Prem": st.column_config.NumberColumn("Put Prem", format="$%.2f"),
+            "Put_OI_M": st.column_config.NumberColumn("Put OI (USD)", format="$%.2fM"),
+            "Mark_Put": st.column_config.NumberColumn("Put Prem", format="$%.2f"),
         })
 
     st.markdown("---")
     with st.expander("📋 Copy Dashboard Snapshot"):
-        # Generate the text report here
-        st.code("Text report generation goes here (same logic as before)", language="text")
+        snapshot_text = f"""
+=== BTC TERMINAL SNAPSHOT ===
+Time: {datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')} IST
+
+[VITAL SIGNS]
+Price: ${latest_price:,.2f}
+AMT State: {current_amt_name} (Code {current_amt_state})
+Funding Rate: {funding_rate if funding_rate else 'N/A'}
+
+[AMT MAP]
+Prior VAH: ${final_vah:,.2f} | Prior POC: ${final_poc:,.2f} | Prior VAL: ${final_val:,.2f}
+"""
+        st.code(snapshot_text, language="text")
+
+components.html("<script>setTimeout(function(){ window.parent.location.reload(); }, 180000);</script>", height=0, width=0)
