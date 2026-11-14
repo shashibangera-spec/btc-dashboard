@@ -639,7 +639,7 @@ if put_gamma_wall is not None:
 nearest_wall = "N/A"
 if wall_options:
     wall_name, wall_price = min(wall_options, key=lambda x: abs(x[1] - latest_price))
-    nearest_wall = wall_name + " $" + format(wall_price, ",.0f") + " (" + ("above" if wall_price >= latest_price else "below") + ")"
+    nearest_wall = "$" + format(wall_price, ",.0f") + " (" + wall_name + ")"
 
 h1, h2, h3, h4 = st.columns([1.3, 1, 1, 1])
 h1.metric("BTC / USDT", "$" + format(latest_price, ",.2f"))
