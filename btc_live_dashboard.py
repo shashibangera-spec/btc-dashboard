@@ -14,9 +14,6 @@ st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 # ==========================================
 # CONFIGURATION & STATE
 # ==========================================
-CLUSTER_ABSORPTION_PCT = 0.45
-MAX_CLUSTER_WIDTH = 7
-OI_CLUSTER_MIN_USD = 5_000_000
 MARK_TOLERANCE_PCT = 0.02 
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
@@ -351,47 +348,6 @@ def parse_timestamp(ts):
     except: pass
     return None
 
-def find_oi_clusters(strike_ladder, df_opt, opt_type, spot_price, straddle_price):
-    if not strike_ladder or pd.isna(straddle_price) or straddle_price <= 0: return [], [], []
-    df_type = df_opt[df_opt['Type'] == opt_type].dropna(subset=['OI_USD'])
-    if df_type.empty: return [], [], []
-    df_sorted = df_type.sort_values('OI_USD', ascending=False); claimed = set(); clusters = []
-    for _, row in df_sorted.iterrows():
-        peak_strike = row['Strike']; peak_oi = row['OI_USD']
-        if peak_strike in claimed or peak_oi < OI_CLUSTER_MIN_USD or peak_strike not in strike_ladder: continue
-        peak_idx = strike_ladder.index(peak_strike); current_cluster = [peak_strike]; claimed.add(peak_strike)
-        
-        left = peak_idx - 1
-        while left >= 0 and len(current_cluster) < MAX_CLUSTER_WIDTH:
-            test_strike = strike_ladder[left]
-            if test_strike in claimed: break
-            row_data = df_type[df_type['Strike'] == test_strike]
-            if row_data.empty or row_data['OI_USD'].values[0] < (peak_oi * CLUSTER_ABSORPTION_PCT): break
-            current_cluster.append(test_strike); claimed.add(test_strike); left -= 1
-                
-        right = peak_idx + 1
-        while right < len(strike_ladder) and len(current_cluster) < MAX_CLUSTER_WIDTH:
-            test_strike = strike_ladder[right]
-            if test_strike in claimed: break
-            row_data = df_type[df_type['Strike'] == test_strike]
-            if row_data.empty or row_data['OI_USD'].values[0] < (peak_oi * CLUSTER_ABSORPTION_PCT): break
-            current_cluster.append(test_strike); claimed.add(test_strike); right += 1
-                
-        cluster_df = df_type[df_type['Strike'].isin(current_cluster)]; total_oi = cluster_df['OI_USD'].sum()
-        if total_oi == 0: continue
-        vwas = (cluster_df['Strike'] * cluster_df['OI_USD']).sum() / total_oi
-        if opt_type == "Call" and vwas <= spot_price: continue
-        if opt_type == "Put" and vwas >= spot_price: continue
-        clusters.append({"Type": opt_type, "VWAS": vwas, "OI_USD": total_oi, "Dist": abs(vwas - spot_price) / straddle_price, "Strikes": current_cluster})
-        
-    near, mid, far = [], [], []
-    for c in clusters:
-        if c['Dist'] < 0.5: near.append(c)
-        elif c['Dist'] < 1.0: mid.append(c)
-        else: far.append(c)
-    near.sort(key=lambda x: x['Dist']); mid.sort(key=lambda x: x['Dist']); far.sort(key=lambda x: x['Dist'])
-    return near, mid, far
-
 @st.cache_data(ttl=180)
 def fetch_delta_options():
     BASE_URL = "https://api.india.delta.exchange/v2"
@@ -422,7 +378,7 @@ def fetch_delta_options():
     try:
         products, prod_complete = fetch_paginated_data(f"{BASE_URL}/products?states=live&page_size=1000")
         btc_options = [p for p in products if p.get("underlying_asset", {}).get("symbol") == "BTC" and p.get("contract_type") in ("call_options", "put_options")]
-        if not btc_options: return pd.DataFrame(), None, None, None, None, None, None, False
+        if not btc_options: return pd.DataFrame(), None, None, None, None, None, False
         now_utc = datetime.datetime.now(timezone.utc); valid_expiries = []
         for opt in btc_options:
             sym = opt.get("symbol", ""); parts = sym.split("-")
@@ -437,12 +393,11 @@ def fetch_delta_options():
                     if dt_utc > now_utc: valid_expiries.append({"expiry_str": exp_str, "dt_utc": dt_utc, "source": source})
                 except Exception: pass
                     
-        if not valid_expiries: return pd.DataFrame(), None, None, None, None, None, None, False
+        if not valid_expiries: return pd.DataFrame(), None, None, None, None, None, False
         nearest = min(valid_expiries, key=lambda x: x["dt_utc"])
         nearest_expiry = nearest["expiry_str"]; expiry_dt = nearest["dt_utc"]; expiry_source = nearest["source"]
         
         filtered_options = [opt for opt in btc_options if len(opt.get("symbol", "").split("-")) >= 4 and opt.get("symbol", "").split("-")[3] == nearest_expiry]
-        strike_ladder = sorted(list(set(float(p.get("strike_price")) for p in filtered_options if p.get("strike_price") is not None)))
         contract_size = float(filtered_options[0].get("contract_value", 0.001)) if filtered_options else 0.001
 
         tickers, tick_complete = fetch_paginated_data(f"{BASE_URL}/tickers?contract_types=call_options,put_options&page_size=1000")
@@ -477,7 +432,7 @@ def fetch_delta_options():
             except (ValueError, TypeError): continue
 
         df = pd.DataFrame(chain)
-        if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, None, False
+        if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, False
 
         expected_symbol_set = set(str(sym) for sym in expected_symbols)
         received_symbol_set = set(df["Symbol"].dropna().astype(str)) if not df.empty else set()
@@ -495,9 +450,9 @@ def fetch_delta_options():
         for col in expected_columns:
             if col not in df_pivot.columns: df_pivot[col] = np.nan
 
-        return df_pivot, nearest_expiry, expiry_dt, expiry_source, contract_size, df, strike_ladder, is_chain_complete
+        return df_pivot, nearest_expiry, expiry_dt, expiry_source, contract_size, df, is_chain_complete
     except Exception:
-        return pd.DataFrame(), None, None, None, None, None, None, False
+        return pd.DataFrame(), None, None, None, None, None, False
 
 # ==========================================
 # CALCULATION & PROCESSING
@@ -547,12 +502,11 @@ if not df.empty:
     if not provisional_today.empty:
         provisional_vah, provisional_val, provisional_poc = calculate_tpo(provisional_today)
 
-options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, strike_ladder, is_chain_complete = fetch_delta_options()
+options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, is_chain_complete = fetch_delta_options()
 
 true_max_pain, straddle_price, atm_strike, true_max_pain = np.nan, np.nan, 0.0, np.nan
 call_oi_wall, put_oi_wall, call_gamma_wall, put_gamma_wall = None, None, None, None
 pcr, pcr_volume, atm_row = 0.0, 0.0, None
-near_call, mid_call, far_call, near_put, mid_put, far_put = [], [], [], [], [], []
 straddle_valid = False
 filtered_options = pd.DataFrame()
 
@@ -602,10 +556,6 @@ if not options_df.empty and latest_price > 0:
                 pain_dict[settle] = sum((all_call_oi.get(k, 0) * (settle - k) if settle > k else 0) + (all_put_oi.get(k, 0) * (k - settle) if settle < k else 0) for k in all_strikes)
             true_max_pain = min(pain_dict, key=pain_dict.get) if pain_dict else np.nan
 
-        if straddle_valid and raw_chain_df is not None and strike_ladder is not None:
-            base_straddle = p_state["session_start_straddle"] if p_state["session_start_straddle"] else straddle_price
-            near_call, mid_call, far_call = find_oi_clusters(strike_ladder, raw_chain_df, "Call", latest_price, base_straddle)
-            near_put, mid_put, far_put = find_oi_clusters(strike_ladder, raw_chain_df, "Put", latest_price, base_straddle)
 
 # --- DEFINE UI VARIABLES HERE (AFTER options are fetched) ---
 if pd.isna(final_vah) or pd.isna(final_val): loc = "Value Area Unavailable"
@@ -768,24 +718,6 @@ with st.expander("Options OI clusters"):
                     st.caption("No qualifying strikes in the ±15% band.")
     else:
         st.caption("Raw options chain unavailable; Top 3 ranking cannot be calculated.")
-
-    st.divider()
-    st.markdown("#### Legacy Cluster Analysis (Research Only)")
-    st.caption("Retained for comparison. VWAS and tier classifications are legacy analytical outputs, not primary live wall indicators.")
-    cluster_rows = []
-    for tier, call_data, put_data in [
-        ("Near (<0.5x)", near_call[0] if near_call else None, near_put[0] if near_put else None),
-        ("Mid (0.5–1.0x)", mid_call[0] if mid_call else None, mid_put[0] if mid_put else None),
-        ("Distant (>1.0x)", far_call[0] if far_call else None, far_put[0] if far_put else None),
-    ]:
-        cluster_rows.append({
-            "Tier": tier,
-            "Call Strike": "$" + format(call_data["VWAS"], ",.0f") if call_data else "N/A",
-            "Call OI": "$" + format(call_data["OI_USD"] / 1e6, ".2f") + "M" if call_data else "N/A",
-            "Put Strike": "$" + format(put_data["VWAS"], ",.0f") if put_data else "N/A",
-            "Put OI": "$" + format(put_data["OI_USD"] / 1e6, ".2f") + "M" if put_data else "N/A",
-        })
-    st.dataframe(pd.DataFrame(cluster_rows), use_container_width=True, hide_index=True)
 
 with st.expander("Raw options chain — nearest strikes"):
     if not filtered_options.empty:
