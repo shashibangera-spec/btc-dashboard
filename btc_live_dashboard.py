@@ -540,7 +540,8 @@ journal_df_check = journal_res[0] if journal_res else pd.DataFrame()
 # Provisional/forming profile includes the current open candle for observation only.
 provisional_vah = provisional_val = provisional_poc = np.nan
 if not df.empty:
-    provisional_today = df[df['ShiftedDate'] == df['ShiftedDate'].iloc[-1]].copy()
+    provisional_today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
+    provisional_today = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == provisional_today_str].copy()
     if not provisional_today.empty:
         provisional_vah, provisional_val, provisional_poc = calculate_tpo(provisional_today)
 
