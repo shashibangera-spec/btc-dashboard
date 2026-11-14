@@ -484,16 +484,6 @@ current_amt_state = int(journal_res[0].iloc[-1]['Code']) if (journal_res and not
 current_amt_name = state_names.get(current_amt_state, "UNKNOWN")
 journal_df_check = journal_res[0] if journal_res else pd.DataFrame()
 
-# --- DEFINE UI VARIABLES HERE TO PREVENT NAMEERROR ---
-if pd.isna(final_vah) or pd.isna(final_val): loc = "Value Area Unavailable"
-else: loc = "Above VAH" if latest_price > final_vah else "Below VAL" if latest_price < final_val else "Inside VA"
-
-latest_dev_poc = journal_df_check.iloc[-1]['Dev POC'] if not journal_df_check.empty else np.nan
-prior_va_width = final_vah - final_val if not pd.isna(final_vah) and not pd.isna(final_val) else np.nan
-straddle_ratio = straddle_price / prior_va_width if not pd.isna(prior_va_width) and prior_va_width > 0 and not pd.isna(straddle_price) and straddle_valid else np.nan
-mp_poc_distance = true_max_pain - latest_dev_poc if not pd.isna(true_max_pain) and not pd.isna(latest_dev_poc) else np.nan
-# ----------------------------------------------------
-
 options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, strike_ladder, is_chain_complete = fetch_delta_options()
 
 true_max_pain, straddle_price, atm_strike, true_max_pain = np.nan, np.nan, 0.0, np.nan
@@ -545,6 +535,16 @@ if not options_df.empty and latest_price > 0:
             base_straddle = p_state["session_start_straddle"] if p_state["session_start_straddle"] else straddle_price
             near_call, mid_call, far_call = find_oi_clusters(strike_ladder, raw_chain_df, "Call", latest_price, base_straddle)
             near_put, mid_put, far_put = find_oi_clusters(strike_ladder, raw_chain_df, "Put", latest_price, base_straddle)
+
+# --- DEFINE UI VARIABLES HERE (AFTER options are fetched) ---
+if pd.isna(final_vah) or pd.isna(final_val): loc = "Value Area Unavailable"
+else: loc = "Above VAH" if latest_price > final_vah else "Below VAL" if latest_price < final_val else "Inside VA"
+
+latest_dev_poc = journal_df_check.iloc[-1]['Dev POC'] if not journal_df_check.empty else np.nan
+prior_va_width = final_vah - final_val if not pd.isna(final_vah) and not pd.isna(final_val) else np.nan
+straddle_ratio = straddle_price / prior_va_width if not pd.isna(prior_va_width) and prior_va_width > 0 and not pd.isna(straddle_price) and straddle_valid else np.nan
+mp_poc_distance = true_max_pain - latest_dev_poc if not pd.isna(true_max_pain) and not pd.isna(latest_dev_poc) else np.nan
+# ------------------------------------------------------------
 
 # ==========================================
 # RENDER UI TABS
