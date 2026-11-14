@@ -618,193 +618,178 @@ mp_poc_distance = true_max_pain - latest_dev_poc if not pd.isna(true_max_pain) a
 # ------------------------------------------------------------
 
 # ==========================================
-# RENDER UI TABS
+# RENDER UI — SINGLE-PAGE FOUR-LAYER COCKPIT
 # ==========================================
-tab_cockpit, tab_amt, tab_options, tab_raw = st.tabs(["🚦 Cockpit", "📖 AMT Structure", "🔍 Options", "📋 Raw Data"])
+st.title("₿ BTC Trading Cockpit")
+st.caption("Price and auction structure first · derivatives as context")
 
-# --- TAB 1: COCKPIT ---
-with tab_cockpit:
-    st.subheader("🚦 Vital Signs")
-    v1, v2 = st.columns(2)
-    v1.metric("Current Price", f"${latest_price:,.2f}")
-    v2.metric("Fast Auction Classification", f"{current_amt_name}", f"Independent code {current_amt_state}")
-    
-    st.markdown("---")
-    st.subheader("🧠 Tape Read & Confluence")
-    
-    tc1, tc2 = st.columns(2)
-    tc1.metric("Price Location", loc, f"${latest_price:,.0f}")
-    tc2.metric(
-        "Delta Futures Context",
-        f"OI ${oi_usd/1e6:.2f}M" if oi_usd is not None else "OI N/A",
-        "Perp Discount" if sp_prem is not None and sp_prem < 0 else "Perp Premium" if sp_prem is not None and sp_prem > 0 else "Basis N/A"
-    )
-    st.caption("OI direction is unavailable without a comparable prior observation.")
-    
-    st.markdown("---")
-    st.subheader("📐 Quantitative Confluence")
-    qc1, qc2, qc3 = st.columns(3)
-    
-    if not pd.isna(straddle_ratio):
-        qc1.metric("Straddle Ratio (vs Prior VA)", f"{straddle_ratio:.2f}x", "Expected Move > Prior Value" if straddle_ratio > 1.0 else "Expected Move < Prior Value", delta_color="normal" if straddle_ratio > 1.0 else "off")
-    else: qc1.metric("Straddle Ratio (vs Prior VA)", "N/A")
-    
-    if not pd.isna(mp_poc_distance): qc2.metric("Max Pain vs Dev POC", f"${mp_poc_distance:,.0f}")
-    else: qc2.metric("Max Pain vs Dev POC", "N/A")
-    
-    if not pd.isna(prior_va_width) and not pd.isna(straddle_price) and straddle_valid:
-        qc3.metric("VA Width vs Straddle", f"${prior_va_width:,.0f} / ${straddle_price:,.0f}")
-    else: qc3.metric("VA Width vs Straddle", "N/A")
+# Header: current price, location and proximity to key reference levels
+dev_vah_ui = journal_df_check.iloc[-1]["Dev VAH"] if not journal_df_check.empty else np.nan
+dev_poc_ui = journal_df_check.iloc[-1]["Dev POC"] if not journal_df_check.empty else np.nan
+dev_val_ui = journal_df_check.iloc[-1]["Dev VAL"] if not journal_df_check.empty else np.nan
+val_distance = "N/A"
+if not pd.isna(dev_val_ui):
+    val_delta = latest_price - dev_val_ui
+    val_distance = "$" + format(abs(val_delta), ",.0f") + (" above" if val_delta >= 0 else " below")
+wall_options = []
+if call_gamma_wall is not None:
+    wall_options.append(("Call", float(call_gamma_wall["Strike"])))
+if put_gamma_wall is not None:
+    wall_options.append(("Put", float(put_gamma_wall["Strike"])))
+nearest_wall = "N/A"
+if wall_options:
+    wall_name, wall_price = min(wall_options, key=lambda x: abs(x[1] - latest_price))
+    nearest_wall = wall_name + " $" + format(wall_price, ",.0f") + " (" + ("above" if wall_price >= latest_price else "below") + ")"
 
-# --- TAB 2: AMT STRUCTURE ---
-with tab_amt:
-    st.subheader("🗺️ AMT Map & Context")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Prior VAH", f"${final_vah:,.2f}" if not pd.isna(final_vah) else "N/A")
-    c2.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
-    c3.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
-    
-    st.markdown("### Provisional / Forming Profile")
-    p1, p2, p3 = st.columns(3)
-    p1.metric("Provisional VAH", f"${provisional_vah:,.0f}" if not pd.isna(provisional_vah) else "N/A")
-    p2.metric("Provisional POC", f"${provisional_poc:,.0f}" if not pd.isna(provisional_poc) else "N/A")
-    p3.metric("Provisional VAL", f"${provisional_val:,.0f}" if not pd.isna(provisional_val) else "N/A")
-    st.caption("Includes the currently forming 30-minute candle. Informational only; it does not change the Fast Auction Classification.")
+h1, h2, h3, h4 = st.columns([1.3, 1, 1, 1])
+h1.metric("BTC / USDT", "$" + format(latest_price, ",.2f"))
+h2.metric("Price Location", loc)
+h3.metric("Distance to Developing VAL", val_distance)
+h4.metric("Nearest GEX Wall", nearest_wall)
+st.caption("Rendered " + datetime.datetime.now(IST_TZ).strftime("%d %b %Y · %H:%M:%S IST"))
+st.markdown("---")
 
-    st.markdown("### Session Journey")
+# 1. PRICE ACTION
+st.subheader("1 · PRICE ACTION")
+p1, p2, p3 = st.columns(3)
+p1.metric("Auction Location", loc)
+p2.metric("Prior Value Area", "$" + format(final_val, ",.0f") + " – $" + format(final_vah, ",.0f") if not pd.isna(final_val) and not pd.isna(final_vah) else "N/A")
+p3.metric("Prior POC", "$" + format(final_poc, ",.0f") if not pd.isna(final_poc) else "N/A")
+st.caption("GEX walls are options-derived reference levels, not guaranteed support or resistance.")
+st.markdown("---")
+
+# 2. AMT STRUCTURE
+st.subheader("2 · AMT STRUCTURE")
+a1, a2 = st.columns([1.4, 1])
+a1.metric("Fast Auction Classification", current_amt_name, "Independent code " + str(current_amt_state))
+a2.metric("Classification Basis", "Completed 30-minute candles")
+st.caption("Independent dashboard classification; not a prediction or a replacement for the locked Pine AMT reference.")
+v1, v2, v3 = st.columns(3)
+v1.metric("Developing VAH", "$" + format(dev_vah_ui, ",.0f") if not pd.isna(dev_vah_ui) else "N/A")
+v2.metric("Developing POC", "$" + format(dev_poc_ui, ",.0f") if not pd.isna(dev_poc_ui) else "N/A")
+v3.metric("Developing VAL", "$" + format(dev_val_ui, ",.0f") if not pd.isna(dev_val_ui) else "N/A")
+
+with st.expander("Prior value reference and provisional / forming profile"):
+    x1, x2, x3 = st.columns(3)
+    x1.metric("Prior VAH", "$" + format(final_vah, ",.0f") if not pd.isna(final_vah) else "N/A")
+    x2.metric("Prior POC", "$" + format(final_poc, ",.0f") if not pd.isna(final_poc) else "N/A")
+    x3.metric("Prior VAL", "$" + format(final_val, ",.0f") if not pd.isna(final_val) else "N/A")
+    st.markdown("**Provisional / forming profile**")
+    y1, y2, y3 = st.columns(3)
+    y1.metric("Provisional VAH", "$" + format(provisional_vah, ",.0f") if not pd.isna(provisional_vah) else "N/A")
+    y2.metric("Provisional POC", "$" + format(provisional_poc, ",.0f") if not pd.isna(provisional_poc) else "N/A")
+    y3.metric("Provisional VAL", "$" + format(provisional_val, ",.0f") if not pd.isna(provisional_val) else "N/A")
+    st.caption("Includes the currently forming 30-minute candle; informational only and excluded from completed-candle classification.")
+
+st.markdown("---")
+
+# 3. OPTIONS CONTEXT
+st.subheader("3 · OPTIONS CONTEXT")
+if not options_df.empty and atm_row is not None:
+    st.caption("Delta options · Expiry: " + str(loaded_expiry))
+    o1, o2, o3 = st.columns(3)
+    o1.metric("ATM Straddle", "$" + format(straddle_price, ",.2f") if straddle_valid else "N/A")
+    o2.metric("Max Pain", "$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A")
+    o3.metric("Local OI PCR · Contracts ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A")
+    call_strike_text = "$" + format(call_gamma_wall["Strike"], ",.0f") if call_gamma_wall is not None else "N/A"
+    put_strike_text = "$" + format(put_gamma_wall["Strike"], ",.0f") if put_gamma_wall is not None else "N/A"
+    call_gex_text = "$" + format(call_gamma_wall["GEX_Call"] / 1e6, ".2f") + "M" if call_gamma_wall is not None and pd.notna(call_gamma_wall["GEX_Call"]) else "N/A"
+    put_gex_text = "$" + format(put_gamma_wall["GEX_Put"] / 1e6, ".2f") + "M" if put_gamma_wall is not None and pd.notna(put_gamma_wall["GEX_Put"]) else "N/A"
+    g1, g2 = st.columns(2)
+    g1.metric("Call GEX Wall", call_strike_text, "Gross GEX: " + call_gex_text)
+    g2.metric("Put GEX Wall", put_strike_text, "Gross GEX: " + put_gex_text)
+    st.caption("Estimated gross GEX per 1% BTC move; unsigned model estimate. PCR is contract-based and is not directly comparable to GEX.")
+else:
+    st.info("Options context unavailable or ATM quote validation did not pass. Missing values are not treated as zero.")
+
+st.markdown("---")
+
+# 4. FUTURES CONTEXT
+st.subheader("4 · FUTURES CONTEXT")
+f1, f2 = st.columns(2)
+f1.metric("Delta BTCUSD Futures OI", "$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A")
+basis_status = "Discount" if sp_prem is not None and sp_prem < 0 else "Premium" if sp_prem is not None and sp_prem > 0 else "Unavailable"
+f2.metric("Perpetual Basis", format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A", basis_status)
+st.caption("OI direction is unavailable without a comparable prior observation. Futures OI and basis are context, not directional signals.")
+
+st.markdown("---")
+st.subheader("Diagnostics and raw data")
+with st.expander("Session OHLC history"):
     if not session_df.empty:
-        st.dataframe(session_df, use_container_width=True, hide_index=True, column_config={
-            "Session": st.column_config.TextColumn("Session"),
-            "Open": st.column_config.NumberColumn("Open", format="$%.0f"),
-            "High": st.column_config.NumberColumn("High", format="$%.0f"),
-            "Low": st.column_config.NumberColumn("Low", format="$%.0f"),
-            "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
-            "POC": st.column_config.NumberColumn("POC", format="$%.0f"),
-            "VAH": st.column_config.NumberColumn("VAH", format="$%.0f"),
-            "VAL": st.column_config.NumberColumn("VAL", format="$%.0f"),
-        })
-        
-    st.markdown("### Fast Auction Classification Journal")
-    st.caption("Independent dashboard classification; not Project Echo confirmation.")
+        st.dataframe(session_df, use_container_width=True, hide_index=True)
+    else:
+        st.caption("Session history unavailable.")
+
+with st.expander("Fast Auction Classification journal"):
+    st.caption("Independent dashboard classification; completed candles only.")
     if not journal_df_check.empty:
-        st.dataframe(journal_df_check, use_container_width=True, hide_index=True, column_config={
-            "Time": st.column_config.TextColumn("Time (IST)"),
-            "Close": st.column_config.NumberColumn("Close", format="$%.0f"),
-            "Code": st.column_config.NumberColumn("Code"),
-            "State Name": st.column_config.TextColumn("State Name"),
-            "Dev VAH": st.column_config.NumberColumn("Dev VAH", format="$%.0f"),
-            "Dev POC": st.column_config.NumberColumn("Dev POC", format="$%.0f"),
-            "Dev VAL": st.column_config.NumberColumn("Dev VAL", format="$%.0f"),
+        st.dataframe(journal_df_check, use_container_width=True, hide_index=True)
+    else:
+        st.caption("Classification journal unavailable.")
+
+with st.expander("Options OI clusters"):
+    cluster_rows = []
+    for tier, call_data, put_data in [
+        ("Near (<0.5x)", near_call[0] if near_call else None, near_put[0] if near_put else None),
+        ("Mid (0.5–1.0x)", mid_call[0] if mid_call else None, mid_put[0] if mid_put else None),
+        ("Distant (>1.0x)", far_call[0] if far_call else None, far_put[0] if far_put else None),
+    ]:
+        cluster_rows.append({
+            "Tier": tier,
+            "Call Strike": "$" + format(call_data["VWAS"], ",.0f") if call_data else "N/A",
+            "Call OI": "$" + format(call_data["OI_USD"] / 1e6, ".2f") + "M" if call_data else "N/A",
+            "Put Strike": "$" + format(put_data["VWAS"], ",.0f") if put_data else "N/A",
+            "Put OI": "$" + format(put_data["OI_USD"] / 1e6, ".2f") + "M" if put_data else "N/A",
         })
+    st.dataframe(pd.DataFrame(cluster_rows), use_container_width=True, hide_index=True)
 
-# --- TAB 3: OPTIONS ---
-with tab_options:
-    if not options_df.empty and atm_row is not None:
-        st.subheader(f"📉 Options Snapshot (Expiry: {loaded_expiry})")
-        o1, o2, o3, o4 = st.columns(4)
-        o1.metric("ATM Strike", f"${atm_strike:,.0f}")
-        if straddle_valid: o2.metric("ATM Straddle", f"${straddle_price:,.2f}")
-        else: o2.metric("ATM Straddle", "⚠️ INVALID")
-        o3.metric("Max Pain", f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else "N/A")
-        o4.metric("Local OI PCR (Contracts ±10%)", f"{pcr:.2f}" if not pd.isna(pcr) else "N/A")
-        
-        st.markdown("---")
-        st.subheader("🎯 OI Concentrations & Walls")
-        
-        c_near = near_call[0] if near_call else None; p_near = near_put[0] if near_put else None
-        c_mid = mid_call[0] if mid_call else None; p_mid = mid_put[0] if mid_put else None
-        c_far = far_call[0] if far_call else None; p_far = far_put[0] if far_put else None
-
-        raw_clusters = [
-            {"Tier": "📍 Near (<0.5x)", "Call": c_near, "Put": p_near},
-            {"Tier": "📍 Mid (0.5 - 1.0x)", "Call": c_mid, "Put": p_mid},
-            {"Tier": "🌍 Distant (>1.0x)", "Call": c_far, "Put": p_far}
-        ]
-        cluster_rows = []
-        for r in raw_clusters:
-            c_data = r['Call']; p_data = r['Put']
-            cluster_rows.append({
-                "Tier": r['Tier'],
-                "Call Strike": f"${c_data['VWAS']:,.0f}" if c_data else "N/A",
-                "Call OI": f"${c_data['OI_USD']/1e6:.2f}M" if c_data else "N/A",
-                "Put Strike": f"${p_data['VWAS']:,.0f}" if p_data else "N/A",
-                "Put OI": f"${p_data['OI_USD']/1e6:.2f}M" if p_data else "N/A",
-            })
-        st.dataframe(pd.DataFrame(cluster_rows), use_container_width=True, hide_index=True)
-        
-        st.markdown("##### Context Metrics")
-        w1, w2 = st.columns(2)
-        w1.metric(
-            "Estimated Gross GEX per 1% BTC move",
-            f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A"
-        )
-        if call_gamma_wall is not None and put_gamma_wall is not None:
-            st.caption(f"Call: ${call_gamma_wall['GEX_Call']:,.0f} | Put: ${put_gamma_wall['GEX_Put']:,.0f} (unsigned gross estimate; multiplier {dynamic_contract_size:g} BTC)")
-        w2.metric("Local Structural Extreme", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}" if call_oi_wall is not None and put_oi_wall is not None else "N/A")
-
-# --- TAB 4: RAW DATA ---
-with tab_raw:
+with st.expander("Raw options chain — nearest strikes"):
     if not filtered_options.empty:
-        st.subheader("Raw Options Chain — Nearest Strikes")
-        
         display_df = filtered_options.copy()
-        display_df['Call_OI_M'] = display_df['OI_USD_Call'] / 1e6
-        display_df['Put_OI_M'] = display_df['OI_USD_Put'] / 1e6
-        
-        display_df = display_df[[
-            'Strike', 'Mark_Call', 'Call_OI_M', 'Volume_Call', 'IV_Call', 
-            'IV_Put', 'Volume_Put', 'Put_OI_M', 'Mark_Put'
-        ]]
-        
-        # SORT DESCENDING so the highest strikes (and ATM) are at the top
-        display_df = display_df.sort_values(by='Strike', ascending=False)
-        
+        display_df["Call_OI_M"] = display_df["OI_USD_Call"] / 1e6
+        display_df["Put_OI_M"] = display_df["OI_USD_Put"] / 1e6
+        display_df = display_df[["Strike", "Mark_Call", "Call_OI_M", "Volume_Call", "IV_Call", "IV_Put", "Volume_Put", "Put_OI_M", "Mark_Put"]].sort_values(by="Strike", ascending=False)
         def highlight_cmp_and_walls(row):
-            if row['Strike'] == atm_strike:
-                return ['background-color: #6A1B9A; color: white; font-weight: bold'] * len(row)
-            return [''] * len(row)
+            if row["Strike"] == atm_strike:
+                return ["background-color: #6A1B9A; color: white; font-weight: bold"] * len(row)
+            return [""] * len(row)
+        st.dataframe(display_df.style.apply(highlight_cmp_and_walls, axis=1), use_container_width=True, hide_index=True)
+    else:
+        st.caption("Raw options chain unavailable.")
 
-        styled_df = display_df.style.apply(highlight_cmp_and_walls, axis=1)
-        
-        st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config={
-            "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
-            "Mark_Call": st.column_config.NumberColumn("Call Prem", format="$%.2f"),
-            "Call_OI_M": st.column_config.NumberColumn("Call OI (USD)", format="$%.2fM"),
-            "Volume_Call": st.column_config.NumberColumn("Call Vol", format="%d"),
-            "IV_Call": st.column_config.NumberColumn("Call IV", format="%.1f%%"),
-            "IV_Put": st.column_config.NumberColumn("Put IV", format="%.1f%%"),
-            "Volume_Put": st.column_config.NumberColumn("Put Vol", format="%d"),
-            "Put_OI_M": st.column_config.NumberColumn("Put OI (USD)", format="$%.2fM"),
-            "Mark_Put": st.column_config.NumberColumn("Put Prem", format="$%.2f"),
-        })
-
-    st.markdown("---")
-    with st.expander("📋 Copy Dashboard Snapshot"):
-        snapshot_text = f"""
-=== BTC TERMINAL SNAPSHOT ===
-Time: {datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')} IST
-
-[1. PRICE ACTION]
-Price: ${latest_price:,.2f}
-Location: {loc}
-
-[2. AMT STRUCTURE]
-Fast Auction Classification: {current_amt_name} (Independent Code {current_amt_state})
-Classification basis: completed 30-minute candles only
-Prior VAH / POC / VAL: ${final_vah:,.2f} / ${final_poc:,.2f} / ${final_val:,.2f}
-Dev VAH / POC / VAL: {journal_df_check.iloc[-1]['Dev VAH'] if not journal_df_check.empty else 'N/A'} / {journal_df_check.iloc[-1]['Dev POC'] if not journal_df_check.empty else 'N/A'} / {journal_df_check.iloc[-1]['Dev VAL'] if not journal_df_check.empty else 'N/A'}
-
-[3. DERIVATIVES CONTEXT]
-Futures OI: {f"${oi_usd/1e6:.2f}M" if oi_usd else 'N/A'}
+with st.expander("Copy dashboard snapshot"):
+    snapshot_text = """
+=== BTC TRADING COCKPIT SNAPSHOT ===
+Time: {time} IST
+Price: {price}
+Location: {location}
+Fast Auction Classification: {state} (Independent Code {code})
+Prior VAH / POC / VAL: {vah} / {poc} / {val}
+Developing VAH / POC / VAL: {dev_vah} / {dev_poc} / {dev_val}
+Options expiry: {expiry}
+ATM Straddle: {straddle}
+Max Pain: {max_pain}
+Call GEX Wall: {call_wall}
+Put GEX Wall: {put_wall}
+Local OI PCR (Contracts ±10% spot): {pcr}
+Delta Futures OI: {oi}
+Perp Basis: {basis}
 OI Direction: Unavailable without comparable prior observation
-Perp Basis: {f"{sp_prem:.4f}%" if sp_prem is not None else 'N/A'}
-Options Expiry: {loaded_expiry}
-Max Pain: {f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else 'N/A'}
-Max Pain vs Dev POC: {f"${mp_poc_distance:,.0f}" if not pd.isna(mp_poc_distance) else 'N/A'}
-Call GEX Wall: {f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else 'N/A'} (${call_gamma_wall['GEX_Call']/1e6:.2f}M)
-Put GEX Wall: {f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else 'N/A'} (${put_gamma_wall['GEX_Put']/1e6:.2f}M)
-Local OI PCR (Contracts ±10% spot): {f"{pcr:.2f}" if not pd.isna(pcr) else 'N/A'}
-"""
-        st.code(snapshot_text, language="text")
+""".format(
+        time=datetime.datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+        price="$" + format(latest_price, ",.2f"), location=loc, state=current_amt_name, code=current_amt_state,
+        vah=final_vah, poc=final_poc, val=final_val,
+        dev_vah=dev_vah_ui, dev_poc=dev_poc_ui, dev_val=dev_val_ui,
+        expiry=loaded_expiry,
+        straddle="$" + format(straddle_price, ",.2f") if straddle_valid else "N/A",
+        max_pain="$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A",
+        call_wall=call_strike_text if not options_df.empty and atm_row is not None else "N/A",
+        put_wall=put_strike_text if not options_df.empty and atm_row is not None else "N/A",
+        pcr=format(pcr, ".2f") if not pd.isna(pcr) else "N/A",
+        oi="$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A",
+        basis=format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A",
+    )
+    st.code(snapshot_text, language="text")
 
+st.caption("Source status — Binance candles: " + ("available" if not df.empty else "unavailable") + " · Delta futures: " + ("available" if oi_usd is not None else "unavailable") + " · Delta options: " + ("available" if not options_df.empty else "unavailable"))
 components.html("<script>setTimeout(function(){ window.parent.location.reload(); }, 180000);</script>", height=0, width=0)
