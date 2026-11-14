@@ -749,7 +749,7 @@ with st.expander("Raw options chain — nearest strikes"):
         display_df["Call_OI_M"] = display_df["OI_USD_Call"] / 1e6
         display_df["Put_OI_M"] = display_df["OI_USD_Put"] / 1e6
         display_df = display_df.sort_values(by="Dist_to_Spot", ascending=True)
-        display_df = display_df[["Strike", "Mark_Call", "Call_OI_M", "Volume_Call", "IV_Call", "IV_Put", "Volume_Put", "Put_OI_M", "Mark_Put"]]
+        display_df = display_df[["Mark_Call", "Call_OI_M", "Volume_Call", "IV_Call", "Strike", "IV_Put", "Volume_Put", "Put_OI_M", "Mark_Put"]]
         def highlight_cmp_and_walls(row):
             if row["Strike"] == atm_strike:
                 return ["background-color: #6A1B9A; color: white; font-weight: bold"] * len(row)
