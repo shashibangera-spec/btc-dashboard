@@ -101,12 +101,14 @@ def fetch_amt_data():
             df['Date'] = pd.to_datetime(df['Date'], unit='ms', utc=True).dt.tz_convert('Asia/Kolkata')
             df['CloseTimeUTC'] = pd.to_datetime(df['close_time'], unit='ms', utc=True)
             df['CloseTimeMs'] = pd.to_numeric(df['close_time'], errors='coerce')
+            now_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
+            df['IsClosed'] = df['CloseTimeMs'] < now_ms
             
             for col in ['open', 'high', 'low', 'close']:
                 df[col] = df[col].astype(float)
             
             df['ShiftedDate'] = df['Date'] - pd.Timedelta(hours=5, minutes=30)
-            df = df[['Date', 'CloseTimeUTC', 'CloseTimeMs', 'open', 'high', 'low', 'close', 'ShiftedDate']]
+            df = df[['Date', 'CloseTimeUTC', 'CloseTimeMs', 'IsClosed', 'open', 'high', 'low', 'close', 'ShiftedDate']]
             return df.sort_values('Date').reset_index(drop=True)
         except Exception:
             continue
@@ -197,8 +199,7 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
     if df.empty: return pd.DataFrame(), manual_valid, {}
     df['prev_close'] = df['close'].shift(1)
     df['tr0'] = abs(df['high'] - df['low']); df['tr1'] = abs(df['high'] - df['prev_close']); df['tr2'] = abs(df['low'] - df['prev_close'])
-    df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1); df['atr20'] = df['tr'].ewm(alpha=1/20, adjust=False).mean()
-    
+    df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1); df['atr20'] = df['tr'].ewm(alpha=1/20, adjust=False).mean()    
     today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
     today_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str].copy()
     yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str].copy()
@@ -397,8 +398,7 @@ def fetch_delta_options():
     def fetch_paginated_data(url):
         results = []; seen_cursors = set(); page_count = 0; complete = False
         while url:
-            if page_count >= 50: break
-            try:
+            if page_count >= 50: break            try:
                 response = requests.get(url, timeout=10); response.raise_for_status()
                 data = response.json()
                 if not isinstance(data, dict): break
@@ -465,7 +465,9 @@ def fetch_delta_options():
                 bid = float(quotes.get("best_bid") or ticker.get("best_bid")) if (quotes.get("best_bid") or ticker.get("best_bid")) is not None else None
                 ask = float(quotes.get("best_ask") or ticker.get("best_ask")) if (quotes.get("best_ask") or ticker.get("best_ask")) is not None else None
                 mark = float(ticker.get("mark_price")) if ticker.get("mark_price") is not None else None
-                greeks = ticker.get("greeks") or {}; gamma = float(greeks.get("gamma") or "0")
+                greeks = ticker.get("greeks") or {}
+                gamma_raw = greeks.get("gamma")
+                gamma = float(gamma_raw) if gamma_raw not in (None, "") else np.nan
                 iv = float(quotes.get("mark_iv") or quotes.get("ask_iv") or "0") * 100
                 ts_val = ticker.get("timestamp") or ticker.get("updated_at")
                 
@@ -499,25 +501,48 @@ def fetch_delta_options():
 # CALCULATION & PROCESSING
 # ==========================================
 df = fetch_amt_data()
-latest_price = float(df['close'].iloc[-1]) if not df.empty else 0.0
+
+# Completed candles are authoritative for AMT state and session calculations.
+# The currently forming candle is kept separate and never changes a confirmed state.
+completed_df = df[df['IsClosed']].copy() if not df.empty else pd.DataFrame()
+live_df = df[~df['IsClosed']].copy() if not df.empty else pd.DataFrame()
+
+# Latest kline close is the current/provisional price observation.
+if not live_df.empty:
+    latest_price = float(live_df['close'].iloc[-1])
+elif not completed_df.empty:
+    latest_price = float(completed_df['close'].iloc[-1])
+else:
+    latest_price = 0.0
+
 funding_rate, mark_price, oi_usd, sp_prem = fetch_futures_context()
 
-if not df.empty:
-    today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
-    
+if not completed_df.empty:
+    today_str = completed_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
+    yesterday_df = completed_df[completed_df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
     if not yesterday_df.empty:
         last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
         prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
-        if manual_values_valid: final_vah, final_val, final_poc = input_vah, input_val, input_poc
-        else: final_vah, final_val, final_poc = calculate_tpo(prev_day_df)
-    elif manual_values_valid: final_vah, final_val, final_poc = input_vah, input_val, input_poc
+        if manual_values_valid:
+            final_vah, final_val, final_poc = input_vah, input_val, input_poc
+        else:
+            final_vah, final_val, final_poc = calculate_tpo(prev_day_df)
+    elif manual_values_valid:
+        final_vah, final_val, final_poc = input_vah, input_val, input_poc
 
-session_df = calculate_session_journey(df, final_vah, final_val)
-journal_res = generate_state_journal(df, manual_values_valid, input_vah, input_val, input_poc)
+# State and journal use completed candles only.
+session_df = calculate_session_journey(completed_df, final_vah, final_val)
+journal_res = generate_state_journal(completed_df, manual_values_valid, input_vah, input_val, input_poc)
 current_amt_state = int(journal_res[0].iloc[-1]['Code']) if (journal_res and not journal_res[0].empty) else 0
 current_amt_name = state_names.get(current_amt_state, "UNKNOWN")
 journal_df_check = journal_res[0] if journal_res else pd.DataFrame()
+
+# Provisional/forming profile includes the current open candle for observation only.
+provisional_vah = provisional_val = provisional_poc = np.nan
+if not df.empty:
+    provisional_today = df[df['ShiftedDate'] == df['ShiftedDate'].iloc[-1]].copy()
+    if not provisional_today.empty:
+        provisional_vah, provisional_val, provisional_poc = calculate_tpo(provisional_today)
 
 options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, strike_ladder, is_chain_complete = fetch_delta_options()
 
@@ -529,8 +554,10 @@ straddle_valid = False
 filtered_options = pd.DataFrame()
 
 if not options_df.empty and latest_price > 0:
-    options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * latest_price * dynamic_contract_size
-    options_df['GEX_Put'] = options_df['Gamma_Put'] * options_df['OI_Contracts_Put'] * latest_price * dynamic_contract_size
+    # Estimated unsigned gross gamma exposure for a 1% BTC move.
+    valid_contract_size = dynamic_contract_size if dynamic_contract_size and dynamic_contract_size > 0 else np.nan
+    options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * valid_contract_size * (latest_price ** 2) * 0.01
+    options_df['GEX_Put'] = options_df['Gamma_Put'] * options_df['OI_Contracts_Put'] * valid_contract_size * (latest_price ** 2) * 0.01
     options_df['Dist_to_Spot'] = abs(options_df['Strike'] - latest_price)
     
     atm_strike = options_df.loc[options_df['Dist_to_Spot'].idxmin(), 'Strike']
@@ -538,7 +565,12 @@ if not options_df.empty and latest_price > 0:
     cb, ca, cm = atm_row['Bid_Call'], atm_row['Ask_Call'], atm_row['Mark_Call']
     pb, pa, pm = atm_row['Bid_Put'], atm_row['Ask_Put'], atm_row['Mark_Put']
     
-    if not any(pd.isna(x) for x in [cb, ca, pb, pa]) and cb > 0 and ca > 0 and pb > 0 and pa > 0 and cb <= ca and pb <= pa:
+    if (
+        not any(pd.isna(x) for x in [cb, ca, cm, pb, pa, pm])
+        and all(np.isfinite(float(x)) for x in [cb, ca, cm, pb, pa, pm])
+        and cb > 0 and ca > 0 and cm > 0 and pb > 0 and pa > 0 and pm > 0
+        and cb <= ca and pb <= pa
+    ):
         straddle_price = cm + pm
         straddle_valid = True
 
@@ -552,8 +584,9 @@ if not options_df.empty and latest_price > 0:
         if temp_filt['GEX_Call'].max() > 0: call_gamma_wall = temp_filt.loc[temp_filt['GEX_Call'].idxmax()]
         if temp_filt['GEX_Put'].max() > 0: put_gamma_wall = temp_filt.loc[temp_filt['GEX_Put'].idxmax()]
         
-        total_calls_usd = temp_filt['OI_USD_Call'].sum(); total_puts_usd = temp_filt['OI_USD_Put'].sum()
-        pcr = total_puts_usd / total_calls_usd if total_calls_usd > 0 else 0
+        total_calls_contracts = temp_filt['OI_Contracts_Call'].sum()
+        total_puts_contracts = temp_filt['OI_Contracts_Put'].sum()
+        pcr = total_puts_contracts / total_calls_contracts if total_calls_contracts > 0 else np.nan
         total_calls_vol = temp_filt['Volume_Call'].sum(); total_puts_vol = temp_filt['Volume_Put'].sum()
         pcr_volume = total_puts_vol / total_calls_vol if total_calls_vol > 0 else 0
 
@@ -591,14 +624,18 @@ with tab_cockpit:
     st.subheader("🚦 Vital Signs")
     v1, v2 = st.columns(2)
     v1.metric("Current Price", f"${latest_price:,.2f}")
-    v2.metric("Project Echo State", f"{current_amt_name}", f"Code {current_amt_state}")
+    v2.metric("Fast Auction Classification", f"{current_amt_name}", f"Independent code {current_amt_state}")
     
     st.markdown("---")
     st.subheader("🧠 Tape Read & Confluence")
     
     tc1, tc2 = st.columns(2)
-    tc1.metric("Price Location", loc, f"${latest_price:,.0f}")
-    tc2.metric("Derivatives Flow", f"{'OI Rising' if oi_usd else 'N/A'} + {'Perp Discount' if sp_prem and sp_prem < 0 else 'Perp Premium' if sp_prem and sp_prem > 0 else 'N/A'}")
+    tc1.metric("Price Location", loc, f"${latest_price:,.0f}")    tc2.metric(
+        "Delta Futures Context",
+        f"OI ${oi_usd/1e6:.2f}M" if oi_usd is not None else "OI N/A",
+        "Perp Discount" if sp_prem is not None and sp_prem < 0 else "Perp Premium" if sp_prem is not None and sp_prem > 0 else "Basis N/A"
+    )
+    st.caption("OI direction is unavailable without a comparable prior observation.")
     
     st.markdown("---")
     st.subheader("📐 Quantitative Confluence")
@@ -623,6 +660,13 @@ with tab_amt:
     c2.metric("Prior VAL", f"${final_val:,.2f}" if not pd.isna(final_val) else "N/A")
     c3.metric("Prior POC", f"${final_poc:,.2f}" if not pd.isna(final_poc) else "N/A")
     
+    st.markdown("### Provisional / Forming Profile")
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Provisional VAH", f"${provisional_vah:,.0f}" if not pd.isna(provisional_vah) else "N/A")
+    p2.metric("Provisional POC", f"${provisional_poc:,.0f}" if not pd.isna(provisional_poc) else "N/A")
+    p3.metric("Provisional VAL", f"${provisional_val:,.0f}" if not pd.isna(provisional_val) else "N/A")
+    st.caption("Includes the currently forming 30-minute candle. Informational only; it does not change the Fast Auction Classification.")
+
     st.markdown("### Session Journey")
     if not session_df.empty:
         st.dataframe(session_df, use_container_width=True, hide_index=True, column_config={
@@ -636,7 +680,8 @@ with tab_amt:
             "VAL": st.column_config.NumberColumn("VAL", format="$%.0f"),
         })
         
-    st.markdown("### Project Echo Journal")
+    st.markdown("### Fast Auction Classification Journal")
+    st.caption("Independent dashboard classification; not Project Echo confirmation.")
     if not journal_df_check.empty:
         st.dataframe(journal_df_check, use_container_width=True, hide_index=True, column_config={
             "Time": st.column_config.TextColumn("Time (IST)"),
@@ -657,7 +702,7 @@ with tab_options:
         if straddle_valid: o2.metric("ATM Straddle", f"${straddle_price:,.2f}")
         else: o2.metric("ATM Straddle", "⚠️ INVALID")
         o3.metric("Max Pain", f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else "N/A")
-        o4.metric("Local OI PCR", f"{pcr:.2f}")
+        o4.metric("Local OI PCR (Contracts ±10%)", f"{pcr:.2f}" if not pd.isna(pcr) else "N/A")
         
         st.markdown("---")
         st.subheader("🎯 OI Concentrations & Walls")
@@ -685,7 +730,12 @@ with tab_options:
         
         st.markdown("##### Context Metrics")
         w1, w2 = st.columns(2)
-        w1.metric("Gross Gamma Wall Estimates", f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A")
+        w1.metric(
+            "Estimated Gross GEX per 1% BTC move",
+            f"C: ${call_gamma_wall['Strike']:,.0f} / P: ${put_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None and put_gamma_wall is not None else "N/A"
+        )
+        if call_gamma_wall is not None and put_gamma_wall is not None:
+            st.caption(f"Call: ${call_gamma_wall['GEX_Call']:,.0f} | Put: ${put_gamma_wall['GEX_Put']:,.0f} (unsigned gross estimate; multiplier {dynamic_contract_size:g} BTC)")
         w2.metric("Local Structural Extreme", f"C: ${call_oi_wall['Strike']:,.0f} / P: ${put_oi_wall['Strike']:,.0f}" if call_oi_wall is not None and put_oi_wall is not None else "N/A")
 
 # --- TAB 4: RAW DATA ---
@@ -735,19 +785,21 @@ Price: ${latest_price:,.2f}
 Location: {loc}
 
 [2. AMT STRUCTURE]
-Project Echo State: {current_amt_name} (Code {current_amt_state})
+Fast Auction Classification: {current_amt_name} (Independent Code {current_amt_state})
+Classification basis: completed 30-minute candles only
 Prior VAH / POC / VAL: ${final_vah:,.2f} / ${final_poc:,.2f} / ${final_val:,.2f}
 Dev VAH / POC / VAL: {journal_df_check.iloc[-1]['Dev VAH'] if not journal_df_check.empty else 'N/A'} / {journal_df_check.iloc[-1]['Dev POC'] if not journal_df_check.empty else 'N/A'} / {journal_df_check.iloc[-1]['Dev VAL'] if not journal_df_check.empty else 'N/A'}
 
 [3. DERIVATIVES CONTEXT]
 Futures OI: {f"${oi_usd/1e6:.2f}M" if oi_usd else 'N/A'}
-Futures Flow: {'OI Rising' if oi_usd else 'N/A'} + {'Perp Discount' if sp_prem and sp_prem < 0 else 'Perp Premium' if sp_prem and sp_prem > 0 else 'N/A'}
+OI Direction: Unavailable without comparable prior observation
+Perp Basis: {f"{sp_prem:.4f}%" if sp_prem is not None else 'N/A'}
 Options Expiry: {loaded_expiry}
 Max Pain: {f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else 'N/A'}
 Max Pain vs Dev POC: {f"${mp_poc_distance:,.0f}" if not pd.isna(mp_poc_distance) else 'N/A'}
 Call GEX Wall: {f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else 'N/A'} (${call_gamma_wall['GEX_Call']/1e6:.2f}M)
 Put GEX Wall: {f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else 'N/A'} (${put_gamma_wall['GEX_Put']/1e6:.2f}M)
-Local OI PCR: {pcr:.2f}
+Local OI PCR (Contracts ±10% spot): {f"{pcr:.2f}" if not pd.isna(pcr) else 'N/A'}
 """
         st.code(snapshot_text, language="text")
 
