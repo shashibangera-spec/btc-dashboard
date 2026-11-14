@@ -701,6 +701,10 @@ with st.expander("Options OI clusters"):
                 top_rows = top_band[top_band["Type"] == opt_type].nlargest(3, "OI_USD")[
                     ["Strike", "OI_USD", "Distance ($)", "Distance (%)"]
                 ].copy()
+                top_rows = top_rows.sort_values(
+                    "Strike",
+                    ascending=(opt_type == "Put"),
+                )
                 if not top_rows.empty:
                     top_rows["OI_USD"] = top_rows["OI_USD"] / 1e6
                     st.dataframe(
