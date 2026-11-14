@@ -215,6 +215,12 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
     aboveValueBars = 0; belowValueBars = 0; insideValueBars = 0; acceptancePullbackBarsDown = 0
     acceptanceConfirmedDown = False; pocAboveBars = 0; pocBelowBars = 0; reentryInsideBars = 0
     prev_currVAH, prev_currVAL, prev_currPOC = np.nan, np.nan, np.nan
+    
+    # NEW PROGRESS TRACKING VARIABLES
+    lowestSinceDiscDown = np.nan
+    highestSinceDiscUp = np.nan
+    barsWithoutNewLow = 0
+    barsWithoutNewHigh = 0
 
     for i in range(len(today_df)):
         bar = today_df.iloc[i]; current_bar_df = today_df.iloc[:i+1]; cycleBars += 1
@@ -233,7 +239,6 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
         wideBar = not pd.isna(bar['atr20']) and barRange > bar['atr20'] * 1.5
         effectiveTimeout = 6
         if not pd.isna(bar['atr20']): effectiveTimeout = max(3, min(20, round(6 * (bar['atr20'] / 250.0))))
-        discoveryTimedOut = (i - discoveryStartBar) >= effectiveTimeout
 
         if belowValueBars >= 2:
             if bar['high'] >= prevVAL and close < prevVAL and wideBar:
@@ -247,53 +252,83 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
         valueMigrationDown = vaShiftDown and pocShiftDown
         newValueDevelopingDown = pocBelowBars >= 2 and cycleBars >= 3
 
+        # --- NEW: UPDATE PROGRESS TRACKERS BEFORE STATE MACHINE ---
+        if auctionState in (3, 16): # Discovery Below or Stalled Below
+            if pd.isna(lowestSinceDiscDown) or bar['low'] < lowestSinceDiscDown:
+                lowestSinceDiscDown = bar['low']
+                barsWithoutNewLow = 0
+            else:
+                barsWithoutNewLow += 1
+        else:
+            lowestSinceDiscDown = np.nan
+            barsWithoutNewLow = 0
+
+        if auctionState in (2, 15): # Discovery Above or Stalled Above
+            if pd.isna(highestSinceDiscUp) or bar['high'] > highestSinceDiscUp:
+                highestSinceDiscUp = bar['high']
+                barsWithoutNewHigh = 0
+            else:
+                barsWithoutNewHigh += 1
+        else:
+            highestSinceDiscUp = np.nan
+            barsWithoutNewHigh = 0
+
+        timed_out_down = barsWithoutNewLow >= effectiveTimeout
+        timed_out_up = barsWithoutNewHigh >= effectiveTimeout
+        # ---------------------------------------------------------
+
         if auctionState == 0:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i
+            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
+            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
             elif cycleBars >= 3: auctionState = 1
         elif auctionState == 1:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i
+            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
+            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
         elif auctionState == 2:
-            if close < prevVAL: auctionState = 3; discoveryStartBar = i
+            if close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
             elif close <= prevVAH: auctionState = 17
-            elif discoveryTimedOut: auctionState = 15
+            elif timed_out_up: auctionState = 15
         elif auctionState == 3:
             if acceptanceConfirmedDown: auctionState = 5
-            elif close > prevVAH: auctionState = 2; discoveryStartBar = i
+            elif close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
             elif close >= prevVAL: auctionState = 18
-            elif discoveryTimedOut: auctionState = 16
+            elif timed_out_down: auctionState = 16
         elif auctionState == 5:
             if valueMigrationDown: auctionState = 7
             elif close >= prevVAL: auctionState = 13
         elif auctionState == 7:
             if newValueDevelopingDown: auctionState = 9
             elif close >= prevVAL: auctionState = 13
+        elif auctionState == 15: # STALLED ABOVE
+            if close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
+            elif close >= prevVAL and close <= prevVAH: auctionState = 17
+            elif close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
+        elif auctionState == 16: # STALLED BELOW
+            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
+            elif close >= prevVAL and close <= prevVAH: auctionState = 11
+            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
         elif auctionState == 17:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i
+            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
+            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
             elif insideValueBars >= 2: auctionState = 10
         elif auctionState == 18:
-            if close < prevVAL: auctionState = 3; discoveryStartBar = i
-            elif close > prevVAH: auctionState = 2; discoveryStartBar = i
+            if close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
+            elif close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
             elif insideValueBars >= 2: auctionState = 11
         elif auctionState == 10:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i
+            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
+            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
             elif insideValueBars >= 2: auctionState = 14
         elif auctionState == 11:
-            if close < prevVAL: auctionState = 3; discoveryStartBar = i
-            elif close > prevVAH: auctionState = 2; discoveryStartBar = i
+            if close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
+            elif close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
             elif insideValueBars >= 2: auctionState = 14
         elif auctionState == 14:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i
+            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
+            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
             else:
                 reentryInsideBars += 1
                 if reentryInsideBars >= 3 and cycleBars >= 3: auctionState = 1; reentryInsideBars = 0
-        elif auctionState == 16:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i
-            elif close >= prevVAL and close <= prevVAH: auctionState = 11
 
         if auctionState != 14: reentryInsideBars = 0
         prev_currVAH, prev_currVAL, prev_currPOC = currVAH, currVAL, currPOC
