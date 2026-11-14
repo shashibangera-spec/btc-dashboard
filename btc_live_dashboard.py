@@ -728,6 +728,50 @@ with st.expander("Fast Auction Classification journal"):
         st.caption("Classification journal unavailable.")
 
 with st.expander("Options OI clusters"):
+    st.markdown("#### Top 3 Strikes by OI")
+    st.caption("Largest individual Call and Put OI concentrations within ±15% of spot. OI is shown in USD value; distance is measured from current spot.")
+    if raw_chain_df is not None and not raw_chain_df.empty and latest_price > 0:
+        top_band = raw_chain_df.copy()
+        top_band["Strike"] = pd.to_numeric(top_band["Strike"], errors="coerce")
+        top_band["OI_USD"] = pd.to_numeric(top_band["OI_USD"], errors="coerce")
+        top_band = top_band[
+            top_band["Strike"].between(latest_price * 0.85, latest_price * 1.15)
+            & top_band["OI_USD"].notna()
+            & (top_band["OI_USD"] > 0)
+        ].copy()
+        top_band["Distance ($)"] = top_band["Strike"] - latest_price
+        top_band["Distance (%)"] = (top_band["Distance ($)"] / latest_price) * 100
+        top_cols = st.columns(2)
+        for col, opt_type, heading in [
+            (top_cols[0], "Call", "Top 3 Calls"),
+            (top_cols[1], "Put", "Top 3 Puts"),
+        ]:
+            with col:
+                st.markdown(f"**{heading}**")
+                top_rows = top_band[top_band["Type"] == opt_type].nlargest(3, "OI_USD")[
+                    ["Strike", "OI_USD", "Distance ($)", "Distance (%)"]
+                ].copy()
+                if not top_rows.empty:
+                    top_rows["OI_USD"] = top_rows["OI_USD"] / 1e6
+                    st.dataframe(
+                        top_rows,
+                        column_config={
+                            "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
+                            "OI_USD": st.column_config.NumberColumn("OI (USD M)", format="$%.2fM"),
+                            "Distance ($)": st.column_config.NumberColumn("Distance ($)", format="$%+.0f"),
+                            "Distance (%)": st.column_config.NumberColumn("Distance (%)", format="%+.2f%%"),
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.caption("No qualifying strikes in the ±15% band.")
+    else:
+        st.caption("Raw options chain unavailable; Top 3 ranking cannot be calculated.")
+
+    st.divider()
+    st.markdown("#### Legacy Cluster Analysis (Research Only)")
+    st.caption("Retained for comparison. VWAS and tier classifications are legacy analytical outputs, not primary live wall indicators.")
     cluster_rows = []
     for tier, call_data, put_data in [
         ("Near (<0.5x)", near_call[0] if near_call else None, near_put[0] if near_put else None),
