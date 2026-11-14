@@ -14,8 +14,8 @@ st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 # ==========================================
 # CONFIGURATION & STATE
 # ==========================================
-CLUSTER_ABSORPTION_PCT = 0.30
-MAX_CLUSTER_WIDTH = 5
+CLUSTER_ABSORPTION_PCT = 0.45  # Increased from 0.30 to catch wider clusters
+MAX_CLUSTER_WIDTH = 7          # Increased from 5
 OI_CLUSTER_MIN_USD = 5_000_000
 MARK_TOLERANCE_PCT = 0.02 
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
@@ -31,7 +31,6 @@ state_names = {
 
 @st.cache_resource
 def get_persistent_state():
-    # Stripped down to only what is needed for UI tracking
     return {
         "session_start_straddle": None,
         "session_start_expiry": None,
@@ -545,23 +544,16 @@ tab_cockpit, tab_amt, tab_options, tab_raw = st.tabs(["🚦 Cockpit", "📖 AMT 
 # --- TAB 1: COCKPIT ---
 with tab_cockpit:
     st.subheader("🚦 Vital Signs")
-    v1, v2, v3, v4 = st.columns(4)
+    v1, v2 = st.columns(2)
     v1.metric("Current Price", f"${latest_price:,.2f}")
-    v2.metric("AMT State", f"{current_amt_name}", f"Code {current_amt_state}")
+    v2.metric("Project Echo State", f"{current_amt_name}", f"Code {current_amt_state}")
     
-    if funding_rate is not None: v4.metric("Funding Rate (8h)", f"{funding_rate:+.4f}%")
-    else: v4.metric("Funding Rate", "N/A")
-        
     st.markdown("---")
     st.subheader("🧠 Tape Read & Confluence")
     
-    tc1, tc2, tc3 = st.columns(3)
+    tc1, tc2 = st.columns(2)
+    tc1.metric("Price Location", loc, f"${latest_price:,.0f}")
     tc2.metric("Derivatives Flow", f"{'OI Rising' if oi_usd else 'N/A'} + {'Perp Discount' if sp_prem and sp_prem < 0 else 'Perp Premium' if sp_prem and sp_prem > 0 else 'N/A'}")
-    
-    if pd.isna(final_vah) or pd.isna(final_val): loc = "Value Area Unavailable"
-    else: loc = "Above VAH" if latest_price > final_vah else "Below VAL" if latest_price < final_val else "Inside VA"
-    tc3.metric("Price Location", loc, f"${latest_price:,.0f}")
-    tc1.metric("AMT State", current_amt_name, f"Code {current_amt_state}")
     
     st.markdown("---")
     st.subheader("📐 Quantitative Confluence")
@@ -659,7 +651,7 @@ with tab_options:
 # --- TAB 4: RAW DATA ---
 with tab_raw:
     if not filtered_options.empty:
-        st.subheader("Raw Options Chain — 10 Nearest Strikes")
+        st.subheader("Raw Options Chain — Nearest Strikes")
         
         # Create a copy for display to avoid modifying the original
         display_df = filtered_options.copy()
@@ -668,7 +660,7 @@ with tab_raw:
         display_df['Call_OI_M'] = display_df['OI_USD_Call'] / 1e6
         display_df['Put_OI_M'] = display_df['OI_USD_Put'] / 1e6
         
-        # Select and reorder columns using actual variable names
+        # Select and reorder columns
         display_df = display_df[[
             'Strike', 
             'Mark_Call', 
@@ -680,6 +672,9 @@ with tab_raw:
             'Put_OI_M', 
             'Mark_Put'
         ]]
+        
+        # SORT DESCENDING so the highest strikes (and ATM) are at the top
+        display_df = display_df.sort_values(by='Strike', ascending=False)
         
         # Styling function (Purple anchor for CMP)
         def highlight_cmp_and_walls(row):
@@ -708,33 +703,24 @@ with tab_raw:
 === BTC TERMINAL SNAPSHOT ===
 Time: {datetime.datetime.now(IST_TZ).strftime('%Y-%m-%d %H:%M:%S')} IST
 
-[VITAL SIGNS]
+[1. PRICE ACTION]
 Price: ${latest_price:,.2f}
-AMT State: {current_amt_name} (Code {current_amt_state})
-Funding Rate: {funding_rate if funding_rate is not None else 'N/A'}
+Location: {loc}
 
-[AMT MAP]
-Prior VAH: ${final_vah:,.2f} | Prior POC: ${final_poc:,.2f} | Prior VAL: ${final_val:,.2f}
-Developing VAH: {journal_df_check.iloc[-1]['Dev VAH'] if not journal_df_check.empty else 'N/A'} | Developing POC: {journal_df_check.iloc[-1]['Dev POC'] if not journal_df_check.empty else 'N/A'} | Developing VAL: {journal_df_check.iloc[-1]['Dev VAL'] if not journal_df_check.empty else 'N/A'}
+[2. AMT STRUCTURE]
+Project Echo State: {current_amt_name} (Code {current_amt_state})
+Prior VAH / POC / VAL: ${final_vah:,.2f} / ${final_poc:,.2f} / ${final_val:,.2f}
+Dev VAH / POC / VAL: {journal_df_check.iloc[-1]['Dev VAH'] if not journal_df_check.empty else 'N/A'} / {journal_df_check.iloc[-1]['Dev POC'] if not journal_df_check.empty else 'N/A'} / {journal_df_check.iloc[-1]['Dev VAL'] if not journal_df_check.empty else 'N/A'}
 
-[FUTURES CONTEXT]
-Aggregate OI: {f"${oi_usd/1e6:.2f}M" if oi_usd else 'N/A'}
-Spot/Perp Premium: {f"{sp_prem:+.3f}%" if sp_prem is not None else 'N/A'}
-
-[QUANTITATIVE CONFLUENCE]
-Straddle Ratio: {f"{straddle_ratio:.2f}x" if not pd.isna(straddle_ratio) else 'N/A'}
-Max Pain vs Dev POC: {f"${mp_poc_distance:,.0f}" if not pd.isna(mp_poc_distance) else 'N/A'}
-
-[OPTIONS SNAPSHOT]
-Expiry: {loaded_expiry}
-ATM Strike: ${atm_strike:,.0f}
-ATM Straddle: {f"${straddle_price:,.2f}" if straddle_valid else 'N/A'}
+[3. DERIVATIVES CONTEXT]
+Futures OI: {f"${oi_usd/1e6:.2f}M" if oi_usd else 'N/A'}
+Futures Flow: {'OI Rising' if oi_usd else 'N/A'} + {'Perp Discount' if sp_prem and sp_prem < 0 else 'Perp Premium' if sp_prem and sp_prem > 0 else 'N/A'}
+Options Expiry: {loaded_expiry}
 Max Pain: {f"${true_max_pain:,.0f}" if not pd.isna(true_max_pain) else 'N/A'}
+Max Pain vs Dev POC: {f"${mp_poc_distance:,.0f}" if not pd.isna(mp_poc_distance) else 'N/A'}
+Call GEX Wall: {f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else 'N/A'} (${call_gamma_wall['GEX_Call']/1e6:.2f}M)
+Put GEX Wall: {f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else 'N/A'} (${put_gamma_wall['GEX_Put']/1e6:.2f}M)
 Local OI PCR: {pcr:.2f}
-Gamma Walls: Call {f"${call_gamma_wall['Strike']:,.0f}" if call_gamma_wall is not None else 'N/A'} / Put {f"${put_gamma_wall['Strike']:,.0f}" if put_gamma_wall is not None else 'N/A'}
-
-[RECENT ALERTS]
-(Alert history removed in cleanup phase)
 """
         st.code(snapshot_text, language="text")
 
