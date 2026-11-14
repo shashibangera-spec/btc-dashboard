@@ -14,8 +14,8 @@ st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 # ==========================================
 # CONFIGURATION & STATE
 # ==========================================
-CLUSTER_ABSORPTION_PCT = 0.45  # Increased from 0.30 to catch wider clusters
-MAX_CLUSTER_WIDTH = 7          # Increased from 5
+CLUSTER_ABSORPTION_PCT = 0.45
+MAX_CLUSTER_WIDTH = 7
 OI_CLUSTER_MIN_USD = 5_000_000
 MARK_TOLERANCE_PCT = 0.02 
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
@@ -484,6 +484,16 @@ current_amt_state = int(journal_res[0].iloc[-1]['Code']) if (journal_res and not
 current_amt_name = state_names.get(current_amt_state, "UNKNOWN")
 journal_df_check = journal_res[0] if journal_res else pd.DataFrame()
 
+# --- DEFINE UI VARIABLES HERE TO PREVENT NAMEERROR ---
+if pd.isna(final_vah) or pd.isna(final_val): loc = "Value Area Unavailable"
+else: loc = "Above VAH" if latest_price > final_vah else "Below VAL" if latest_price < final_val else "Inside VA"
+
+latest_dev_poc = journal_df_check.iloc[-1]['Dev POC'] if not journal_df_check.empty else np.nan
+prior_va_width = final_vah - final_val if not pd.isna(final_vah) and not pd.isna(final_val) else np.nan
+straddle_ratio = straddle_price / prior_va_width if not pd.isna(prior_va_width) and prior_va_width > 0 and not pd.isna(straddle_price) and straddle_valid else np.nan
+mp_poc_distance = true_max_pain - latest_dev_poc if not pd.isna(true_max_pain) and not pd.isna(latest_dev_poc) else np.nan
+# ----------------------------------------------------
+
 options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, strike_ladder, is_chain_complete = fetch_delta_options()
 
 true_max_pain, straddle_price, atm_strike, true_max_pain = np.nan, np.nan, 0.0, np.nan
@@ -558,11 +568,6 @@ with tab_cockpit:
     st.markdown("---")
     st.subheader("📐 Quantitative Confluence")
     qc1, qc2, qc3 = st.columns(3)
-    
-    latest_dev_poc = journal_df_check.iloc[-1]['Dev POC'] if not journal_df_check.empty else np.nan
-    prior_va_width = final_vah - final_val if not pd.isna(final_vah) and not pd.isna(final_val) else np.nan
-    straddle_ratio = straddle_price / prior_va_width if not pd.isna(prior_va_width) and prior_va_width > 0 and not pd.isna(straddle_price) and straddle_valid else np.nan
-    mp_poc_distance = true_max_pain - latest_dev_poc if not pd.isna(true_max_pain) and not pd.isna(latest_dev_poc) else np.nan
     
     if not pd.isna(straddle_ratio):
         qc1.metric("Straddle Ratio (vs Prior VA)", f"{straddle_ratio:.2f}x", "Expected Move > Prior Value" if straddle_ratio > 1.0 else "Expected Move < Prior Value", delta_color="normal" if straddle_ratio > 1.0 else "off")
@@ -653,30 +658,18 @@ with tab_raw:
     if not filtered_options.empty:
         st.subheader("Raw Options Chain — Nearest Strikes")
         
-        # Create a copy for display to avoid modifying the original
         display_df = filtered_options.copy()
-        
-        # Convert USD OI to Millions for clean display
         display_df['Call_OI_M'] = display_df['OI_USD_Call'] / 1e6
         display_df['Put_OI_M'] = display_df['OI_USD_Put'] / 1e6
         
-        # Select and reorder columns
         display_df = display_df[[
-            'Strike', 
-            'Mark_Call', 
-            'Call_OI_M', 
-            'Volume_Call', 
-            'IV_Call', 
-            'IV_Put', 
-            'Volume_Put', 
-            'Put_OI_M', 
-            'Mark_Put'
+            'Strike', 'Mark_Call', 'Call_OI_M', 'Volume_Call', 'IV_Call', 
+            'IV_Put', 'Volume_Put', 'Put_OI_M', 'Mark_Put'
         ]]
         
         # SORT DESCENDING so the highest strikes (and ATM) are at the top
         display_df = display_df.sort_values(by='Strike', ascending=False)
         
-        # Styling function (Purple anchor for CMP)
         def highlight_cmp_and_walls(row):
             if row['Strike'] == atm_strike:
                 return ['background-color: #6A1B9A; color: white; font-weight: bold'] * len(row)
@@ -684,7 +677,6 @@ with tab_raw:
 
         styled_df = display_df.style.apply(highlight_cmp_and_walls, axis=1)
         
-        # Render with proper formatting
         st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config={
             "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
             "Mark_Call": st.column_config.NumberColumn("Call Prem", format="$%.2f"),
