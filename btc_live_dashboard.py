@@ -398,7 +398,9 @@ def fetch_delta_options():
     def fetch_paginated_data(url):
         results = []; seen_cursors = set(); page_count = 0; complete = False
         while url:
-            if page_count >= 50: break            try:
+            if page_count >= 50:
+                break
+            try:
                 response = requests.get(url, timeout=10); response.raise_for_status()
                 data = response.json()
                 if not isinstance(data, dict): break
@@ -631,7 +633,8 @@ with tab_cockpit:
     st.subheader("🧠 Tape Read & Confluence")
     
     tc1, tc2 = st.columns(2)
-    tc1.metric("Price Location", loc, f"${latest_price:,.0f}")    tc2.metric(
+    tc1.metric("Price Location", loc, f"${latest_price:,.0f}")
+    tc2.metric(
         "Delta Futures Context",
         f"OI ${oi_usd/1e6:.2f}M" if oi_usd is not None else "OI N/A",
         "Perp Discount" if sp_prem is not None and sp_prem < 0 else "Perp Premium" if sp_prem is not None and sp_prem > 0 else "Basis N/A"
