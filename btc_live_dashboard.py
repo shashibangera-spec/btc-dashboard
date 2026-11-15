@@ -760,8 +760,18 @@ with st.expander("Raw options chain — nearest strikes"):
              "AMT Location", "IV_Put", "Volume_Put", "Put_OI_M", "Mark_Put"]
         ]
 
-        def highlight_amt_and_gex_walls(row):
-            # Style by the row's Strike value and column label, never by dataframe index.
+        # Relative IV references are side-specific and expressed in volatility points.
+        atm_call_iv = (
+            pd.to_numeric(atm_row.get("IV_Call"), errors="coerce")
+            if atm_row is not None else np.nan
+        )
+        atm_put_iv = (
+            pd.to_numeric(atm_row.get("IV_Put"), errors="coerce")
+            if atm_row is not None else np.nan
+        )
+
+        def highlight_amt_gex_and_relative_iv(row):
+            # Style by Strike value and column labels, never by dataframe index.
             styles = pd.Series("", index=row.index, dtype="object")
             strike = pd.to_numeric(row["Strike"], errors="coerce")
 
@@ -772,6 +782,22 @@ with st.expander("Raw options chain — nearest strikes"):
                 styles.loc["Strike"] = "background-color: #2E7D32; color: white; font-weight: bold"
             if put_gamma_wall is not None and pd.notna(strike) and strike == float(put_gamma_wall["Strike"]):
                 styles.loc["Strike"] = "background-color: #C62828; color: white; font-weight: bold"
+
+            call_iv = pd.to_numeric(row["IV_Call"], errors="coerce")
+            if pd.notna(call_iv) and pd.notna(atm_call_iv):
+                call_iv_diff = call_iv - atm_call_iv
+                if call_iv_diff > 5:
+                    styles.loc["IV_Call"] = "background-color: #C62828; color: white"
+                elif call_iv_diff < -5:
+                    styles.loc["IV_Call"] = "background-color: #2E7D32; color: white"
+
+            put_iv = pd.to_numeric(row["IV_Put"], errors="coerce")
+            if pd.notna(put_iv) and pd.notna(atm_put_iv):
+                put_iv_diff = put_iv - atm_put_iv
+                if put_iv_diff > 5:
+                    styles.loc["IV_Put"] = "background-color: #C62828; color: white"
+                elif put_iv_diff < -5:
+                    styles.loc["IV_Put"] = "background-color: #2E7D32; color: white"
 
             return styles
         raw_options_config = {
@@ -785,8 +811,9 @@ with st.expander("Raw options chain — nearest strikes"):
             "IV_Call": st.column_config.NumberColumn("IV_Call", format="%.1f%%"),
             "IV_Put": st.column_config.NumberColumn("IV_Put", format="%.1f%%"),
         }
+        st.caption("Relative IV vs ATM · Red: more than +5 vol points · Green: less than -5 vol points · Neutral: within ±5. Call and Put are compared with their own ATM IV. This is a relative-skew reference, not an expensive/cheap signal.")
         st.dataframe(
-            display_df.style.apply(highlight_amt_and_gex_walls, axis=1),
+            display_df.style.apply(highlight_amt_gex_and_relative_iv, axis=1),
             column_config=raw_options_config,
             use_container_width=True,
             hide_index=True,
