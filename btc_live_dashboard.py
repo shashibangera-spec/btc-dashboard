@@ -627,12 +627,56 @@ st.caption(
 )
 st.caption("Rendered " + datetime.datetime.now(IST_TZ).strftime("%d %b %Y · %H:%M:%S IST"))
 st.divider()
+# WHAT CHANGED — UI ONLY
+st.subheader("WHAT CHANGED")
+current_ui_snapshot = {
+    "state": current_amt_state,
+    "dev_vah": float(dev_vah_ui) if not pd.isna(dev_vah_ui) else None,
+    "dev_poc": float(dev_poc_ui) if not pd.isna(dev_poc_ui) else None,
+    "dev_val": float(dev_val_ui) if not pd.isna(dev_val_ui) else None,
+}
+previous_ui_snapshot = st.session_state.get("fast_previous_snapshot")
+
+if previous_ui_snapshot is None:
+    st.info("Baseline captured. Changes will appear after the next dashboard refresh.")
+else:
+    c1, c2, c3, c4 = st.columns(4)
+
+    def show_level_change(column, label, key):
+        current_value = current_ui_snapshot[key]
+        previous_value = previous_ui_snapshot.get(key)
+        if current_value is None or previous_value is None:
+            column.metric(label, "N/A")
+            return
+        delta_value = current_value - previous_value
+        if delta_value == 0:
+            column.metric(label, "$" + format(current_value, ",.0f"), "UNCHANGED", delta_color="off")
+        else:
+            delta_text = "$" + format(delta_value, ",+.0f")
+            column.metric(label, "$" + format(current_value, ",.0f"), delta_text)
+
+    state_change = "UNCHANGED"
+    if previous_ui_snapshot.get("state") != current_amt_state:
+        state_change = "FROM " + state_names.get(previous_ui_snapshot.get("state"), "UNKNOWN")
+
+    c1.metric("AUCTION STATE", current_amt_name, state_change, delta_color="off")
+    show_level_change(c2, "DEV VAH", "dev_vah")
+    show_level_change(c3, "DEV POC", "dev_poc")
+    show_level_change(c4, "DEV VAL", "dev_val")
+
+st.session_state["fast_previous_snapshot"] = current_ui_snapshot
+st.session_state["fast_prev_amt_state"] = current_amt_state
+st.caption("Compares the current rendered snapshot with the previous rendered snapshot in this browser session.")
+st.divider()
 
 # 1. PRICE ACTION
 st.subheader("1 · PRICE ACTION")
-p1, p2 = st.columns(2)
-p1.metric("Prior Value Area", "$" + format(final_val, ",.0f") + " – $" + format(final_vah, ",.0f") if not pd.isna(final_val) and not pd.isna(final_vah) else "N/A")
-p2.metric("Prior POC", "$" + format(final_poc, ",.0f") if not pd.isna(final_poc) else "N/A")
+st.metric(
+    "Prior Value Area",
+    "$" + format(final_val, ",.0f") + " – $" + format(final_vah, ",.0f")
+    if not pd.isna(final_val) and not pd.isna(final_vah)
+    else "N/A",
+)
 st.caption("GEX walls are options-derived reference levels, not guaranteed support or resistance.")
 st.divider()
 
@@ -680,85 +724,27 @@ with st.expander("Prior value reference and provisional / forming profile"):
 
 st.divider()
 
-# WHAT CHANGED — UI ONLY
-st.subheader("WHAT CHANGED")
-current_ui_snapshot = {
-    "state": current_amt_state,
-    "dev_vah": float(dev_vah_ui) if not pd.isna(dev_vah_ui) else None,
-    "dev_poc": float(dev_poc_ui) if not pd.isna(dev_poc_ui) else None,
-    "dev_val": float(dev_val_ui) if not pd.isna(dev_val_ui) else None,
-}
-previous_ui_snapshot = st.session_state.get("fast_previous_snapshot")
 
-if previous_ui_snapshot is None:
-    st.info("Baseline captured. Changes will appear after the next dashboard refresh.")
-else:
-    c1, c2, c3, c4 = st.columns(4)
+# 3 · CONTEXT
+st.subheader("3 · CONTEXT")
 
-    def show_level_change(column, label, key):
-        current_value = current_ui_snapshot[key]
-        previous_value = previous_ui_snapshot.get(key)
-        if current_value is None or previous_value is None:
-            column.metric(label, "N/A")
-            return
-        delta_value = current_value - previous_value
-        if delta_value == 0:
-            column.metric(label, "$" + format(current_value, ",.0f"), "UNCHANGED", delta_color="off")
-        else:
-            delta_text = "$" + format(delta_value, ",+.0f")
-            column.metric(label, "$" + format(current_value, ",.0f"), delta_text)
-
-    state_change = "UNCHANGED"
-    if previous_ui_snapshot.get("state") != current_amt_state:
-        state_change = "FROM " + state_names.get(previous_ui_snapshot.get("state"), "UNKNOWN")
-
-    c1.metric("AUCTION STATE", current_amt_name, state_change, delta_color="off")
-    show_level_change(c2, "DEV VAH", "dev_vah")
-    show_level_change(c3, "DEV POC", "dev_poc")
-    show_level_change(c4, "DEV VAL", "dev_val")
-
-st.session_state["fast_previous_snapshot"] = current_ui_snapshot
-st.session_state["fast_prev_amt_state"] = current_amt_state
-st.caption("Compares the current rendered snapshot with the previous rendered snapshot in this browser session.")
-st.divider()
-
-# 3. OPTIONS CONTEXT
-st.subheader("3 · OPTIONS CONTEXT")
+st.caption("OPTIONS")
 if not options_df.empty and atm_row is not None:
     st.caption("Delta options · Expiry: " + str(loaded_expiry))
     o1, o2, o3, o4 = st.columns(4)
-    o1.metric("Spot / CMP", "$" + format(latest_price, ",.2f"))
-    straddle_pct = (
-        (straddle_price / latest_price) * 100
-        if straddle_valid and latest_price > 0
-        else np.nan
-    )
-    o2.metric(
-        "ATM Straddle",
-        "$" + format(straddle_price, ",.2f") + f" ({straddle_pct:.2f}%)"
-        if straddle_valid and pd.notna(straddle_pct)
-        else "N/A"
-    )
-    o3.metric("Max Pain", "$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A")
-    o4.metric("Local OI PCR · Contracts ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A")
-    call_gex_text = "$" + format(call_gamma_wall["GEX_Call"] / 1e6, ".2f") + "M" if call_gamma_wall is not None and pd.notna(call_gamma_wall["GEX_Call"]) else "N/A"
-    put_gex_text = "$" + format(put_gamma_wall["GEX_Put"] / 1e6, ".2f") + "M" if put_gamma_wall is not None and pd.notna(put_gamma_wall["GEX_Put"]) else "N/A"
-    g1, g2 = st.columns(2)
-    g1.metric("Call GEX Wall", call_strike_text, "Gross GEX: " + call_gex_text)
-    g2.metric("Put GEX Wall", put_strike_text, "Gross GEX: " + put_gex_text)
-    st.caption("Estimated gross GEX per 1% BTC move; unsigned model estimate. PCR is contract-based and is not directly comparable to GEX.")
+    o1.metric("Max Pain", "$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A")
+    o2.metric("Call GEX Wall", call_strike_text)
+    o3.metric("Put GEX Wall", put_strike_text)
+    o4.metric("Local OI PCR · ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A")
 else:
     st.info("Options context unavailable or ATM quote validation did not pass. Missing values are not treated as zero.")
 
-st.divider()
-
-# 4. FUTURES CONTEXT
-st.subheader("4 · FUTURES CONTEXT")
+st.caption("FUTURES")
 f1, f2 = st.columns(2)
-f1.metric("Delta BTCUSD Futures OI", "$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A")
+f1.metric("Delta OI", "$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A")
 basis_status = "Discount" if sp_prem is not None and sp_prem < 0 else "Premium" if sp_prem is not None and sp_prem > 0 else "Unavailable"
-f2.metric("Perpetual Basis", format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A", basis_status)
-st.caption("OI direction is unavailable without a comparable prior observation. Futures OI and basis are context, not directional signals.")
+f2.metric("Perp Basis", format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A", basis_status)
+st.caption("Futures OI and basis are context, not directional signals. OI direction is unavailable without a comparable prior observation.")
 
 st.divider()
 st.subheader("Diagnostics and raw data")
