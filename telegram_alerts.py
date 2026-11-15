@@ -218,6 +218,32 @@ def evaluate_oi_shock():
     return None
 
 def main():
+    if os.environ.get("TEST_MODE", "false").lower() == "true":
+        print("TEST MODE: Sending test Telegram message...")
+        test_msg = (
+            "🧪 TEST ALERT\\n\\n"
+            "This is a verification message from the BTC alert system.\\n"
+            "If you see this, delivery works."
+        )
+        success, msg_id = send_telegram(test_msg)
+        event_time = datetime.now(timezone.utc).isoformat()
+        delivery_status = (
+            "SENT" if success and isinstance(msg_id, int) and msg_id > 0 else "FAILED"
+        )
+        log_event(
+            event_key=f"TEST_{event_time}",
+            event_type="AMT_STATE_CHANGE",
+            event_time=event_time,
+            payload={"test": True},
+            status=delivery_status,
+            message_id=msg_id if delivery_status == "SENT" else None,
+        )
+        if delivery_status == "SENT":
+            print(f"TEST SUCCESS: Message ID {msg_id}")
+            return
+        print(f"TEST FAILED: {msg_id}")
+        raise SystemExit(1)
+
     print("Evaluating alerts...")
     alerts = []
     
