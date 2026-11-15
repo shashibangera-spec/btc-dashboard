@@ -77,8 +77,21 @@ def evaluate_gex_breach():
     if len(res_amt.data) < 2: return None
     curr, prev = res_amt.data[0], res_amt.data[1]
     
-    # Fetch latest valid options snapshot
-    res_opt = supabase.table("options_derived_snapshots").select("*").order("source_collected_at", desc=True).limit(1).execute()
+    # Use today's UTC date as the expiry floor. Never evaluate expired contracts.
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Select the nearest unexpired expiry first, then the freshest snapshot
+    # available for that expiry. Chained order() calls create a multi-column
+    # PostgREST order: expiry_date ASC, source_collected_at DESC.
+    res_opt = (
+        supabase.table("options_derived_snapshots")
+        .select("*")
+        .gte("expiry_date", today_str)
+        .order("expiry_date", desc=False)
+        .order("source_collected_at", desc=True)
+        .limit(1)
+        .execute()
+    )
     if not res_opt.data: return None
     opt = res_opt.data[0]
     
