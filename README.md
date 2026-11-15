@@ -27,6 +27,16 @@ The automated backend runs in the cloud:
 
 The laptop does not need to remain on for the external scheduler and cloud workflows to run. Actual collection still depends on the scheduler, GitHub Actions, upstream exchange/API availability and Supabase connectivity.
 
+### Security architecture
+
+Database access is separated by workload and privilege:
+
+- **Streamlit dashboard:** uses `SUPABASE_ANON_KEY`. Its access is read-only through Supabase Row Level Security (RLS) policies; the dashboard does not receive the service-role credential.
+- **GitHub Actions backend workflows:** use `SUPABASE_SERVICE_ROLE_KEY` for trusted server-side collection, retention and alert operations. This key bypasses RLS and must remain in GitHub Actions secrets; it must never be exposed to Streamlit clients, browser code or the repository.
+- **Database:** RLS is enabled on all five original research tables. The separate Telegram alert outbox also has RLS enabled. Grant only the access required by each role.
+
+Never commit credentials, paste them into logs, or place service-role keys in client-side configuration.
+
 ### Collector cadence
 
 The external cron-job.org schedule triggers the workflows twice per hour:
@@ -38,6 +48,30 @@ The external cron-job.org schedule triggers the workflows twice per hour:
 | Options | `options_collector.yml` | :09 and :39 |
 
 The workflows are manually dispatchable through GitHub Actions as well. Keep the external cron schedule and workflow names aligned when making operational changes.
+
+### Archive and retention
+
+The `archive-retention.yml` GitHub Actions workflow handles the automated archive/retention process. The retention policy keeps the active database data within a **5-day** window; eligible older data is archived to the private GitHub repository **`btc-data-archive`** before retention cleanup. The archive repository is private and must remain private because it contains historical research data.
+
+Treat the archive manifest and its integrity metadata (including row counts, file sizes and SHA-256 hashes) as the audit trail for exported data. Do not manually delete source rows or change the retention cutoff without following the verified archive-and-integrity procedure. The workflow can be inspected and manually dispatched in GitHub Actions.
+
+### Telegram alerts
+
+The `telegram_alerts.yml` GitHub Actions workflow evaluates backend snapshots and sends a combined Telegram notification only when a high-signal condition qualifies. It runs in GitHub Actions rather than depending on an open Streamlit browser tab.
+
+The alert evaluator has three tiers:
+
+1. **AMT State Change:** a change in the confirmed AMT state, based on completed candles and the existing confirmation discipline. Developing/candidate states are not substitutes for confirmed state.
+2. **GEX Wall Breach:** two consecutive completed 30-minute closes beyond the relevant Call or Put gross-GEX concentration wall. The evaluator selects the **nearest unexpired expiry** (expiry date ascending), then the latest snapshot for that expiry.
+3. **OI Shock:** an absolute 30-minute aggregate futures OI change of at least 3%, subject to the evaluator's interval and contributor-quality checks.
+
+GEX alerts fail closed unless all of these data-quality gates pass:
+
+- The selected options snapshot has a matching `options_collection_runs` record with `status = SUCCESS`.
+- The options snapshot's `source_collected_at` is no more than **35 minutes older** than the AMT candle's `candle_close_time`; invalid or future-dated timestamps are rejected.
+- The selected expiry is unexpired, and the required GEX metric statuses and wall values are valid.
+
+Telegram bot credentials and the Supabase service-role key are stored as GitHub Actions secrets, not in source control. The alert system is an observation/notification layer, not a trade recommendation engine.
 
 ## Research layers
 
@@ -138,9 +172,10 @@ This README documents the automated Supabase-backed backend and its collectors. 
 
 ## Setup and secrets
 
-The collectors and Streamlit application use Supabase credentials configured in their respective GitHub Actions and Streamlit Cloud secret stores:
+Configure credentials in the secret store for each workload:
 
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
+- **Streamlit Cloud:** `SUPABASE_URL` and `SUPABASE_ANON_KEY` (read-only access governed by RLS).
+- **GitHub Actions:** `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` for trusted backend workflows.
+- **Telegram alert workflow:** additionally requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
 
-Keep service-role credentials private. Do not commit secrets or expose service-role keys in client-side code.
+Keep service-role and Telegram bot credentials private. Do not commit secrets or expose service-role keys in client-side code.
