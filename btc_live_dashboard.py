@@ -709,7 +709,7 @@ st.write(" ")
 
 # 2. AMT STRUCTURE
 st.subheader("2 · AMT STRUCTURE")
-a1, a2 = st.columns([1.4, 1])
+a1, a2 = st.columns([1, 1.5])
 a1.metric("Fast Auction Classification", current_amt_name, "Independent code " + str(current_amt_state))
 a2.metric("Classification Basis", "Completed 30-minute candles")
 st.caption("Independent dashboard classification; not a prediction or a replacement for the locked Pine AMT reference.")
