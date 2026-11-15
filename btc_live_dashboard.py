@@ -211,7 +211,7 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
     acceptanceConfirmedDown = False; pocAboveBars = 0; pocBelowBars = 0; reentryInsideBars = 0
     prev_currVAH, prev_currVAL, prev_currPOC = np.nan, np.nan, np.nan
     
-    # NEW PROGRESS TRACKING VARIABLES
+    # ACTIVE PROGRESS TRACKING VARIABLES
     lowestSinceDiscDown = np.nan
     highestSinceDiscUp = np.nan
     barsWithoutNewLow = 0
@@ -247,7 +247,6 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
         valueMigrationDown = vaShiftDown and pocShiftDown
         newValueDevelopingDown = pocBelowBars >= 2 and cycleBars >= 3
 
-        # --- NEW: UPDATE PROGRESS TRACKERS BEFORE STATE MACHINE ---
         if auctionState in (3, 16): # Discovery Below or Stalled Below
             if pd.isna(lowestSinceDiscDown) or bar['low'] < lowestSinceDiscDown:
                 lowestSinceDiscDown = bar['low']
@@ -270,7 +269,6 @@ def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc)
 
         timed_out_down = barsWithoutNewLow >= effectiveTimeout
         timed_out_up = barsWithoutNewHigh >= effectiveTimeout
-        # ---------------------------------------------------------
 
         if auctionState == 0:
             if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
@@ -456,12 +454,9 @@ def fetch_delta_options():
 # ==========================================
 df = fetch_amt_data()
 
-# Completed candles are authoritative for AMT state and session calculations.
-# The currently forming candle is kept separate and never changes a confirmed state.
 completed_df = df[df['IsClosed']].copy() if not df.empty else pd.DataFrame()
 live_df = df[~df['IsClosed']].copy() if not df.empty else pd.DataFrame()
 
-# Latest kline close is the current/provisional price observation.
 if not live_df.empty:
     latest_price = float(live_df['close'].iloc[-1])
 elif not completed_df.empty:
@@ -484,14 +479,12 @@ if not completed_df.empty:
     elif manual_values_valid:
         final_vah, final_val, final_poc = input_vah, input_val, input_poc
 
-# State and journal use completed candles only.
 session_df = calculate_session_journey(completed_df, final_vah, final_val)
 journal_res = generate_state_journal(completed_df, manual_values_valid, input_vah, input_val, input_poc)
 current_amt_state = int(journal_res[0].iloc[-1]['Code']) if (journal_res and not journal_res[0].empty) else 0
 current_amt_name = state_names.get(current_amt_state, "UNKNOWN")
 journal_df_check = journal_res[0] if journal_res else pd.DataFrame()
 
-# Provisional/forming profile includes the current open candle for observation only.
 provisional_vah = provisional_val = provisional_poc = np.nan
 if not df.empty:
     provisional_today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
@@ -510,7 +503,6 @@ put_strike_text = "N/A"
 filtered_options = pd.DataFrame()
 
 if not options_df.empty and latest_price > 0:
-    # Estimated unsigned gross gamma exposure for a 1% BTC move.
     valid_contract_size = dynamic_contract_size if dynamic_contract_size and dynamic_contract_size > 0 else np.nan
     options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * valid_contract_size * (latest_price ** 2) * 0.01
     options_df['GEX_Put'] = options_df['Gamma_Put'] * options_df['OI_Contracts_Put'] * valid_contract_size * (latest_price ** 2) * 0.01
@@ -558,7 +550,7 @@ if not options_df.empty and latest_price > 0:
     call_strike_text = "$" + format(call_gamma_wall["Strike"], ",.0f") if call_gamma_wall is not None else "N/A"
     put_strike_text = "$" + format(put_gamma_wall["Strike"], ",.0f") if put_gamma_wall is not None else "N/A"
 
-# --- DEFINE UI VARIABLES HERE (AFTER options are fetched) ---
+# --- DEFINE UI VARIABLES ---
 if pd.isna(final_vah) or pd.isna(final_val): loc = "Value Area Unavailable"
 else: loc = "Above VAH" if latest_price > final_vah else "Below VAL" if latest_price < final_val else "Inside VA"
 
@@ -566,7 +558,6 @@ latest_dev_poc = journal_df_check.iloc[-1]['Dev POC'] if not journal_df_check.em
 prior_va_width = final_vah - final_val if not pd.isna(final_vah) and not pd.isna(final_val) else np.nan
 straddle_ratio = straddle_price / prior_va_width if not pd.isna(prior_va_width) and prior_va_width > 0 and not pd.isna(straddle_price) and straddle_valid else np.nan
 mp_poc_distance = true_max_pain - latest_dev_poc if not pd.isna(true_max_pain) and not pd.isna(latest_dev_poc) else np.nan
-# ------------------------------------------------------------
 
 # ==========================================
 # RENDER UI — SINGLE-PAGE FOUR-LAYER COCKPIT
@@ -574,7 +565,6 @@ mp_poc_distance = true_max_pain - latest_dev_poc if not pd.isna(true_max_pain) a
 st.title("₿ BTC Trading Cockpit")
 st.caption("AMT first · current auction behaviour · derivatives as context")
 
-# UI-only readability state. Backend AMT, options, futures and candle logic are unchanged.
 story_context = {
     0: "BUILDING INITIAL VALUE", 1: "CURRENTLY DEVELOPING",
     2: "DISCOVERY ABOVE VALUE", 3: "DISCOVERY BELOW VALUE",
@@ -595,7 +585,6 @@ auction_story = (
     else current_story
 )
 
-# FAST READ HEADER — presentation only
 dev_vah_ui = journal_df_check.iloc[-1]["Dev VAH"] if not journal_df_check.empty else np.nan
 dev_poc_ui = journal_df_check.iloc[-1]["Dev POC"] if not journal_df_check.empty else np.nan
 dev_val_ui = journal_df_check.iloc[-1]["Dev VAL"] if not journal_df_check.empty else np.nan
@@ -620,28 +609,32 @@ if wall_options:
     wall_name, wall_price = min(wall_options, key=lambda x: abs(x[1] - latest_price))
     nearest_wall = "$" + format(wall_price, ",.0f") + " (" + wall_name + ")"
 
-h1, h2, h3 = st.columns([1.1, 1.35, 1.1])
+# TOP HEADER
+h1, h2, h3 = st.columns([1, 1.5, 1])
 h1.metric("BTC / USDT", "$" + format(latest_price, ",.2f"))
-h2.metric("AUCTION NOW", current_amt_name, "Independent code " + str(current_amt_state))
+with h2:
+    st.caption("AUCTION NOW")
+    st.markdown(f"#### {current_amt_name}")
+    st.caption(f"Independent code {current_amt_state}")
 h3.metric("LOCATION", loc)
 
-st.markdown("### " + auction_story)
+# AUCTION STORY CALLOUT
+st.info(f"**AUCTION STORY:** {auction_story}")
 st.caption(
     "Price vs Prior VAL: " + prior_val_distance
     + " · Price vs Developing VAH: " + dev_vah_distance
     + " · Nearest GEX Wall: " + nearest_wall
 )
 st.caption("Rendered " + datetime.datetime.now(IST_TZ).strftime("%d %b %Y · %H:%M:%S IST"))
-st.markdown("---")
+st.divider()
 
 # 1. PRICE ACTION
 st.subheader("1 · PRICE ACTION")
-p1, p2, p3 = st.columns(3)
-p1.metric("Auction Location", loc)
-p2.metric("Prior Value Area", "$" + format(final_val, ",.0f") + " – $" + format(final_vah, ",.0f") if not pd.isna(final_val) and not pd.isna(final_vah) else "N/A")
-p3.metric("Prior POC", "$" + format(final_poc, ",.0f") if not pd.isna(final_poc) else "N/A")
+p1, p2 = st.columns(2)
+p1.metric("Prior Value Area", "$" + format(final_val, ",.0f") + " – $" + format(final_vah, ",.0f") if not pd.isna(final_val) and not pd.isna(final_vah) else "N/A")
+p2.metric("Prior POC", "$" + format(final_poc, ",.0f") if not pd.isna(final_poc) else "N/A")
 st.caption("GEX walls are options-derived reference levels, not guaranteed support or resistance.")
-st.markdown("---")
+st.divider()
 
 # 2. AMT STRUCTURE
 st.subheader("2 · AMT STRUCTURE")
@@ -685,11 +678,10 @@ with st.expander("Prior value reference and provisional / forming profile"):
     y3.metric("Provisional VAL", "$" + format(provisional_val, ",.0f") if not pd.isna(provisional_val) else "N/A")
     st.caption("Includes the currently forming 30-minute candle; informational only and excluded from completed-candle classification.")
 
-st.markdown("---")
+st.divider()
 
 # WHAT CHANGED — UI ONLY
 st.subheader("WHAT CHANGED")
-
 current_ui_snapshot = {
     "state": current_amt_state,
     "dev_vah": float(dev_vah_ui) if not pd.isna(dev_vah_ui) else None,
@@ -711,24 +703,24 @@ else:
             return
         delta_value = current_value - previous_value
         if delta_value == 0:
-            column.metric(label, "$" + format(current_value, ",.0f"), "UNCHANGED")
+            column.metric(label, "$" + format(current_value, ",.0f"), "UNCHANGED", delta_color="off")
         else:
-            arrow = "↑" if delta_value > 0 else "↓"
-            column.metric(label, "$" + format(current_value, ",.0f"), arrow + " $" + format(abs(delta_value), ",.0f"))
+            delta_text = "$" + format(delta_value, ",+.0f")
+            column.metric(label, "$" + format(current_value, ",.0f"), delta_text)
 
     state_change = "UNCHANGED"
     if previous_ui_snapshot.get("state") != current_amt_state:
         state_change = "FROM " + state_names.get(previous_ui_snapshot.get("state"), "UNKNOWN")
 
-    c1.metric("AUCTION STATE", current_amt_name, state_change)
+    c1.metric("AUCTION STATE", current_amt_name, state_change, delta_color="off")
     show_level_change(c2, "DEV VAH", "dev_vah")
     show_level_change(c3, "DEV POC", "dev_poc")
     show_level_change(c4, "DEV VAL", "dev_val")
 
 st.session_state["fast_previous_snapshot"] = current_ui_snapshot
 st.session_state["fast_prev_amt_state"] = current_amt_state
-st.caption("Compares the current rendered snapshot with the previous rendered snapshot in this browser session. The normal 3-minute refresh preserves session state; a new browser session starts a new baseline.")
-st.markdown("---")
+st.caption("Compares the current rendered snapshot with the previous rendered snapshot in this browser session.")
+st.divider()
 
 # 3. OPTIONS CONTEXT
 st.subheader("3 · OPTIONS CONTEXT")
@@ -747,7 +739,7 @@ if not options_df.empty and atm_row is not None:
 else:
     st.info("Options context unavailable or ATM quote validation did not pass. Missing values are not treated as zero.")
 
-st.markdown("---")
+st.divider()
 
 # 4. FUTURES CONTEXT
 st.subheader("4 · FUTURES CONTEXT")
@@ -757,7 +749,7 @@ basis_status = "Discount" if sp_prem is not None and sp_prem < 0 else "Premium" 
 f2.metric("Perpetual Basis", format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A", basis_status)
 st.caption("OI direction is unavailable without a comparable prior observation. Futures OI and basis are context, not directional signals.")
 
-st.markdown("---")
+st.divider()
 st.subheader("Diagnostics and raw data")
 with st.expander("Session OHLC history"):
     if not session_df.empty:
@@ -825,7 +817,6 @@ with st.expander("Raw options chain — nearest strikes"):
         display_df["Call_OI_M"] = display_df["OI_USD_Call"] / 1e6
         display_df["Put_OI_M"] = display_df["OI_USD_Put"] / 1e6
 
-        # Use the provisional profile's scalar levels explicitly for every strike.
         dev_vah = float(provisional_vah) if pd.notna(provisional_vah) else np.nan
         dev_val = float(provisional_val) if pd.notna(provisional_val) else np.nan
         dev_poc = float(provisional_poc) if pd.notna(provisional_poc) else np.nan
@@ -843,7 +834,6 @@ with st.expander("Raw options chain — nearest strikes"):
             default="Inside Value",
         )
 
-        # Standard options ladder: highest strike first, lowest strike last.
         display_df = display_df.sort_values(
             by="Strike",
             ascending=False,
@@ -855,7 +845,6 @@ with st.expander("Raw options chain — nearest strikes"):
              "AMT Location", "IV_Put", "Volume_Put", "Put_OI_M", "Mark_Put"]
         ]
 
-        # Relative IV references are side-specific and expressed in volatility points.
         atm_call_iv = (
             pd.to_numeric(atm_row.get("IV_Call"), errors="coerce")
             if atm_row is not None else np.nan
@@ -866,7 +855,6 @@ with st.expander("Raw options chain — nearest strikes"):
         )
 
         def highlight_amt_gex_and_relative_iv(row):
-            # Style by Strike value and column labels, never by dataframe index.
             styles = pd.Series("", index=row.index, dtype="object")
             strike = pd.to_numeric(row["Strike"], errors="coerce")
 
@@ -895,6 +883,7 @@ with st.expander("Raw options chain — nearest strikes"):
                     styles.loc["IV_Put"] = "background-color: #2E7D32; color: white"
 
             return styles
+
         raw_options_config = {
             "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
             "Mark_Call": st.column_config.NumberColumn("Mark_Call", format="$%.2f"),
