@@ -6,6 +6,9 @@
 
 This document describes the tables and fields used by the current AMT, futures and options collectors and dashboard. It is a data dictionary, not a replacement for inspecting the live PostgreSQL catalog. Confirm exact SQL types, defaults, nullability, indexes, constraints and policies against the live Supabase schema before making database migrations.
 
+
+**Security status:** Row Level Security (RLS) is enabled on all five original research tables: `amt_snapshots`, `futures_oi_snapshots`, `options_oi_snapshots`, `options_collection_runs` and `options_derived_snapshots`. The dashboard uses the anon role under read-only policies; trusted backend workflows use the service-role key. The Telegram outbox table documented below also has RLS enabled.
+
 ## Table inventory
 
 | # | Table | Purpose |
@@ -190,6 +193,38 @@ Stores calculated options metrics separately for each collection snapshot and ex
 `metric_status` records calculation status separately for the chain, spot, Max Pain, ATM straddle, Call GEX, Put GEX and local OI PCR. Examples include `OK`, incomplete-chain statuses, missing-data statuses and invalid-input statuses. Consumers should inspect each metric's status rather than infer that all fields are valid because one metric is populated.
 
 Derived metrics are not calculated from an incomplete chain as though missing contracts had zero OI. An incomplete chain is marked accordingly and its derived metrics must be treated as unavailable/incomplete.
+
+## 6. `telegram_alert_events`
+
+Stores Telegram alert outbox/event records used for deduplication, delivery tracking and operational audit. Each qualifying alert has a stable `event_key`; the key is the primary deduplication identifier.
+
+| Column | Type / meaning |
+|---|---|
+| `event_key` | `TEXT PRIMARY KEY`; unique stable identifier for the alert event |
+| `event_type` | `TEXT`; alert tier, constrained to `AMT_STATE_CHANGE`, `GEX_WALL_BREACH` or `OI_SHOCK` |
+| `event_time` | `TIMESTAMPTZ`; timestamp of the underlying market event |
+| `payload` | `JSONB`; source snapshot/context associated with the event |
+| `delivery_status` | `TEXT`; delivery lifecycle status, constrained to `PENDING`, `SENT` or `FAILED` |
+| `telegram_message_id` | `BIGINT`; Telegram message ID when delivery succeeds |
+| `attempt_count` | `INTEGER`; number of delivery attempts |
+| `last_error` | `TEXT`; most recent delivery error, when present |
+| `created_at` | `TIMESTAMPTZ`; outbox record creation timestamp |
+| `sent_at` | `TIMESTAMPTZ`; successful delivery timestamp, when present |
+
+### Indexes
+
+The outbox uses the primary-key index on `event_key` for event deduplication. Additional indexes support:
+
+- Pending/failed delivery scans, keyed by `delivery_status` (optionally paired with `created_at` for ordered retry processing).
+- Event history queries by `event_type` and `event_time`.
+
+### Security and delivery semantics
+
+- **RLS is enabled** on `telegram_alert_events`.
+- The table is intended for trusted backend workflow access using `SUPABASE_SERVICE_ROLE_KEY`; the Streamlit anon role is not granted outbox write access.
+- `PENDING` represents queued work, `SENT` represents successful Telegram delivery, and `FAILED` represents an unsuccessful attempt eligible for retry according to workflow logic.
+- `event_key` prevents the same logical event from being enqueued more than once. Telegram's send API does not provide an idempotency key, so a process interruption after Telegram accepts a message but before the database records success can still result in a duplicate on retry.
+- The payload is retained as event context; avoid putting secrets or credentials in it.
 
 ## Relationships
 
