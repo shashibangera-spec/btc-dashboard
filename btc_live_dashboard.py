@@ -1,4 +1,5 @@
 import streamlit as st
+import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 import requests
@@ -10,6 +11,19 @@ from urllib3.util.retry import Retry
 from datetime import timezone, timedelta
 
 st.set_page_config(page_title="BTC Data Terminal", layout="wide")
+
+# UI-only cockpit styling.
+st.markdown("""
+<style>
+div[data-testid="stMetric"] {
+    background: #1E1E1E;
+    border: 1px solid #343A40;
+    border-radius: 10px;
+    padding: 10px 12px;
+}
+div[data-testid="stMetric"] label { color: #AEB6BF; }
+</style>
+""", unsafe_allow_html=True)
 
 # ==========================================
 # CONFIGURATION & STATE
@@ -616,7 +630,20 @@ with h2:
     st.caption("AUCTION NOW")
     st.markdown(f"#### {current_amt_name}")
     st.caption(f"Independent code {current_amt_state}")
-h3.metric("LOCATION", loc)
+location_color = {
+    "Above VAH": "#00C853",
+    "Below VAL": "#EF5350",
+    "Inside VA": "#FFB300",
+}.get(loc, "#B0BEC5")
+h3.markdown(
+    f"""
+    <div style="background:#1E1E1E;border:1px solid #343A40;border-radius:10px;padding:10px 12px;min-height:82px;">
+      <div style="color:#AEB6BF;font-size:0.8rem;font-weight:600;">LOCATION</div>
+      <div style="color:{location_color};font-size:1.55rem;font-weight:650;line-height:1.5;">{loc}</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # AUCTION STORY CALLOUT
 st.info(f"**AUCTION STORY:** {auction_story}")
@@ -667,7 +694,7 @@ else:
 st.session_state["fast_previous_snapshot"] = current_ui_snapshot
 st.session_state["fast_prev_amt_state"] = current_amt_state
 st.caption("Compares the current rendered snapshot with the previous rendered snapshot in this browser session.")
-st.divider()
+st.write(" ")
 
 # 1. PRICE ACTION
 st.subheader("1 · PRICE ACTION")
@@ -678,7 +705,7 @@ st.metric(
     else "N/A",
 )
 st.caption("GEX walls are options-derived reference levels, not guaranteed support or resistance.")
-st.divider()
+st.write(" ")
 
 # 2. AMT STRUCTURE
 st.subheader("2 · AMT STRUCTURE")
@@ -722,20 +749,79 @@ with st.expander("Prior value reference and provisional / forming profile"):
     y3.metric("Provisional VAL", "$" + format(provisional_val, ",.0f") if not pd.isna(provisional_val) else "N/A")
     st.caption("Includes the currently forming 30-minute candle; informational only and excluded from completed-candle classification.")
 
-st.divider()
-
+st.write(" ")
 
 # 3 · CONTEXT
 st.subheader("3 · CONTEXT")
 
+# Visual map of the ten strikes nearest to spot, using the existing
+# nearest-expiry chain and USD open interest only.
+if raw_chain_df is not None and not raw_chain_df.empty and latest_price > 0:
+    gex_view = raw_chain_df.copy()
+    gex_view["Strike"] = pd.to_numeric(gex_view["Strike"], errors="coerce")
+    gex_view["OI_USD"] = pd.to_numeric(gex_view["OI_USD"], errors="coerce")
+    gex_view = gex_view.dropna(subset=["Strike", "OI_USD"])
+    nearest_strikes = (
+        gex_view[["Strike"]].drop_duplicates()
+        .assign(Distance=lambda frame: (frame["Strike"] - latest_price).abs())
+        .nsmallest(10, "Distance")["Strike"]
+        .tolist()
+    )
+    chart_data = gex_view[gex_view["Strike"].isin(nearest_strikes)].copy()
+    if not chart_data.empty:
+        call_data = chart_data[chart_data["Type"] == "Call"].set_index("Strike")["OI_USD"]
+        put_data = chart_data[chart_data["Type"] == "Put"].set_index("Strike")["OI_USD"]
+        strikes_for_chart = sorted(nearest_strikes)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            name="Call OI",
+            y=strikes_for_chart,
+            x=[float(call_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
+            orientation="h",
+            marker_color="#00C853",
+            hovertemplate="Strike: $%{y:,.0f}<br>Call OI: $%{x:.2f}M<extra></extra>",
+        ))
+        fig.add_trace(go.Bar(
+            name="Put OI",
+            y=strikes_for_chart,
+            x=[float(put_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
+            orientation="h",
+            marker_color="#EF5350",
+            hovertemplate="Strike: $%{y:,.0f}<br>Put OI: $%{x:.2f}M<extra></extra>",
+        ))
+        fig.add_hline(
+            y=latest_price,
+            line_dash="dash",
+            line_color="#FFB300",
+            line_width=2,
+            annotation_text="CMP $" + format(latest_price, ",.0f"),
+            annotation_position="top right",
+        )
+        fig.update_layout(
+            barmode="group",
+            height=390,
+            margin=dict(l=10, r=20, t=35, b=10),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#D8DEE9"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis=dict(title="Open Interest (USD millions)", gridcolor="#343A40", zeroline=False),
+            yaxis=dict(title="Strike Price (USD)", tickprefix="$", tickformat=",.0f", gridcolor="#343A40"),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    else:
+        st.caption("No valid strike / open-interest rows available for the chart.")
+else:
+    st.caption("Options chain unavailable; nearest-strike OI chart cannot be displayed.")
+
 st.caption("OPTIONS")
 if not options_df.empty and atm_row is not None:
     st.caption("Delta options · Expiry: " + str(loaded_expiry))
-    o1, o2, o3, o4 = st.columns(4)
+    o1, o2 = st.columns(2)
     o1.metric("Max Pain", "$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A")
-    o2.metric("Call GEX Wall", call_strike_text)
-    o3.metric("Put GEX Wall", put_strike_text)
-    o4.metric("Local OI PCR · ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A")
+    o1.metric("Call GEX Wall", call_strike_text)
+    o2.metric("Put GEX Wall", put_strike_text)
+    o2.metric("Local OI PCR · ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A")
 else:
     st.info("Options context unavailable or ATM quote validation did not pass. Missing values are not treated as zero.")
 
