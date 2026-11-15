@@ -49,6 +49,8 @@ CANDLE_INTERVAL_TOLERANCE_SECONDS = 5.0
 
 MAX_OPTIONS_AGE_MINUTES = 45.0
 MAX_FUTURES_CONTEXT_AGE_MINUTES = 45.0
+MAX_LATEST_FUTURES_AGE_MINUTES = 35.0
+MAX_LATEST_AMT_AGE_MINUTES = 45.0
 GEX_EVENT_RECENCY_MINUTES = 45.0
 
 
@@ -174,6 +176,9 @@ def load_futures_history(client, now):
                 "[FUTURES] Skipping aggregate row without a reliable source "
                 f"timestamp (created_at={iso_utc(timestamp)})."
             )
+            continue
+        if observed_at > now:
+            print(f"[FUTURES] Skipping future-dated observation: {iso_utc(observed_at)}")
             continue
 
         rows.append({
@@ -347,6 +352,10 @@ def detect_latest_amt_events(amt_rows, futures_rows, options_rows):
         return events
 
     previous, current = amt_rows[-2], amt_rows[-1]
+    latest_age = (utc_now() - parse_timestamp(current["candle_close_time"])).total_seconds() / 60.0
+    if latest_age < 0 or latest_age > MAX_LATEST_AMT_AGE_MINUTES:
+        print(f"[AMT] Latest completed candle is stale ({latest_age:.1f} minutes); AMT events skipped.")
+        return events
     if not are_consecutive_candles(previous, current):
         print("[AMT] Latest records are not consecutive 30-minute candles; comparisons skipped.")
         return events
@@ -409,6 +418,10 @@ def detect_oi_shock(futures_rows, amt_rows, options_rows):
 
     current = futures_rows[-1]
     current_time = current["observed_at"]
+    latest_age = (utc_now() - current_time).total_seconds() / 60.0
+    if latest_age < 0 or latest_age > MAX_LATEST_FUTURES_AGE_MINUTES:
+        print(f"[OI] Latest aggregate OI observation is stale ({latest_age:.1f} minutes); shock skipped.")
+        return None
     if not current["contributors"]:
         print("[OI] Latest aggregate has no contributor list; OI shock skipped.")
         return None
@@ -478,6 +491,11 @@ def detect_latest_gex_breach(amt_rows, options_rows, futures_rows, now):
     """
     if len(amt_rows) < 3:
         print("[GEX] Not enough completed candles to establish breach/re-arm state.")
+        return None
+
+    latest_age = (now - parse_timestamp(amt_rows[-1]["candle_close_time"])).total_seconds() / 60.0
+    if latest_age < 0 or latest_age > MAX_LATEST_AMT_AGE_MINUTES:
+        print(f"[GEX] Latest completed candle is stale ({latest_age:.1f} minutes); breach check skipped.")
         return None
 
     armed = False
