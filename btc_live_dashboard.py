@@ -10,18 +10,163 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import timezone, timedelta
 
-st.set_page_config(page_title="BTC Data Terminal", layout="wide")
+st.set_page_config(page_title="BTC Data Terminal", page_icon="₿", layout="wide")
 
-# UI-only cockpit styling.
+# ==========================================================================
+# TERMINAL SKIN — UI ONLY (no data / calculation logic lives in this block)
+# NOTE: for native widgets (st.dataframe grids) to also render dark, add a
+# file  .streamlit/config.toml  next to this script containing:
+#     [theme]
+#     base = "dark"
+#     backgroundColor = "#0E1117"
+#     secondaryBackgroundColor = "#1A1E24"
+# ==========================================================================
 st.markdown("""
 <style>
-div[data-testid="stMetric"] {
-    background: #1E1E1E;
-    border: 1px solid #343A40;
-    border-radius: 10px;
-    padding: 10px 12px;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg: #0E1117;  --panel: #1A1E24;  --panel-2: #14181E;  --border: #2A313A;
+  --text: #E6EDF3;  --muted: #8B96A5;
+  --green: #00E676;  --red: #FF5252;  --amber: #FFC107;  --blue: #4FC3F7;
+  --mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  --sans: 'Inter', -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
-div[data-testid="stMetric"] label { color: #AEB6BF; }
+
+/* ---------- Canvas ---------- */
+html, body, .stApp { background: var(--bg) !important; color: var(--text); font-family: var(--sans); color-scheme: dark; }
+[data-testid="stHeader"] { background: transparent !important; }
+#MainMenu, footer { visibility: hidden; }
+.block-container { padding-top: 1.0rem !important; padding-bottom: 2rem !important; max-width: 1500px; }
+[data-testid="stVerticalBlock"] { gap: 0.65rem !important; }
+[data-testid="stHorizontalBlock"] { gap: 0.65rem !important; }
+
+/* ---------- Sidebar ---------- */
+[data-testid="stSidebar"] { background: #0A0D12 !important; border-right: 1px solid var(--border); }
+[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+  font-size: 0.78rem !important; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted) !important; font-weight: 700;
+}
+[data-testid="stSidebar"] label p { color: var(--muted) !important; font-size: 0.75rem !important; }
+div[data-baseweb="input"], div[data-baseweb="base-input"], div[data-baseweb="textarea"], textarea {
+  background: #12161B !important; color: var(--text) !important; border-color: var(--border) !important;
+}
+.stButton > button {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+  font-weight: 600; font-size: 0.8rem; transition: all .15s ease;
+}
+.stButton > button:hover { border-color: var(--green); color: var(--green); background: #12261C; }
+
+/* ---------- Native st.metric cards ---------- */
+div[data-testid="stMetric"] {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+}
+div[data-testid="stMetricLabel"], div[data-testid="stMetricLabel"] p {
+  color: var(--muted) !important; font-size: 0.66rem !important; font-weight: 600 !important;
+  letter-spacing: 0.09em; text-transform: uppercase;
+}
+div[data-testid="stMetricValue"], div[data-testid="stMetricValue"] div {
+  font-family: var(--mono) !important; font-weight: 700 !important; font-size: 1.3rem !important;
+  color: var(--text) !important; font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+}
+div[data-testid="stMetricDelta"] { font-family: var(--mono) !important; font-size: 0.74rem !important; }
+
+/* ---------- Alerts / Expanders / Captions ---------- */
+div[data-testid="stAlert"] { background: #16202B !important; border: 1px solid #25405A !important; border-radius: 10px; color: var(--text) !important; }
+div[data-testid="stExpander"] { background: var(--panel-2); border: 1px solid var(--border) !important; border-radius: 10px; }
+div[data-testid="stExpander"] details { border: 0 !important; background: transparent !important; }
+div[data-testid="stExpander"] summary { font-weight: 600; letter-spacing: 0.02em; color: var(--text) !important; }
+div[data-testid="stExpander"] summary:hover { color: var(--green) !important; }
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: var(--muted) !important; font-size: 0.72rem !important; }
+hr { border-color: var(--border) !important; margin: 0.6rem 0 !important; }
+
+/* ---------- Top bar ---------- */
+.topbar { display: flex; justify-content: space-between; align-items: center; padding: 2px 2px 10px 2px; border-bottom: 1px solid var(--border); }
+.topbar .brand { font-family: var(--sans); font-weight: 800; font-size: 1.35rem; letter-spacing: 0.06em; color: #FFFFFF; }
+.topbar .brand em { font-style: normal; color: var(--amber); }
+.topbar .tag { color: var(--muted); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 2px; }
+.topbar .live { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); white-space: nowrap; display: flex; align-items: center; gap: 8px; }
+.topbar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* ---------- Tone system ---------- */
+.t-up   { --accent: #00E676; --tint: rgba(0,230,118,.11);  --glow: rgba(0,230,118,.38); }
+.t-down { --accent: #FF5252; --tint: rgba(255,82,82,.11);  --glow: rgba(255,82,82,.38); }
+.t-warn { --accent: #FFC107; --tint: rgba(255,193,7,.09);  --glow: rgba(255,193,7,.32); }
+.t-flat { --accent: #8B96A5; --tint: rgba(139,150,165,.07); --glow: rgba(139,150,165,.15); }
+.t-info { --accent: #4FC3F7; --tint: rgba(79,195,247,.08); --glow: rgba(79,195,247,.28); }
+.t-poc  { --accent: #B388FF; --tint: rgba(179,136,255,.09); --glow: rgba(179,136,255,.30); }
+
+/* ---------- Hero cards (top header) ---------- */
+.hero {
+  background: linear-gradient(145deg, #1D222A 0%, #161A20 100%);
+  border: 1px solid var(--border); border-left: 3px solid var(--accent, var(--border)); border-radius: 12px;
+  padding: 12px 16px; min-height: 104px; display: flex; flex-direction: column; justify-content: center;
+}
+.hero .k { color: var(--muted); font-size: 0.66rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+.hero .v { margin-top: 4px; line-height: 1.15; }
+.hero .v.price { font-family: var(--mono); font-weight: 700; font-size: 2.15rem; color: #FFFFFF; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.hero .v.state { font-family: var(--sans); font-weight: 800; font-size: 1.5rem; text-transform: uppercase; letter-spacing: 0.02em; color: var(--accent); text-shadow: 0 0 22px var(--glow); }
+.hero .s { margin-top: 5px; font-family: var(--mono); font-size: 0.72rem; color: var(--muted); }
+
+/* ---------- Auction story banner ---------- */
+.story {
+  background: linear-gradient(90deg, var(--tint) 0%, rgba(26,30,36,.92) 65%);
+  border: 1px solid var(--border); border-left: 5px solid var(--accent); border-radius: 12px;
+  padding: 14px 20px; box-shadow: 0 0 28px -10px var(--glow);
+}
+.story .k { color: var(--accent); font-size: 0.66rem; font-weight: 800; letter-spacing: 0.18em; text-transform: uppercase; }
+.story .t { margin-top: 4px; font-family: var(--sans); font-size: 1.45rem; font-weight: 800; letter-spacing: 0.01em; line-height: 1.25; }
+.story .t .prev { color: var(--muted); font-weight: 600; }
+.story .t .arr  { color: var(--accent); margin: 0 10px; }
+.story .t .cur  { color: #FFFFFF; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; background: rgba(10,13,18,.65); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; }
+.chip .ck { color: var(--muted); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+.chip .cv { font-family: var(--mono); font-size: 0.78rem; font-weight: 600; color: var(--text); }
+.chip .cv.up { color: #00E676; }  .chip .cv.down { color: #FF5252; }
+
+/* ---------- Section headers ---------- */
+.sec { display: flex; align-items: center; gap: 10px; margin: 0.9rem 0 0.1rem 0; }
+.sec .bar { width: 3px; height: 14px; background: var(--amber); border-radius: 2px; }
+.sec .st { font-size: 0.74rem; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text); }
+.sec .hint { margin-left: auto; font-size: 0.66rem; color: var(--muted); text-align: right; }
+
+/* ---------- Generic stat cards + grids ---------- */
+.grid { display: grid; gap: 10px; }
+.g2 { grid-template-columns: repeat(2, 1fr); }
+.g4 { grid-template-columns: repeat(4, 1fr); }
+.g5 { grid-template-columns: 1.55fr repeat(4, 1fr); }
+@media (max-width: 900px) { .g4, .g5 { grid-template-columns: repeat(2, 1fr); } }
+.card {
+  background: var(--panel); border: 1px solid var(--border); border-top: 2px solid var(--accent, var(--border));
+  border-radius: 10px; padding: 10px 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+}
+.card .k { color: var(--muted); font-size: 0.64rem; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; }
+.card .v { margin-top: 3px; font-family: var(--mono); font-weight: 700; font-size: 1.3rem; color: var(--text); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.card .v.sm { font-family: var(--sans); font-size: 1.02rem; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; }
+.card.tint .v { color: var(--accent); }
+.card .s { margin-top: 3px; font-family: var(--mono); font-size: 0.7rem; color: var(--accent, var(--muted)); font-weight: 600; }
+.mini { color: var(--muted); font-size: 0.64rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; margin: 2px 0 6px 2px; }
+
+/* ---------- Value-area ladder ---------- */
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 18px 14px 18px; }
+.lad { position: relative; height: 62px; margin: 4px 10px 6px 10px; }
+.lad .track { position: absolute; left: 0; right: 0; top: 38px; height: 8px; border-radius: 4px; background: #232932; }
+.lad .band  { position: absolute; top: 38px; height: 8px; border-radius: 4px;
+  background: linear-gradient(90deg, rgba(255,82,82,.70), rgba(79,195,247,.32) 50%, rgba(0,230,118,.70)); }
+.lad .edge  { position: absolute; top: 32px; width: 2px; height: 20px; border-radius: 1px; }
+.lad .edge.val { background: #FF5252; } .lad .edge.vah { background: #00E676; }
+.lad .edge.poc { background: #FFC107; width: 3px; box-shadow: 0 0 8px rgba(255,193,7,.6); }
+.lad .pin { position: absolute; top: 0; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; }
+.lad .pin .pl { background: var(--accent); color: #0E1117; font-family: var(--mono); font-weight: 700; font-size: 0.72rem; padding: 2px 9px; border-radius: 5px; white-space: nowrap; box-shadow: 0 0 14px var(--glow); }
+.lad .pin i { width: 2px; height: 28px; background: var(--accent); box-shadow: 0 0 8px var(--glow); }
+.nums { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 6px; }
+.nums .n { border-left: 2px solid var(--accent, var(--border)); padding-left: 10px; }
+.nums .n .k { color: var(--muted); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+.nums .n .v { font-family: var(--mono); font-weight: 700; font-size: 1.2rem; color: var(--text); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+
+.foot { color: #6B7683; font-size: 0.68rem; line-height: 1.45; margin-top: 2px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -81,7 +226,6 @@ if st.sidebar.button("Save Journal"):
     p_state["trade_journal"] = journal_input
     st.sidebar.success("Journal saved!")
 
-st.title("⚡ BTC AMT & Delta Options Terminal")
 manual_values_valid = (input_vah > 0 and input_val > 0 and input_poc > 0 and input_vah >= input_poc >= input_val)
 final_vah, final_val, final_poc = np.nan, np.nan, np.nan
 
@@ -573,11 +717,19 @@ prior_va_width = final_vah - final_val if not pd.isna(final_vah) and not pd.isna
 straddle_ratio = straddle_price / prior_va_width if not pd.isna(prior_va_width) and prior_va_width > 0 and not pd.isna(straddle_price) and straddle_valid else np.nan
 mp_poc_distance = true_max_pain - latest_dev_poc if not pd.isna(true_max_pain) and not pd.isna(latest_dev_poc) else np.nan
 
+
 # ==========================================
-# RENDER UI — SINGLE-PAGE FOUR-LAYER COCKPIT
+# RENDER UI — SINGLE-PAGE FOUR-LAYER COCKPIT (TERMINAL SKIN)
 # ==========================================
-st.title("₿ BTC Trading Cockpit")
-st.caption("AMT first · current auction behaviour · derivatives as context")
+_render_stamp = datetime.datetime.now(IST_TZ).strftime("%d %b %Y · %H:%M:%S IST")
+st.markdown(
+    '<div class="topbar"><div>'
+    '<div class="brand"><em>₿</em> BTC TRADING COCKPIT</div>'
+    '<div class="tag">AMT first · current auction behaviour · derivatives as context</div>'
+    '</div>'
+    '<div class="live"><span class="dot"></span>RENDERED ' + _render_stamp + '</div></div>',
+    unsafe_allow_html=True,
+)
 
 story_context = {
     0: "BUILDING INITIAL VALUE", 1: "CURRENTLY DEVELOPING",
@@ -623,39 +775,84 @@ if wall_options:
     wall_name, wall_price = min(wall_options, key=lambda x: abs(x[1] - latest_price))
     nearest_wall = "$" + format(wall_price, ",.0f") + " (" + wall_name + ")"
 
-# TOP HEADER
+
+# ---------- UI helpers (formatting / HTML only) ----------
+def _ui_num(value, fmt=",.0f", prefix="$", suffix=""):
+    if value is None or pd.isna(value):
+        return "N/A"
+    return prefix + format(value, fmt) + suffix
+
+def _ui_section(title, hint=""):
+    st.markdown(
+        '<div class="sec"><span class="bar"></span><span class="st">' + title + '</span>'
+        '<span class="hint">' + hint + '</span></div>',
+        unsafe_allow_html=True,
+    )
+
+def _ui_hero(label, value, sub="", tone="flat", kind="state"):
+    sub_html = '<div class="s">' + sub + '</div>' if sub else ""
+    return ('<div class="hero t-' + tone + '"><div class="k">' + label + '</div>'
+            '<div class="v ' + kind + '">' + value + '</div>' + sub_html + '</div>')
+
+def _ui_card(label, value, sub="", tone="flat", tint=False, small=False):
+    sub_html = '<div class="s">' + sub + '</div>' if sub else ""
+    return ('<div class="card t-' + tone + (' tint' if tint else '') + '"><div class="k">' + label + '</div>'
+            '<div class="v' + (' sm' if small else '') + '">' + value + '</div>' + sub_html + '</div>')
+
+def _ui_grid(cards, cls):
+    return '<div class="grid ' + cls + '">' + "".join(cards) + '</div>'
+
+# Presentation-only colour mapping for the existing auction state codes.
+_UI_STATE_TONE = {2: "up", 4: "up", 6: "up", 8: "up", 3: "down", 5: "down", 7: "down", 9: "down"}
+def _ui_state_tone(code):
+    if code in (0, 1):
+        return "flat"
+    return _UI_STATE_TONE.get(code, "warn")
+
+state_tone = _ui_state_tone(current_amt_state)
+loc_tone = {"Above VAH": "up", "Below VAL": "down", "Inside VA": "warn"}.get(loc, "flat")
+
+# ---------- TOP HEADER (3 columns) ----------
+if loc == "Above VAH":
+    loc_sub = signed_distance_text(latest_price, final_vah) + " vs prior VAH"
+elif loc == "Below VAL":
+    loc_sub = signed_distance_text(latest_price, final_val) + " vs prior VAL"
+elif loc == "Inside VA":
+    loc_sub = "Between prior VAL and VAH"
+else:
+    loc_sub = ""
+
 h1, h2, h3 = st.columns([1, 1.5, 1])
-h1.metric("BTC / USDT", "$" + format(latest_price, ",.2f"))
-with h2:
-    st.caption("AUCTION NOW")
-    st.markdown(f"#### {current_amt_name}")
-    st.caption(f"Independent code {current_amt_state}")
-location_color = {
-    "Above VAH": "#00C853",
-    "Below VAL": "#EF5350",
-    "Inside VA": "#FFB300",
-}.get(loc, "#B0BEC5")
-h3.markdown(
-    f"""
-    <div style="background:#1E1E1E;border:1px solid #343A40;border-radius:10px;padding:10px 12px;min-height:82px;">
-      <div style="color:#AEB6BF;font-size:0.8rem;font-weight:600;">LOCATION</div>
-      <div style="color:{location_color};font-size:1.55rem;font-weight:650;line-height:1.5;">{loc}</div>
-    </div>
-    """,
+h1.markdown(_ui_hero("BTC / USDT", _ui_num(latest_price, ",.2f"), "BINANCE · SPOT · 30M", "info", "price"), unsafe_allow_html=True)
+h2.markdown(_ui_hero("AUCTION NOW", current_amt_name, "Independent code " + str(current_amt_state), state_tone, "state"), unsafe_allow_html=True)
+h3.markdown(_ui_hero("LOCATION", loc, loc_sub, loc_tone, "state"), unsafe_allow_html=True)
+
+# ---------- AUCTION STORY CALLOUT ----------
+_story_parts = auction_story.split(" → ")
+if len(_story_parts) == 2:
+    story_html = ('<span class="prev">' + _story_parts[0] + '</span><span class="arr">→</span>'
+                  '<span class="cur">' + _story_parts[1] + '</span>')
+else:
+    story_html = '<span class="cur">' + auction_story + '</span>'
+
+def _ui_chip(label, value):
+    cls = "up" if value.startswith("+") else "down" if value.startswith("-") else ""
+    return ('<span class="chip"><span class="ck">' + label + '</span><span class="cv ' + cls + '">'
+            + value + '</span></span>')
+
+st.markdown(
+    '<div class="story t-' + state_tone + '"><div class="k">AUCTION STORY</div>'
+    '<div class="t">' + story_html + '</div>'
+    '<div class="chips">'
+    + _ui_chip("Price vs Prior VAL", prior_val_distance)
+    + _ui_chip("Price vs Developing VAH", dev_vah_distance)
+    + _ui_chip("Nearest GEX Wall", nearest_wall)
+    + '</div></div>',
     unsafe_allow_html=True,
 )
 
-# AUCTION STORY CALLOUT
-st.info(f"**AUCTION STORY:** {auction_story}")
-st.caption(
-    "Price vs Prior VAL: " + prior_val_distance
-    + " · Price vs Developing VAH: " + dev_vah_distance
-    + " · Nearest GEX Wall: " + nearest_wall
-)
-st.caption("Rendered " + datetime.datetime.now(IST_TZ).strftime("%d %b %Y · %H:%M:%S IST"))
-st.divider()
-# WHAT CHANGED — UI ONLY
-st.subheader("WHAT CHANGED")
+# ---------- WHAT CHANGED — UI ONLY ----------
+_ui_section("WHAT CHANGED", "vs previous rendered snapshot in this browser session")
 current_ui_snapshot = {
     "state": current_amt_state,
     "dev_vah": float(dev_vah_ui) if not pd.isna(dev_vah_ui) else None,
@@ -693,30 +890,56 @@ else:
 
 st.session_state["fast_previous_snapshot"] = current_ui_snapshot
 st.session_state["fast_prev_amt_state"] = current_amt_state
-st.caption("Compares the current rendered snapshot with the previous rendered snapshot in this browser session.")
-st.write(" ")
 
-# 1. PRICE ACTION
-st.subheader("1 · PRICE ACTION")
-st.metric(
-    "Prior Value Area",
-    "$" + format(final_val, ",.0f") + " – $" + format(final_vah, ",.0f")
-    if not pd.isna(final_val) and not pd.isna(final_vah)
-    else "N/A",
-)
-st.caption("GEX walls are options-derived reference levels, not guaranteed support or resistance.")
-st.write(" ")
+# ---------- 1 · PRICE ACTION (prior VA + POC combined into one value ladder) ----------
+_ui_section("1 · PRICE ACTION", "GEX walls are options-derived reference levels, not guaranteed support or resistance")
 
-# 2. AMT STRUCTURE
-st.subheader("2 · AMT STRUCTURE")
-a1, a2 = st.columns([1, 1.5])
-a1.metric("Fast Auction Classification", current_amt_name, "Independent code " + str(current_amt_state))
-a2.metric("Classification Basis", "Completed 30-minute candles")
-st.caption("Independent dashboard classification; not a prediction or a replacement for the locked Pine AMT reference.")
-v1, v2, v3, v4 = st.columns(4)
-v1.metric("Developing VAH", "$" + format(dev_vah_ui, ",.0f") if not pd.isna(dev_vah_ui) else "N/A")
-v2.metric("Developing POC", "$" + format(dev_poc_ui, ",.0f") if not pd.isna(dev_poc_ui) else "N/A")
-v3.metric("Developing VAL", "$" + format(dev_val_ui, ",.0f") if not pd.isna(dev_val_ui) else "N/A")
+if pd.isna(final_val) or pd.isna(final_vah):
+    st.markdown(
+        '<div class="panel"><div class="mini">PRIOR VALUE AREA</div>'
+        '<div class="card t-flat"><div class="v">N/A</div></div></div>',
+        unsafe_allow_html=True,
+    )
+else:
+    _lo = min(final_val, latest_price) if latest_price > 0 else final_val
+    _hi = max(final_vah, latest_price) if latest_price > 0 else final_vah
+    _pad = max((_hi - _lo) * 0.12, 1.0)
+    _lo -= _pad; _hi += _pad
+    _span = _hi - _lo
+
+    def _ui_pos(x):
+        return max(0.0, min(100.0, (x - _lo) / _span * 100.0))
+
+    _p_val, _p_vah = _ui_pos(final_val), _ui_pos(final_vah)
+    _poc_html = (
+        '<div class="edge poc" style="left:calc(' + format(_ui_pos(final_poc), ".2f") + '% - 1px)"></div>'
+        if not pd.isna(final_poc) else ""
+    )
+    _pin_html = (
+        '<div class="pin t-' + loc_tone + '" style="left:' + format(_ui_pos(latest_price), ".2f") + '%">'
+        '<span class="pl">CMP ' + _ui_num(latest_price, ",.0f") + '</span><i></i></div>'
+        if latest_price > 0 else ""
+    )
+    st.markdown(
+        '<div class="panel">'
+        '<div class="mini">PRIOR VALUE AREA · VAL → POC → VAH</div>'
+        '<div class="lad"><div class="track"></div>'
+        '<div class="band" style="left:' + format(_p_val, ".2f") + '%;width:' + format(_p_vah - _p_val, ".2f") + '%"></div>'
+        '<div class="edge val" style="left:calc(' + format(_p_val, ".2f") + '% - 1px)"></div>'
+        '<div class="edge vah" style="left:calc(' + format(_p_vah, ".2f") + '% - 1px)"></div>'
+        + _poc_html + _pin_html +
+        '</div>'
+        '<div class="nums">'
+        '<div class="n t-down"><div class="k">Prior VAL</div><div class="v">' + _ui_num(final_val) + '</div></div>'
+        '<div class="n t-warn"><div class="k">Prior POC</div><div class="v">' + _ui_num(final_poc) + '</div></div>'
+        '<div class="n t-up"><div class="k">Prior VAH</div><div class="v">' + _ui_num(final_vah) + '</div></div>'
+        '<div class="n t-flat"><div class="k">VA Width</div><div class="v">' + _ui_num(prior_va_width) + '</div></div>'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+
+# ---------- 2 · AMT STRUCTURE ----------
+_ui_section("2 · AMT STRUCTURE", "Classification basis: completed 30-minute candles")
 
 prior_width = final_vah - final_val
 current_width = provisional_vah - provisional_val
@@ -735,7 +958,25 @@ elif delta > 0:
 else:
     va_expansion_value = "Contained"
     va_expansion_label = None
-v4.metric("VA Expansion", va_expansion_value, va_expansion_label)
+
+if va_expansion_label == "Downward":
+    _va_sub, _va_tone = "▼ Downward", "down"
+elif va_expansion_label == "Upward":
+    _va_sub, _va_tone = "▲ Upward", "up"
+else:
+    _va_sub, _va_tone = "", "flat"
+
+st.markdown(
+    _ui_grid([
+        _ui_card("Fast Auction Classification", current_amt_name, "Independent code " + str(current_amt_state), state_tone, tint=True, small=True),
+        _ui_card("Developing VAH", _ui_num(dev_vah_ui), tone="up"),
+        _ui_card("Developing POC", _ui_num(dev_poc_ui), tone="warn"),
+        _ui_card("Developing VAL", _ui_num(dev_val_ui), tone="down"),
+        _ui_card("VA Expansion", va_expansion_value, _va_sub, _va_tone),
+    ], "g5"),
+    unsafe_allow_html=True,
+)
+st.markdown('<div class="foot">Independent dashboard classification; not a prediction or a replacement for the locked Pine AMT reference.</div>', unsafe_allow_html=True)
 
 with st.expander("Prior value reference and provisional / forming profile"):
     x1, x2, x3 = st.columns(3)
@@ -749,91 +990,116 @@ with st.expander("Prior value reference and provisional / forming profile"):
     y3.metric("Provisional VAL", "$" + format(provisional_val, ",.0f") if not pd.isna(provisional_val) else "N/A")
     st.caption("Includes the currently forming 30-minute candle; informational only and excluded from completed-candle classification.")
 
-st.write(" ")
+# ---------- 3 · CONTEXT ----------
+_ui_section("3 · CONTEXT", "Options · Futures · nearest-strike open interest")
 
-# 3 · CONTEXT
-st.subheader("3 · CONTEXT")
+ctx_left, ctx_right = st.columns([1.6, 1])
 
-# Visual map of the ten strikes nearest to spot, using the existing
-# nearest-expiry chain and USD open interest only.
-if raw_chain_df is not None and not raw_chain_df.empty and latest_price > 0:
-    gex_view = raw_chain_df.copy()
-    gex_view["Strike"] = pd.to_numeric(gex_view["Strike"], errors="coerce")
-    gex_view["OI_USD"] = pd.to_numeric(gex_view["OI_USD"], errors="coerce")
-    gex_view = gex_view.dropna(subset=["Strike", "OI_USD"])
-    nearest_strikes = (
-        gex_view[["Strike"]].drop_duplicates()
-        .assign(Distance=lambda frame: (frame["Strike"] - latest_price).abs())
-        .nsmallest(10, "Distance")["Strike"]
-        .tolist()
-    )
-    chart_data = gex_view[gex_view["Strike"].isin(nearest_strikes)].copy()
-    if not chart_data.empty:
-        call_data = chart_data[chart_data["Type"] == "Call"].set_index("Strike")["OI_USD"]
-        put_data = chart_data[chart_data["Type"] == "Put"].set_index("Strike")["OI_USD"]
-        strikes_for_chart = sorted(nearest_strikes)
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            name="Call OI",
-            y=strikes_for_chart,
-            x=[float(call_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
-            orientation="h",
-            marker_color="#00C853",
-            hovertemplate="Strike: $%{y:,.0f}<br>Call OI: $%{x:.2f}M<extra></extra>",
-        ))
-        fig.add_trace(go.Bar(
-            name="Put OI",
-            y=strikes_for_chart,
-            x=[float(put_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
-            orientation="h",
-            marker_color="#EF5350",
-            hovertemplate="Strike: $%{y:,.0f}<br>Put OI: $%{x:.2f}M<extra></extra>",
-        ))
-        fig.add_hline(
-            y=latest_price,
-            line_dash="dash",
-            line_color="#FFB300",
-            line_width=2,
-            annotation_text="CMP $" + format(latest_price, ",.0f"),
-            annotation_position="top right",
+with ctx_left:
+    # Visual map of the ten strikes nearest to spot, using the existing
+    # nearest-expiry chain and USD open interest only.
+    if raw_chain_df is not None and not raw_chain_df.empty and latest_price > 0:
+        gex_view = raw_chain_df.copy()
+        gex_view["Strike"] = pd.to_numeric(gex_view["Strike"], errors="coerce")
+        gex_view["OI_USD"] = pd.to_numeric(gex_view["OI_USD"], errors="coerce")
+        gex_view = gex_view.dropna(subset=["Strike", "OI_USD"])
+        nearest_strikes = (
+            gex_view[["Strike"]].drop_duplicates()
+            .assign(Distance=lambda frame: (frame["Strike"] - latest_price).abs())
+            .nsmallest(10, "Distance")["Strike"]
+            .tolist()
         )
-        fig.update_layout(
-            barmode="group",
-            height=390,
-            margin=dict(l=10, r=20, t=35, b=10),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#D8DEE9"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            xaxis=dict(title="Open Interest (USD millions)", gridcolor="#343A40", zeroline=False),
-            yaxis=dict(title="Strike Price (USD)", tickprefix="$", tickformat=",.0f", gridcolor="#343A40"),
-        )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        chart_data = gex_view[gex_view["Strike"].isin(nearest_strikes)].copy()
+        if not chart_data.empty:
+            call_data = chart_data[chart_data["Type"] == "Call"].set_index("Strike")["OI_USD"]
+            put_data = chart_data[chart_data["Type"] == "Put"].set_index("Strike")["OI_USD"]
+            strikes_for_chart = sorted(nearest_strikes)
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                name="Call OI",
+                y=strikes_for_chart,
+                x=[float(call_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
+                orientation="h",
+                marker=dict(color="#00E676", line=dict(width=0)),
+                hovertemplate="Strike: $%{y:,.0f}<br>Call OI: $%{x:.2f}M<extra></extra>",
+            ))
+            fig.add_trace(go.Bar(
+                name="Put OI",
+                y=strikes_for_chart,
+                x=[float(put_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
+                orientation="h",
+                marker=dict(color="#FF5252", line=dict(width=0)),
+                hovertemplate="Strike: $%{y:,.0f}<br>Put OI: $%{x:.2f}M<extra></extra>",
+            ))
+            fig.add_hline(
+                y=latest_price,
+                line_dash="dash",
+                line_color="#FFD600",
+                line_width=2.5,
+                annotation_text="CMP $" + format(latest_price, ",.0f"),
+                annotation_position="top right",
+                annotation_font=dict(color="#0E1117", size=12, family="JetBrains Mono, Menlo, Consolas, monospace"),
+                annotation_bgcolor="#FFD600",
+                annotation_borderpad=3,
+            )
+            fig.update_layout(
+                template="plotly_dark",
+                barmode="group",
+                bargap=0.28,
+                bargroupgap=0.06,
+                height=400,
+                margin=dict(l=10, r=20, t=40, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#C9D1D9", family="Inter, -apple-system, Segoe UI, sans-serif", size=12),
+                title=dict(text="OPEN INTEREST BY STRIKE · NEAREST 10", x=0.0, xanchor="left",
+                           font=dict(size=11, color="#8B96A5")),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                            font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
+                hoverlabel=dict(bgcolor="#1A1E24", bordercolor="#2A313A", font=dict(color="#E6EDF3")),
+                xaxis=dict(title=dict(text="Open Interest (USD millions)", font=dict(size=11, color="#8B96A5")),
+                           gridcolor="rgba(255,255,255,0.06)", zeroline=False,
+                           linecolor="rgba(255,255,255,0.10)"),
+                yaxis=dict(title=dict(text="Strike (USD)", font=dict(size=11, color="#8B96A5")),
+                           tickmode="array", tickvals=strikes_for_chart, ticktext=["$" + format(s_, ",.0f") for s_ in strikes_for_chart],
+                           gridcolor="rgba(255,255,255,0.06)", linecolor="rgba(255,255,255,0.10)",
+                           tickfont=dict(family="JetBrains Mono, Menlo, Consolas, monospace", size=11)),
+            )
+            st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+        else:
+            st.caption("No valid strike / open-interest rows available for the chart.")
     else:
-        st.caption("No valid strike / open-interest rows available for the chart.")
-else:
-    st.caption("Options chain unavailable; nearest-strike OI chart cannot be displayed.")
+        st.caption("Options chain unavailable; nearest-strike OI chart cannot be displayed.")
 
-st.caption("OPTIONS")
-if not options_df.empty and atm_row is not None:
-    st.caption("Delta options · Expiry: " + str(loaded_expiry))
-    o1, o2 = st.columns(2)
-    o1.metric("Max Pain", "$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A")
-    o1.metric("Call GEX Wall", call_strike_text)
-    o2.metric("Put GEX Wall", put_strike_text)
-    o2.metric("Local OI PCR · ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A")
-else:
-    st.info("Options context unavailable or ATM quote validation did not pass. Missing values are not treated as zero.")
+with ctx_right:
+    st.markdown('<div class="mini">OPTIONS' + ((" · EXPIRY " + str(loaded_expiry)) if loaded_expiry else "") + '</div>', unsafe_allow_html=True)
+    if not options_df.empty and atm_row is not None:
+        st.markdown(
+            _ui_grid([
+                _ui_card("Max Pain", _ui_num(true_max_pain)),
+                _ui_card("Local OI PCR · ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A", tone="info"),
+                _ui_card("Call GEX Wall", call_strike_text, tone="up", tint=True),
+                _ui_card("Put GEX Wall", put_strike_text, tone="down", tint=True),
+            ], "g2"),
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("Options context unavailable or ATM quote validation did not pass. Missing values are not treated as zero.")
 
-st.caption("FUTURES")
-f1, f2 = st.columns(2)
-f1.metric("Delta OI", "$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A")
-basis_status = "Discount" if sp_prem is not None and sp_prem < 0 else "Premium" if sp_prem is not None and sp_prem > 0 else "Unavailable"
-f2.metric("Perp Basis", format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A", basis_status)
-st.caption("Futures OI and basis are context, not directional signals. OI direction is unavailable without a comparable prior observation.")
+    st.markdown('<div class="mini" style="margin-top:8px">FUTURES</div>', unsafe_allow_html=True)
+    basis_status = "Discount" if sp_prem is not None and sp_prem < 0 else "Premium" if sp_prem is not None and sp_prem > 0 else "Unavailable"
+    _basis_tone = {"Discount": "down", "Premium": "up"}.get(basis_status, "flat")
+    st.markdown(
+        _ui_grid([
+            _ui_card("Delta OI", "$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A"),
+            _ui_card("Perp Basis", format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A", basis_status, _basis_tone),
+        ], "g2"),
+        unsafe_allow_html=True,
+    )
 
-st.divider()
-st.subheader("Diagnostics and raw data")
+st.markdown('<div class="foot">Futures OI and basis are context, not directional signals. OI direction is unavailable without a comparable prior observation.</div>', unsafe_allow_html=True)
+
+_ui_section("DIAGNOSTICS AND RAW DATA", "expand for full tables")
 with st.expander("Session OHLC history"):
     if not session_df.empty:
         st.dataframe(session_df, use_container_width=True, hide_index=True)
@@ -1043,5 +1309,9 @@ OI Direction: Unavailable without comparable prior observation
     )
     st.code(snapshot_text, language="text")
 
-st.caption("Source status — Binance candles: " + ("available" if not df.empty else "unavailable") + " · Delta futures: " + ("available" if oi_usd is not None else "unavailable") + " · Delta options: " + ("available" if not options_df.empty else "unavailable"))
+
+st.markdown(
+    '<div class="foot">' + "Source status — Binance candles: " + ("available" if not df.empty else "unavailable") + " · Delta futures: " + ("available" if oi_usd is not None else "unavailable") + " · Delta options: " + ("available" if not options_df.empty else "unavailable") + '</div>',
+    unsafe_allow_html=True,
+)
 components.html("<script>setTimeout(function(){ window.parent.location.reload(); }, 180000);</script>", height=0, width=0)
