@@ -572,16 +572,44 @@ mp_poc_distance = true_max_pain - latest_dev_poc if not pd.isna(true_max_pain) a
 # RENDER UI — SINGLE-PAGE FOUR-LAYER COCKPIT
 # ==========================================
 st.title("₿ BTC Trading Cockpit")
-st.caption("Price and auction structure first · derivatives as context")
+st.caption("AMT first · current auction behaviour · derivatives as context")
 
-# Header: current price, location and proximity to key reference levels
+# UI-only readability state. Backend AMT, options, futures and candle logic are unchanged.
+story_context = {
+    0: "BUILDING INITIAL VALUE", 1: "CURRENTLY DEVELOPING",
+    2: "DISCOVERY ABOVE VALUE", 3: "DISCOVERY BELOW VALUE",
+    4: "ACCEPTANCE DEVELOPING UP", 5: "ACCEPTANCE DEVELOPING DOWN",
+    6: "POC BREAK ABOVE", 7: "POC BREAK BELOW",
+    8: "NEW AREA DEVELOPING ABOVE", 9: "NEW AREA DEVELOPING BELOW",
+    10: "FAILED DISCOVERY UP", 11: "FAILED DISCOVERY DOWN",
+    12: "ACCEPTANCE FAILURE UP", 13: "ACCEPTANCE FAILURE DOWN",
+    14: "RE-ENTRY CONFIRMED", 15: "STALLED ABOVE", 16: "STALLED BELOW",
+    17: "FAILED UP DISCOVERY CANDIDATE", 18: "FAILED DOWN DISCOVERY CANDIDATE",
+}
+previous_ui_state = st.session_state.get("fast_prev_amt_state")
+previous_ui_name = state_names.get(previous_ui_state) if previous_ui_state is not None else None
+current_story = story_context.get(current_amt_state, current_amt_name)
+auction_story = (
+    previous_ui_name + " → " + current_story
+    if previous_ui_state is not None and previous_ui_state != current_amt_state
+    else current_story
+)
+
+# FAST READ HEADER — presentation only
 dev_vah_ui = journal_df_check.iloc[-1]["Dev VAH"] if not journal_df_check.empty else np.nan
 dev_poc_ui = journal_df_check.iloc[-1]["Dev POC"] if not journal_df_check.empty else np.nan
 dev_val_ui = journal_df_check.iloc[-1]["Dev VAL"] if not journal_df_check.empty else np.nan
-val_distance = "N/A"
-if not pd.isna(dev_val_ui):
-    val_delta = latest_price - dev_val_ui
-    val_distance = "$" + format(abs(val_delta), ",.0f") + (" above" if val_delta >= 0 else " below")
+
+def signed_distance_text(value, reference):
+    if pd.isna(value) or pd.isna(reference):
+        return "N/A"
+    delta_value = value - reference
+    sign = "+" if delta_value >= 0 else "-"
+    return sign + "$" + format(abs(delta_value), ",.0f")
+
+prior_val_distance = signed_distance_text(latest_price, final_val)
+dev_vah_distance = signed_distance_text(latest_price, dev_vah_ui)
+
 wall_options = []
 if call_gamma_wall is not None:
     wall_options.append(("Call", float(call_gamma_wall["Strike"])))
@@ -592,11 +620,17 @@ if wall_options:
     wall_name, wall_price = min(wall_options, key=lambda x: abs(x[1] - latest_price))
     nearest_wall = "$" + format(wall_price, ",.0f") + " (" + wall_name + ")"
 
-h1, h2, h3, h4 = st.columns([1.3, 1, 1, 1])
+h1, h2, h3 = st.columns([1.1, 1.35, 1.1])
 h1.metric("BTC / USDT", "$" + format(latest_price, ",.2f"))
-h2.metric("Price Location", loc)
-h3.metric("Distance to Developing VAL", val_distance)
-h4.metric("Nearest GEX Wall", nearest_wall)
+h2.metric("AUCTION NOW", current_amt_name, "Independent code " + str(current_amt_state))
+h3.metric("LOCATION", loc)
+
+st.markdown("### " + auction_story)
+st.caption(
+    "Price vs Prior VAL: " + prior_val_distance
+    + " · Price vs Developing VAH: " + dev_vah_distance
+    + " · Nearest GEX Wall: " + nearest_wall
+)
 st.caption("Rendered " + datetime.datetime.now(IST_TZ).strftime("%d %b %Y · %H:%M:%S IST"))
 st.markdown("---")
 
@@ -651,6 +685,49 @@ with st.expander("Prior value reference and provisional / forming profile"):
     y3.metric("Provisional VAL", "$" + format(provisional_val, ",.0f") if not pd.isna(provisional_val) else "N/A")
     st.caption("Includes the currently forming 30-minute candle; informational only and excluded from completed-candle classification.")
 
+st.markdown("---")
+
+# WHAT CHANGED — UI ONLY
+st.subheader("WHAT CHANGED")
+
+current_ui_snapshot = {
+    "state": current_amt_state,
+    "dev_vah": float(dev_vah_ui) if not pd.isna(dev_vah_ui) else None,
+    "dev_poc": float(dev_poc_ui) if not pd.isna(dev_poc_ui) else None,
+    "dev_val": float(dev_val_ui) if not pd.isna(dev_val_ui) else None,
+}
+previous_ui_snapshot = st.session_state.get("fast_previous_snapshot")
+
+if previous_ui_snapshot is None:
+    st.info("Baseline captured. Changes will appear after the next dashboard refresh.")
+else:
+    c1, c2, c3, c4 = st.columns(4)
+
+    def show_level_change(column, label, key):
+        current_value = current_ui_snapshot[key]
+        previous_value = previous_ui_snapshot.get(key)
+        if current_value is None or previous_value is None:
+            column.metric(label, "N/A")
+            return
+        delta_value = current_value - previous_value
+        if delta_value == 0:
+            column.metric(label, "$" + format(current_value, ",.0f"), "UNCHANGED")
+        else:
+            arrow = "↑" if delta_value > 0 else "↓"
+            column.metric(label, "$" + format(current_value, ",.0f"), arrow + " $" + format(abs(delta_value), ",.0f"))
+
+    state_change = "UNCHANGED"
+    if previous_ui_snapshot.get("state") != current_amt_state:
+        state_change = "FROM " + state_names.get(previous_ui_snapshot.get("state"), "UNKNOWN")
+
+    c1.metric("AUCTION STATE", current_amt_name, state_change)
+    show_level_change(c2, "DEV VAH", "dev_vah")
+    show_level_change(c3, "DEV POC", "dev_poc")
+    show_level_change(c4, "DEV VAL", "dev_val")
+
+st.session_state["fast_previous_snapshot"] = current_ui_snapshot
+st.session_state["fast_prev_amt_state"] = current_amt_state
+st.caption("Compares the current rendered snapshot with the previous rendered snapshot in this browser session. The normal 3-minute refresh preserves session state; a new browser session starts a new baseline.")
 st.markdown("---")
 
 # 3. OPTIONS CONTEXT
