@@ -1,0 +1,96 @@
+
+name: BTC Options Archive and Retention
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+
+  workflow_dispatch:
+
+concurrency:
+  group: btc-options-archive-retention
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  archive-and-retain:
+    name: Archive and Retain BTC Options Data
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # 1. Checkout main application repository
+      - name: Checkout btc-dashboard
+        uses: actions/checkout@v4
+        with:
+          repository: shashibangera-spec/btc-dashboard
+          ref: main
+          path: btc-dashboard
+          persist-credentials: false
+
+      # 2. Checkout private archive repository
+      - name: Checkout btc-data-archive
+        uses: actions/checkout@v4
+        with:
+          repository: shashibangera-spec/btc-data-archive
+          ref: main
+          path: btc_data_archive
+          token: ${{ secrets.PAT_TOKEN }}
+          persist-credentials: true
+
+      # 3. Install Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 4. Install dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "psycopg[binary]" supabase pandas
+
+      # 5. Generate newly eligible archives
+      - name: Archive options snapshots
+        working-directory: btc-dashboard
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python archive_options_snapshots.py \
+            --older-than-days 5 \
+            --output ../btc_data_archive
+
+      # 6. Publish archives BEFORE database deletion
+      - name: Commit and push archive files
+        working-directory: btc_data_archive
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git config user.name "$GIT_AUTHOR_NAME"
+          git config user.email "$GIT_AUTHOR_EMAIL"
+
+          git add -- '*.csv.gz' archive_manifest.csv
+
+          if git diff --cached --quiet; then
+            echo "No new archive files or manifest changes."
+          else
+            git commit -m "Archive BTC options snapshots $(date -u +%Y-%m-%d)"
+            git push origin HEAD:main
+            echo "Archive repository updated successfully."
+          fi
+
+      # 7. Verify archive checksums and execute retention
+      - name: Verify archives and execute retention
+        working-directory: btc-dashboard
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python retention_cron.py --execute
