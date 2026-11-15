@@ -73,10 +73,63 @@ div[data-testid="stMetricDelta"] { font-family: var(--mono) !important; font-siz
 
 /* ---------- Alerts / Expanders / Captions ---------- */
 div[data-testid="stAlert"] { background: #16202B !important; border: 1px solid #25405A !important; border-radius: 10px; color: var(--text) !important; }
-div[data-testid="stExpander"] { background: var(--panel-2); border: 1px solid var(--border) !important; border-radius: 10px; }
+/* ---------- Expanders → terminal "drawers" ---------- */
+div[data-testid="stExpander"] {
+  background: linear-gradient(145deg, #1A1F26 0%, #13171D 100%);
+  border: 1px solid var(--border) !important; border-left: 3px solid #3A424D !important;
+  border-radius: 12px; overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+div[data-testid="stExpander"]:hover {
+  border-left-color: var(--amber) !important; border-color: #3A424D !important;
+  box-shadow: 0 0 22px -12px rgba(255,193,7,.55), inset 0 1px 0 rgba(255,255,255,.04);
+}
+div[data-testid="stExpander"]:has(details[open]) {
+  border-left-color: var(--green) !important; border-color: #2F3A44 !important;
+  box-shadow: 0 0 26px -14px rgba(0,230,118,.55), inset 0 1px 0 rgba(255,255,255,.04);
+}
 div[data-testid="stExpander"] details { border: 0 !important; background: transparent !important; }
-div[data-testid="stExpander"] summary { font-weight: 600; letter-spacing: 0.02em; color: var(--text) !important; }
-div[data-testid="stExpander"] summary:hover { color: var(--green) !important; }
+div[data-testid="stExpander"] summary {
+  display: flex !important; align-items: center; justify-content: space-between;
+  padding: 0.7rem 1rem !important; cursor: pointer; list-style: none;
+}
+div[data-testid="stExpander"] summary::-webkit-details-marker { display: none; }
+div[data-testid="stExpander"] summary:hover { background: rgba(255,255,255,.025); }
+div[data-testid="stExpander"] summary p {
+  font-family: var(--sans); font-size: 0.74rem !important; font-weight: 700 !important;
+  letter-spacing: 0.12em; text-transform: uppercase; color: #C9D1D9 !important; margin: 0;
+}
+div[data-testid="stExpander"] summary:hover p { color: #FFFFFF !important; }
+div[data-testid="stExpander"]:has(details[open]) summary p { color: var(--green) !important; }
+div[data-testid="stExpander"] summary [data-testid="stIconMaterial"] { color: var(--muted) !important; font-size: 1.25rem !important; transition: transform .18s ease, color .18s ease; }
+div[data-testid="stExpander"] summary:hover [data-testid="stIconMaterial"] { color: var(--amber) !important; }
+div[data-testid="stExpander"]:has(details[open]) summary [data-testid="stIconMaterial"] { color: var(--green) !important; }
+/* right-aligned state tag */
+div[data-testid="stExpander"] summary::after {
+  content: "EXPAND"; font-family: var(--mono); font-size: 0.6rem; font-weight: 600; letter-spacing: 0.14em;
+  color: #6B7683; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; background: rgba(10,13,18,.6);
+}
+div[data-testid="stExpander"]:has(details[open]) summary::after { content: "COLLAPSE"; color: var(--green); border-color: rgba(0,230,118,.35); }
+/* drawer body */
+div[data-testid="stExpanderDetails"] {
+  background: #0F1318; border-top: 1px solid var(--border);
+  padding: 1rem 1.1rem 1.1rem 1.1rem !important;
+}
+div[data-testid="stExpanderDetails"] h4 {
+  font-size: 0.72rem !important; font-weight: 800 !important; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--text) !important; padding: 0 0 0 10px !important; border-left: 3px solid var(--amber); line-height: 1.2; margin-bottom: 0.2rem;
+}
+div[data-testid="stExpanderDetails"] strong { color: var(--text); letter-spacing: 0.04em; }
+div[data-testid="stExpanderDetails"] [data-testid="stMetric"] { background: var(--panel); }
+/* tables inside drawers: frame only — canvas grid itself is untouched */
+div[data-testid="stExpanderDetails"] [data-testid="stDataFrame"] {
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+div[data-testid="stExpanderDetails"] [data-testid="stCode"], div[data-testid="stExpanderDetails"] pre {
+  background: #0A0D12 !important; border: 1px solid var(--border); border-radius: 8px;
+  font-family: var(--mono) !important; font-size: 0.78rem !important; color: #C9D1D9 !important;
+}
 [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p { color: var(--muted) !important; font-size: 0.72rem !important; }
 hr { border-color: var(--border) !important; margin: 0.6rem 0 !important; }
 
@@ -127,7 +180,7 @@ hr { border-color: var(--border) !important; margin: 0.6rem 0 !important; }
 .chip .cv.up { color: #00E676; }  .chip .cv.down { color: #FF5252; }
 
 /* ---------- Section headers ---------- */
-.sec { display: flex; align-items: center; gap: 10px; margin: 0.9rem 0 0.1rem 0; }
+.sec { display: flex; align-items: center; gap: 10px; margin: 0.9rem 0 0.3rem 0; }
 .sec .bar { width: 3px; height: 14px; background: var(--amber); border-radius: 2px; }
 .sec .st { font-size: 0.74rem; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text); }
 .sec .hint { margin-left: auto; font-size: 0.66rem; color: var(--muted); text-align: right; }
