@@ -921,12 +921,23 @@ def _render_dashboard():
         c1, c2, c3, c4 = st.columns(4)
     
         def show_level_change(column, label, key):
-            current_value = current_ui_snapshot[key]
+            current_value = current_ui_snapshot.get(key)
             previous_value = previous_ui_snapshot.get(key)
+
+            # Safely convert to float, or set to None if invalid
+            try:
+                current_value = float(current_value) if current_value is not None and not pd.isna(current_value) else None
+                previous_value = float(previous_value) if previous_value is not None and not pd.isna(previous_value) else None
+            except (ValueError, TypeError):
+                current_value = None
+                previous_value = None
+
             if current_value is None or previous_value is None:
                 column.metric(label, "N/A")
                 return
+
             delta_value = current_value - previous_value
+
             if delta_value == 0:
                 column.metric(label, "$" + format(current_value, ",.0f"), "UNCHANGED", delta_color="off")
             else:
