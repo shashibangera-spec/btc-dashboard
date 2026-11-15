@@ -26,11 +26,14 @@ def parse_json_safely(data):
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
         res = requests.post(url, json=payload, timeout=10)
         if res.status_code == 200:
-            return True, res.json().get("result", {}).get("message_id")
+            message_id = res.json().get("result", {}).get("message_id")
+            if isinstance(message_id, int) and message_id > 0:
+                return True, message_id
+            return False, "Telegram returned HTTP 200 without a valid message_id"
         else:
             return False, res.text
     except Exception as e:
@@ -40,17 +43,22 @@ def check_event_exists(event_key):
     res = supabase.table("telegram_alert_events").select("event_key").eq("event_key", event_key).execute()
     return len(res.data) > 0
 
-def log_event(event_key, event_type, event_time, payload):
+def log_event(event_key, event_type, event_time, payload, status, message_id=None):
     try:
-        supabase.table("telegram_alert_events").insert({
+        record = {
             "event_key": event_key,
             "event_type": event_type,
             "event_time": event_time,
             "payload": payload,
-            "delivery_status": "SENT"
-        }).execute()
+            "delivery_status": status,
+            "telegram_message_id": message_id if status == "SENT" else None,
+        }
+        # Upsert lets a later successful retry replace an earlier FAILED attempt.
+        supabase.table("telegram_alert_events").upsert(
+            record, on_conflict="event_key"
+        ).execute()
     except Exception as e:
-        print(f"Failed to log event: {e}")
+        print(f"Failed to log event ({status}): {e}")
 
 def evaluate_amt_transition():
     # Fetch last 2 completed candles
@@ -67,7 +75,7 @@ def evaluate_amt_transition():
         event_key = f"AMT_STATE_CHANGE_{curr['candle_close_time']}"
         if check_event_exists(event_key): return None
         
-        msg = f"🚨 *AMT STRUCTURAL CHANGE*\n\n{prev_state} → {curr_state}\nCandle: {curr['candle_open_time']}\nClose: ${curr['close_price']:,.0f}"
+        msg = f"🚨 AMT STRUCTURAL CHANGE\n\n{prev_state} → {curr_state}\nCandle: {curr['candle_open_time']}\nClose: ${curr['close_price']:,.0f}"
         return {"key": event_key, "type": "AMT_STATE_CHANGE", "time": curr["candle_close_time"], "msg": msg, "payload": curr}
     return None
 
@@ -77,16 +85,16 @@ def evaluate_gex_breach():
     if len(res_amt.data) < 2: return None
     curr, prev = res_amt.data[0], res_amt.data[1]
     
-    # Use today's UTC date as the expiry floor. Never evaluate expired contracts.
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Exclude contracts expiring today (UTC); evaluate only future expiries.
+    tomorrow_str = (
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ).strftime("%Y-%m-%d")
 
-    # Select the nearest unexpired expiry first, then the freshest snapshot
-    # available for that expiry. Chained order() calls create a multi-column
-    # PostgREST order: expiry_date ASC, source_collected_at DESC.
+    # Select the nearest future expiry first, then its freshest snapshot.
     res_opt = (
         supabase.table("options_derived_snapshots")
         .select("*")
-        .gte("expiry_date", today_str)
+        .gte("expiry_date", tomorrow_str)
         .order("expiry_date", desc=False)
         .order("source_collected_at", desc=True)
         .limit(1)
@@ -153,14 +161,14 @@ def evaluate_gex_breach():
     if c_close > call_wall and p_close > call_wall:
         event_key = f"GEX_CALL_BREACH_{curr['candle_close_time']}"
         if check_event_exists(event_key): return None
-        msg = f"⚠️ *PRICE CLOSED ABOVE CALL GEX CONCENTRATION*\n\nPrice: ${c_close:,.0f}\nCall Wall: ${call_wall:,.0f}\nExpiry: {opt['expiry_date']}"
+        msg = f"⚠️ PRICE CLOSED ABOVE CALL GEX CONCENTRATION\n\nPrice: ${c_close:,.0f}\nCall Wall: ${call_wall:,.0f}\nExpiry: {opt['expiry_date']}"
         return {"key": event_key, "type": "GEX_WALL_BREACH", "time": curr["candle_close_time"], "msg": msg, "payload": curr}
         
     # 2 Consecutive closes below Put Wall
     if c_close < put_wall and p_close < put_wall:
         event_key = f"GEX_PUT_BREACH_{curr['candle_close_time']}"
         if check_event_exists(event_key): return None
-        msg = f"⚠️ *PRICE CLOSED BELOW PUT GEX CONCENTRATION*\n\nPrice: ${c_close:,.0f}\nPut Wall: ${put_wall:,.0f}\nExpiry: {opt['expiry_date']}"
+        msg = f"⚠️ PRICE CLOSED BELOW PUT GEX CONCENTRATION\n\nPrice: ${c_close:,.0f}\nPut Wall: ${put_wall:,.0f}\nExpiry: {opt['expiry_date']}"
         return {"key": event_key, "type": "GEX_WALL_BREACH", "time": curr["candle_close_time"], "msg": msg, "payload": curr}
     return None
 
@@ -194,7 +202,7 @@ def evaluate_oi_shock():
         direction = "EXPANDED" if pct_change > 0 else "CONTRACTED"
         event_key = f"OI_SHOCK_{curr['created_at']}"
         if check_event_exists(event_key): return None
-        msg = f"🌊 *OI SHOCK: {direction}*\n\nChange: {pct_change:+.2f}%\nPrevious OI: ${oi_p/1e6:.1f}M\nCurrent OI: ${oi_c/1e6:.1f}M\nCoverage: {len(contrib_c)}/4 ({', '.join(contrib_c)})"
+        msg = f"🌊 OI SHOCK: {direction}\n\nChange: {pct_change:+.2f}%\nPrevious OI: ${oi_p/1e6:.1f}M\nCurrent OI: ${oi_c/1e6:.1f}M\nCoverage: {len(contrib_c)}/4 ({', '.join(contrib_c)})"
         return {"key": event_key, "type": "OI_SHOCK", "time": curr["created_at"], "msg": msg, "payload": curr}
     return None
 
@@ -216,12 +224,20 @@ def main():
         print(f"Sending alert:\n{combined_msg}")
         success, msg_id = send_telegram(combined_msg)
         
-        if success:
-            for a in alerts:
-                log_event(a["key"], a["type"], a["time"], a["payload"])
-            print("Alert sent and logged successfully.")
+        delivery_status = "SENT" if success and isinstance(msg_id, int) and msg_id > 0 else "FAILED"
+        valid_message_id = msg_id if delivery_status == "SENT" else None
+
+        for a in alerts:
+            log_event(
+                a["key"], a["type"], a["time"], a["payload"],
+                status=delivery_status, message_id=valid_message_id
+            )
+
+        if delivery_status == "SENT":
+            print(f"Alert sent and logged successfully (message_id={valid_message_id}).")
         else:
             print(f"Telegram delivery failed: {msg_id}")
+            print("Alert event logged with delivery_status=FAILED.")
     else:
         print("No qualifying alerts.")
 
