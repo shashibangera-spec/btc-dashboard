@@ -863,6 +863,11 @@ with st.expander("Raw options chain — nearest strikes"):
             if pd.notna(strike) and pd.notna(dev_poc) and abs(strike - dev_poc) <= 50:
                 styles.loc[:] = "background-color: #6A1B9A; color: white; font-weight: bold"
 
+            # ATM strike overrides the purple AMT POC row on the Strike cell.
+            # GEX wall styling below remains highest priority for that cell.
+            if pd.notna(strike) and pd.notna(atm_strike) and strike == float(atm_strike):
+                styles.loc["Strike"] = "background-color: #1E88E5; color: white; font-weight: bold"
+
             if call_gamma_wall is not None and pd.notna(strike) and strike == float(call_gamma_wall["Strike"]):
                 styles.loc["Strike"] = "background-color: #2E7D32; color: white; font-weight: bold"
             if put_gamma_wall is not None and pd.notna(strike) and strike == float(put_gamma_wall["Strike"]):
