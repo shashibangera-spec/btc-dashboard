@@ -1,0 +1,46 @@
+name: BTC High-Signal Telegram Alerts
+
+on:
+  workflow_run:
+    workflows:
+      - BTC AMT Historical Collector
+      - BTC Futures OI Collector
+      - BTC Options OI Collector
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: btc-telegram-alerts
+  cancel-in-progress: false
+
+jobs:
+  evaluate-and-send:
+    name: Evaluate Structural Alerts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests "supabase>=2.0.0"
+
+      - name: Evaluate and send Telegram alerts
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python telegram_alerts.py
