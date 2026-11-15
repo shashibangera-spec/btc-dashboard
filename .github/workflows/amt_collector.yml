@@ -2,6 +2,7 @@ name: BTC AMT Historical Collector
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: btc-amt-collector
