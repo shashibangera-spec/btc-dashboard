@@ -40,8 +40,19 @@ def send_telegram(message):
         return False, str(e)
 
 def check_event_exists(event_key):
-    res = supabase.table("telegram_alert_events").select("event_key").eq("event_key", event_key).execute()
-    return len(res.data) > 0
+    res = (
+        supabase.table("telegram_alert_events")
+        .select("event_key,delivery_status,telegram_message_id")
+        .eq("event_key", event_key)
+        .execute()
+    )
+    # Only a confirmed Telegram delivery suppresses a retry.
+    return any(
+        row.get("delivery_status") == "SENT"
+        and isinstance(row.get("telegram_message_id"), int)
+        and row.get("telegram_message_id") > 0
+        for row in res.data
+    )
 
 def log_event(event_key, event_type, event_time, payload, status, message_id=None):
     try:
