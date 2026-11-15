@@ -14,7 +14,6 @@ st.set_page_config(page_title="BTC Data Terminal", layout="wide")
 # ==========================================
 # CONFIGURATION & STATE
 # ==========================================
-MARK_TOLERANCE_PCT = 0.02 
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 state_names = {
@@ -29,8 +28,6 @@ state_names = {
 @st.cache_resource
 def get_persistent_state():
     return {
-        "session_start_straddle": None,
-        "session_start_expiry": None,
         "inverted_gamma_history": [], 
         "active_inverted_event": None, 
         "last_inverted_status": False, 
@@ -508,6 +505,8 @@ true_max_pain, straddle_price, atm_strike, true_max_pain = np.nan, np.nan, 0.0, 
 call_oi_wall, put_oi_wall, call_gamma_wall, put_gamma_wall = None, None, None, None
 pcr, pcr_volume, atm_row = 0.0, 0.0, None
 straddle_valid = False
+call_strike_text = "N/A"
+put_strike_text = "N/A"
 filtered_options = pd.DataFrame()
 
 if not options_df.empty and latest_price > 0:
@@ -556,6 +555,8 @@ if not options_df.empty and latest_price > 0:
                 pain_dict[settle] = sum((all_call_oi.get(k, 0) * (settle - k) if settle > k else 0) + (all_put_oi.get(k, 0) * (k - settle) if settle < k else 0) for k in all_strikes)
             true_max_pain = min(pain_dict, key=pain_dict.get) if pain_dict else np.nan
 
+    call_strike_text = "$" + format(call_gamma_wall["Strike"], ",.0f") if call_gamma_wall is not None else "N/A"
+    put_strike_text = "$" + format(put_gamma_wall["Strike"], ",.0f") if put_gamma_wall is not None else "N/A"
 
 # --- DEFINE UI VARIABLES HERE (AFTER options are fetched) ---
 if pd.isna(final_vah) or pd.isna(final_val): loc = "Value Area Unavailable"
@@ -614,10 +615,29 @@ a1, a2 = st.columns([1.4, 1])
 a1.metric("Fast Auction Classification", current_amt_name, "Independent code " + str(current_amt_state))
 a2.metric("Classification Basis", "Completed 30-minute candles")
 st.caption("Independent dashboard classification; not a prediction or a replacement for the locked Pine AMT reference.")
-v1, v2, v3 = st.columns(3)
+v1, v2, v3, v4 = st.columns(4)
 v1.metric("Developing VAH", "$" + format(dev_vah_ui, ",.0f") if not pd.isna(dev_vah_ui) else "N/A")
 v2.metric("Developing POC", "$" + format(dev_poc_ui, ",.0f") if not pd.isna(dev_poc_ui) else "N/A")
 v3.metric("Developing VAL", "$" + format(dev_val_ui, ",.0f") if not pd.isna(dev_val_ui) else "N/A")
+
+prior_width = final_vah - final_val
+current_width = provisional_vah - provisional_val
+delta = current_width - prior_width
+if any(pd.isna(value) for value in [prior_width, current_width, delta]):
+    va_expansion_value = "N/A"
+    va_expansion_label = None
+elif delta > 0:
+    va_expansion_value = "+$" + format(delta, ",.0f")
+    if provisional_val < final_val:
+        va_expansion_label = "Downward"
+    elif provisional_vah > final_vah:
+        va_expansion_label = "Upward"
+    else:
+        va_expansion_label = None
+else:
+    va_expansion_value = "Contained"
+    va_expansion_label = None
+v4.metric("VA Expansion", va_expansion_value, va_expansion_label)
 
 with st.expander("Prior value reference and provisional / forming profile"):
     x1, x2, x3 = st.columns(3)
@@ -641,8 +661,6 @@ if not options_df.empty and atm_row is not None:
     o1.metric("ATM Straddle", "$" + format(straddle_price, ",.2f") if straddle_valid else "N/A")
     o2.metric("Max Pain", "$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A")
     o3.metric("Local OI PCR · Contracts ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A")
-    call_strike_text = "$" + format(call_gamma_wall["Strike"], ",.0f") if call_gamma_wall is not None else "N/A"
-    put_strike_text = "$" + format(put_gamma_wall["Strike"], ",.0f") if put_gamma_wall is not None else "N/A"
     call_gex_text = "$" + format(call_gamma_wall["GEX_Call"] / 1e6, ".2f") + "M" if call_gamma_wall is not None and pd.notna(call_gamma_wall["GEX_Call"]) else "N/A"
     put_gex_text = "$" + format(put_gamma_wall["GEX_Put"] / 1e6, ".2f") + "M" if put_gamma_wall is not None and pd.notna(put_gamma_wall["GEX_Put"]) else "N/A"
     g1, g2 = st.columns(2)
