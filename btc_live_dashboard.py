@@ -748,10 +748,10 @@ with st.expander("Raw options chain — nearest strikes"):
             default="Inside Value",
         )
 
-        # Put the strikes nearest to current BTC spot at the top of the table.
+        # Standard options ladder: highest strike first, lowest strike last.
         display_df = display_df.sort_values(
-            by="Dist_to_Spot",
-            ascending=True,
+            by="Strike",
+            ascending=False,
             kind="stable",
             na_position="last",
         )
@@ -761,19 +761,17 @@ with st.expander("Raw options chain — nearest strikes"):
         ]
 
         def highlight_amt_and_gex_walls(row):
-            styles = [""] * len(row)
-            strike = row["Strike"]
-            strike_index = row.index.get_loc("Strike")
+            # Style by the row's Strike value and column label, never by dataframe index.
+            styles = pd.Series("", index=row.index, dtype="object")
+            strike = pd.to_numeric(row["Strike"], errors="coerce")
 
-            if abs(strike - provisional_poc) <= 50:
-                styles = [
-                    "background-color: #6A1B9A; color: white; font-weight: bold"
-                ] * len(row)
+            if pd.notna(strike) and pd.notna(dev_poc) and abs(strike - dev_poc) <= 50:
+                styles.loc[:] = "background-color: #6A1B9A; color: white; font-weight: bold"
 
-            if call_gamma_wall is not None and strike == float(call_gamma_wall["Strike"]):
-                styles[strike_index] = "background-color: #2E7D32; color: white; font-weight: bold"
-            if put_gamma_wall is not None and strike == float(put_gamma_wall["Strike"]):
-                styles[strike_index] = "background-color: #C62828; color: white; font-weight: bold"
+            if call_gamma_wall is not None and pd.notna(strike) and strike == float(call_gamma_wall["Strike"]):
+                styles.loc["Strike"] = "background-color: #2E7D32; color: white; font-weight: bold"
+            if put_gamma_wall is not None and pd.notna(strike) and strike == float(put_gamma_wall["Strike"]):
+                styles.loc["Strike"] = "background-color: #C62828; color: white; font-weight: bold"
 
             return styles
         raw_options_config = {
