@@ -1,0 +1,59 @@
+name: BTC Data Collection Coordinator
+
+on:
+  workflow_dispatch:
+
+# Prevent overlapping collection cycles. A queued manual/cron run waits for
+# the active cycle rather than cancelling it.
+concurrency:
+  group: btc-data-collection-coordinator
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  collect-amt:
+    name: Run AMT collector
+    uses: ./.github/workflows/amt_collector.yml
+    secrets: inherit
+
+  collect-futures:
+    name: Run Futures OI collector
+    needs: collect-amt
+    uses: ./.github/workflows/collector.yml
+    secrets: inherit
+
+  collect-options:
+    name: Run Options OI collector
+    needs: collect-futures
+    uses: ./.github/workflows/options_collector.yml
+    secrets: inherit
+
+  detect-signals:
+    name: Detect and journal system signals
+    needs:
+      - collect-amt
+      - collect-futures
+      - collect-options
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "supabase>=2.0.0"
+
+      - name: Run signal detector
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python signal_detector.py
