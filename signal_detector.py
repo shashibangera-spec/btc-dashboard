@@ -18,7 +18,7 @@ Important:
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from supabase import create_client
 
@@ -165,14 +165,26 @@ def load_futures_history(client, now):
             contributors = status.get("oi_contributors", [])
         contributors = sorted({str(name).upper() for name in contributors if name})
 
+        # Use the collector's source observation timestamp for event timing.
+        # created_at is only the database insertion time; it is not a substitute
+        # for source time when enforcing the historical as-of rule.
+        observed_at = parse_timestamp(status.get("collected_at"))
+        if observed_at is None:
+            print(
+                "[FUTURES] Skipping aggregate row without a reliable source "
+                f"timestamp (created_at={iso_utc(timestamp)})."
+            )
+            continue
+
         rows.append({
             "created_at": timestamp,
+            "observed_at": observed_at,
             "oi_usd": oi_value,
             "contributors": contributors,
             "status_payload": status,
         })
 
-    rows.sort(key=lambda row: row["created_at"])
+    rows.sort(key=lambda row: row["observed_at"])
     return rows
 
 
@@ -276,12 +288,12 @@ def options_walls_asof(options_rows, event_time):
 
 
 def futures_oi_asof(futures_rows, event_time):
-    eligible = [row for row in futures_rows if row["created_at"] <= event_time]
+    eligible = [row for row in futures_rows if row["observed_at"] <= event_time]
     if not eligible:
         return None
 
     selected = eligible[-1]
-    age_minutes = (event_time - selected["created_at"]).total_seconds() / 60.0
+    age_minutes = (event_time - selected["observed_at"]).total_seconds() / 60.0
     if age_minutes < 0 or age_minutes > MAX_FUTURES_CONTEXT_AGE_MINUTES:
         return None
     return selected
@@ -396,14 +408,14 @@ def detect_oi_shock(futures_rows, amt_rows, options_rows):
         return None
 
     current = futures_rows[-1]
-    current_time = current["created_at"]
+    current_time = current["observed_at"]
     if not current["contributors"]:
         print("[OI] Latest aggregate has no contributor list; OI shock skipped.")
         return None
 
     eligible_baselines = []
     for previous in futures_rows[:-1]:
-        age_minutes = (current_time - previous["created_at"]).total_seconds() / 60.0
+        age_minutes = (current_time - previous["observed_at"]).total_seconds() / 60.0
         if OI_MIN_INTERVAL_MINUTES <= age_minutes <= OI_MAX_INTERVAL_MINUTES:
             if previous["contributors"] == current["contributors"]:
                 eligible_baselines.append((abs(age_minutes - 30.0), previous, age_minutes))
@@ -448,7 +460,7 @@ def detect_oi_shock(futures_rows, amt_rows, options_rows):
             "current_oi_usd": current["oi_usd"],
             "change_pct": change_pct,
             "change_usd": current["oi_usd"] - previous["oi_usd"],
-            "baseline_timestamp": iso_utc(previous["created_at"]),
+            "baseline_timestamp": iso_utc(previous["observed_at"]),
             "current_timestamp": iso_utc(current_time),
             "baseline_age_minutes": round(age_minutes, 2),
             "exchange_coverage": current["contributors"],
