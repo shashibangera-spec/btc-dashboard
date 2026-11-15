@@ -1,181 +1,333 @@
 # BTC AMT & Derivatives Observation Cockpit
 
-A research and observation system for Bitcoin markets. It combines Auction Market Theory (AMT), futures positioning and options-market measurements to help reconstruct the auction and study how market structure interacts with derivatives context.
+A research and observation system for Bitcoin markets. The project combines Auction Market Theory (AMT), futures positioning and options-market measurements to reconstruct the auction and study how market structure interacts with derivatives context.
 
-**This project is an observation cockpit, not a mechanical trading-signal generator.** It does not claim that any single AMT state, OI change, options concentration or model-derived metric predicts direction or provides a profitable entry.
+> **This is an observation and research system, not a mechanical trading-signal generator.** AMT states, OI changes, options concentrations and derived metrics are descriptive research inputs unless separately validated by evidence.
 
-## Research philosophy
+## System philosophy
 
 The hierarchy is deliberate:
 
-1. **AMT structure and price action are primary.** They describe the auction, value, acceptance, rejection and migration.
-2. **Futures positioning is supporting context.** Open Interest (OI), funding and basis describe measured positioning conditions, subject to exchange coverage and timestamp quality.
-3. **Options measurements are supporting context.** Expiry-specific straddle, Max Pain, local OI and gross GEX concentrations describe options pricing and positioning measurements; they are not automatic targets or support/resistance levels.
+1. **AMT structure and price action are primary.**
+2. **Futures positioning is supporting context.**
+3. **Options measurements are supporting context.**
+4. **Automated alerts and journals record significant events; they are not trade instructions.**
 
-The research focus is conditional auction behaviour: value migration persistence, acceptance duration, price movement versus value migration, and whether derivatives context adds information beyond ordinary price and volatility observations.
+The project preserves completed-candle confirmation discipline, avoids lookahead, and keeps developing information separate from confirmed information.
 
-Mechanical breakout and failed-discovery variations tested historically did not establish robust profitability after fees. Those experiments are not deployed as automatic trading rules. No strategy edge should be inferred from descriptive classifications or conditional frequencies alone.
+---
 
-## Automated backend architecture
+# Production architecture
 
-The automated backend runs in the cloud:
+## System A — Research, collection and event detection
 
-- **Scheduler:** cron-job.org sends scheduled HTTP triggers.
-- **Execution:** GitHub Actions runs the collector workflows. Each workflow retains `workflow_dispatch` for manual execution; scheduled cron triggers are not configured inside the workflow files.
-- **Storage:** Supabase PostgreSQL stores AMT, futures and options snapshots.
-- **Presentation:** Streamlit Cloud reads the stored data and presents the research cockpit.
+System A runs continuously in the cloud and is the system of record.
 
-The laptop does not need to remain on for the external scheduler and cloud workflows to run. Actual collection still depends on the scheduler, GitHub Actions, upstream exchange/API availability and Supabase connectivity.
+```text
+cron-job.org
+      |
+      v
+BTC Data Collection Coordinator
+      |
+      +--> AMT Collector
+      |
+      +--> Futures OI Collector
+      |
+      +--> Options Collector
+      |
+      v
+Signal Detector
+      |
+      v
+Supabase PostgreSQL
+      |
+      +--> Research history
+      +--> system_signal_journal
+      |
+      v
+Telegram Alert Workflow
+```
 
-### Security architecture
+The external scheduler triggers **one Coordinator workflow**. The Coordinator runs the collectors sequentially:
 
-Database access is separated by workload and privilege:
+1. AMT collector
+2. Futures OI collector
+3. Options collector
+4. Signal detector
 
-- **Streamlit dashboard:** uses `SUPABASE_ANON_KEY`. Its access is read-only through Supabase Row Level Security (RLS) policies; the dashboard does not receive the service-role credential.
-- **GitHub Actions backend workflows:** use `SUPABASE_SERVICE_ROLE_KEY` for trusted server-side collection, retention and alert operations. This key bypasses RLS and must remain in GitHub Actions secrets; it must never be exposed to Streamlit clients, browser code or the repository.
-- **Database:** RLS is enabled on all five original research tables. The separate Telegram alert outbox also has RLS enabled. Grant only the access required by each role.
+If a required collector job fails, downstream jobs do not run. This prevents the signal detector from evaluating a partially completed collection cycle.
 
-Never commit credentials, paste them into logs, or place service-role keys in client-side configuration.
+The Coordinator workflow is manually dispatchable through GitHub Actions and is the single production entry point for scheduled collection.
 
-### Collector cadence
+## System B — Fast observation cockpit
 
-The external cron-job.org schedule triggers the workflows twice per hour:
+System B is the Streamlit dashboard used for rapid market observation.
 
-| Collector | Workflow | Trigger minutes (UTC) |
-|---|---|---|
-| AMT | `amt_collector.yml` | :07 and :37 |
-| Futures | `collector.yml` | :08 and :38 |
-| Options | `options_collector.yml` | :09 and :39 |
+Its purpose is to answer:
 
-The workflows are manually dispatchable through GitHub Actions as well. Keep the external cron schedule and workflow names aligned when making operational changes.
+> **What is happening now, and what has recently changed?**
 
-### Archive and retention
+Its information hierarchy remains:
 
-The `archive-retention.yml` GitHub Actions workflow handles the automated archive/retention process. The retention policy keeps the active database data within a **5-day** window; eligible older data is archived to the private GitHub repository **`btc-data-archive`** before retention cleanup. The archive repository is private and must remain private because it contains historical research data.
+**AMT structure → Futures context → Options context**
 
-Treat the archive manifest and its integrity metadata (including row counts, file sizes and SHA-256 hashes) as the audit trail for exported data. Do not manually delete source rows or change the retention cutoff without following the verified archive-and-integrity procedure. The workflow can be inspected and manually dispatched in GitHub Actions.
+The current visually optimized System B UI is a frozen baseline. It includes the custom terminal skin, CSS hero header, visual Value Area ladder, side-by-side context charts and terminal-styled expanders.
 
-### Telegram alerts
+### Division of labor for future System B changes
 
-The `telegram_alerts.yml` GitHub Actions workflow evaluates backend snapshots and sends a combined Telegram notification only when a high-signal condition qualifies. It runs in GitHub Actions rather than depending on an open Streamlit browser tab.
+- **ChatGPT:** backend logic, APIs, GEX/AMT calculations, database infrastructure, Telegram alerts and minor Python/dataframe changes.
+- **Claude:** major UI/CSS/HTML redesigns.
+- **User:** reviews and merges changes.
 
-The alert evaluator has three tiers:
+Any proposed change that touches the custom CSS or HTML layout should be treated as a UI-skin change and reviewed carefully to avoid breaking the frozen terminal design.
 
-1. **AMT State Change:** a change in the confirmed AMT state, based on completed candles and the existing confirmation discipline. Developing/candidate states are not substitutes for confirmed state.
-2. **GEX Wall Breach:** two consecutive completed 30-minute closes beyond the relevant Call or Put gross-GEX concentration wall. The evaluator selects the **nearest unexpired expiry** (expiry date ascending), then the latest snapshot for that expiry.
-3. **OI Shock:** an absolute 30-minute aggregate futures OI change of at least 3%, subject to the evaluator's interval and contributor-quality checks.
+---
 
-GEX alerts fail closed unless all of these data-quality gates pass:
+# Automated backend components
 
-- The selected options snapshot has a matching `options_collection_runs` record with `status = SUCCESS`.
-- The options snapshot's `source_collected_at` is no more than **35 minutes older** than the AMT candle's `candle_close_time`; invalid or future-dated timestamps are rejected.
-- The selected expiry is unexpired, and the required GEX metric statuses and wall values are valid.
+## Coordinator workflow
 
-Telegram bot credentials and the Supabase service-role key are stored as GitHub Actions secrets, not in source control. The alert system is an observation/notification layer, not a trade recommendation engine.
+**File:** `.github/workflows/coordinator.yml`
 
-## Research layers
+The Coordinator is named **BTC Data Collection Coordinator** and uses reusable collector workflows in sequence. It then runs `signal_detector.py` only after all collector jobs complete successfully.
 
-### Layer 1 — Auction Market Theory
+Concurrency prevents overlapping collection cycles from running simultaneously.
+
+## Signal Detector
+
+**File:** `signal_detector.py`
+
+The detector evaluates completed, validated backend data and writes qualifying research events to `system_signal_journal`.
+
+Current event taxonomy:
+
+### 1. `AMT_STATE_CHANGE`
+
+Logged when the **confirmed AMT state** changes between consecutive completed 30-minute candles.
+
+Developing/candidate states do not independently trigger this event.
+
+### 2. `GEX_WALL_BREACH`
+
+Logged when price closes beyond the same nearest Call or Put GEX wall for **two consecutive completed 30-minute candles**.
+
+A new breach cannot be logged until price has first returned inside the walls and re-armed the condition. Wall identity includes side, expiry and level.
+
+### 3. `OI_SHOCK`
+
+Logged when aggregate Futures OI changes by **more than 3.0%** over a valid 25–35-minute comparison interval with **exactly matching exchange coverage**.
+
+OI remains non-directional context; the event records an abnormal measured change, not whether longs or shorts caused it.
+
+### 4. `VALUE_MIGRATION`
+
+Logged when the Developing POC moves by **more than $150** between consecutive completed 30-minute AMT candles.
+
+All current detector events default to severity `INFO`. Severity classification is a future research question rather than an assumed interpretation.
+
+### Event deduplication
+
+The journal uses the event identity:
+
+`event_type + event_timestamp + event_key`
+
+The database unique constraint and detector upsert logic prevent the exact same event from being recorded twice.
+
+---
+
+# Telegram alerts
+
+**File:** `.github/workflows/telegram_alerts.yml`
+
+The Telegram workflow listens for completion of **BTC Data Collection Coordinator**.
+
+It evaluates alerts only after a successful Coordinator run, meaning the collection sequence and signal detector have already completed.
+
+The Telegram outbox is operationally separate from the research signal journal:
+
+- **`system_signal_journal`:** records significant system events for research and later outcome analysis.
+- **`telegram_alert_events`:** records notification delivery, deduplication and retry/audit state.
+
+This separation is intentional. Not every research event must become a notification, and notification delivery state should not be used as the canonical research history.
+
+---
+
+# Research layers
+
+## Layer 1 — Auction Market Theory
 
 **Main files:** `amt_collector.py`, `amt_core.py`, `research_engine.py`
 
-The AMT collector stores completed 30-minute BTCUSDT candles, prior-value references, developing-value measurements and state outputs in `amt_snapshots`.
+The AMT collector stores completed 30-minute BTCUSDT candles, Prior Value references, Developing Value measurements and state outputs in `amt_snapshots`.
 
-#### Prior Value versus Developing Value
+### Prior Value versus Developing Value
 
-- **Prior VAH / POC / VAL:** the frozen prior-session value references used to evaluate the current auction.
-- **Developing VAH / POC / VAL:** the evolving value-area high, point of control and value-area low calculated from the developing auction.
+- **Prior VAH / POC / VAL:** frozen references from the source session used to evaluate the current auction.
+- **Developing VAH / POC / VAL:** evolving measurements describing where the current auction is building value.
 
-These are different reference sets. Prior Value provides the reference boundary; Developing Value describes where the current auction is building value. A developing POC near price is not, by itself, evidence of directional acceptance.
+These are different reference sets.
 
-The `profile_date` and `profile_id` fields identify the source session used to construct Prior Value. They are not necessarily the current candle's session date; this source-session convention is intentional.
+### State discipline
 
-#### State discipline
+The database preserves:
 
-The database preserves both:
+- `confirmed_state`
+- `developing_state`
 
-- `confirmed_state`: the confirmed AMT state.
-- `developing_state`: the evolving/candidate state.
+Discovery confirmation requires the configured completed-candle confirmation conditions. A candidate/developing state must not be treated as a confirmed state.
 
-Discovery confirmation requires two consecutive completed 30-minute closes beyond the applicable discovery threshold. A first qualifying close is a candidate; it does not by itself replace the last confirmed state. In-progress candles must not be treated as completed confirmations.
+In-progress candles must not be used as completed confirmations.
 
-Project Echo fields provide a versioned descriptive state label alongside the AMT state. They are state annotations, not independent trade instructions.
-
-### Layer 2 — Futures positioning
+## Layer 2 — Futures positioning
 
 **Main file:** `collector.py`
 
-The futures collector retrieves Open Interest, funding and basis from the configured exchange sources:
+The collector retrieves Futures OI, funding and basis from configured sources including:
 
 - Binance
 - Bybit
 - OKX
 - Delta
 
-An `AGGREGATE` row represents the available contributors for that collection, not necessarily all four exchanges. Always interpret aggregate OI alongside its exchange coverage and status. A 2/4 aggregate is not directly equivalent to a 4/4 aggregate.
+An `AGGREGATE` row represents the valid contributors available for that observation. Coverage must be considered when comparing aggregate observations.
 
-The 30-minute OI delta is subject to a strict baseline interval validation: snapshots outside the configured 25–35-minute interval are rejected rather than treated as a valid 30-minute change.
+The 30-minute OI comparison uses a strict 25–35-minute baseline validation.
 
-OI expansion means measured open contracts/notional increased; OI alone does not identify whether new longs or shorts initiated the exposure. OI contraction does not independently prove long liquidation or short covering. Funding and basis are context, not standalone directional signals.
-
-### Layer 3 — Options research
+## Layer 3 — Options research
 
 **Main file:** `options_collector.py`
 
-The options collector stores the raw options chain in `options_oi_snapshots`, records collection-run status in `options_collection_runs`, and calculates expiry-specific derived metrics in `options_derived_snapshots`.
+The options pipeline stores:
 
-Derived metrics include:
+- raw options contracts in `options_oi_snapshots`
+- run status in `options_collection_runs`
+- expiry-specific derived metrics in `options_derived_snapshots`
 
-- **Max Pain:** theoretical strike minimizing aggregate intrinsic-value payout under the collected OI assumptions.
-- **ATM strike and ATM straddle:** combined call and put mark premium at the selected nearest common strike.
-- **ATM straddle % of spot:** normalized straddle measurement.
-- **Gross Call GEX concentration wall and value.**
-- **Gross Put GEX concentration wall and value.**
-- **Local OI PCR:** put OI divided by call OI inside the configured spot-relative band, plus the underlying local OI quantities.
-- **Metric quality/status:** per-metric status describing whether the source chain and calculation were valid.
+Derived metrics include Max Pain, ATM straddle, gross Call/Put GEX concentrations and local OI PCR.
 
-Metrics are calculated separately for each expiry. Do not combine expiries into a single straddle or GEX value without an explicitly defined research method.
+### Options interpretation guardrails
 
-#### Options interpretation guardrails
-
-- Gross GEX is unsigned and does not reveal dealer positioning, net gamma or hedging direction.
-- A gross GEX or OI concentration is descriptive; it is not automatically support, resistance, a target or a magnet.
+- Gross GEX is unsigned and does not reveal dealer positioning or hedging direction.
+- GEX/OI concentrations are descriptive measurements, not automatic support, resistance or targets.
 - Max Pain is a theoretical OI-based calculation, not a forecast.
-- ATM straddle is an expiry-specific priced-movement measure, not a guaranteed range or probability boundary.
-- Missing or incomplete chain data must remain visibly incomplete; missing measurements are not zero.
-- Taker buy/sell volume is only available where collected. NULL does not mean zero trading activity.
+- ATM straddle is an expiry-specific priced-movement measure, not a guaranteed range.
+- Missing or incomplete chain data remains incomplete; missing data is not zero.
 
-## Data integrity and research guardrails
+---
 
-- **Missing data:** retain as SQL `NULL`; never silently replace missing measurements with zero.
-- **Futures coverage:** show contributor coverage with aggregate values. Preserve exchange-level records and status.
-- **Baseline validation:** reject invalid 30-minute OI deltas when the snapshot interval is outside 25–35 minutes.
-- **Options provenance:** preserve snapshot ID, expiry, source collection time, calculation time and metric status.
-- **Completed candles:** use completed 30-minute candles for AMT state confirmation.
-- **No lookahead:** define the event timestamp first. Use only information available at or before that timestamp when describing contemporaneous conditions.
-- **No retrospective reclassification:** later price, profile or derivatives observations are subsequent outcomes, not inputs available at the earlier event.
-- **No unsupported causal claims:** simultaneous movement in price, OI, value and options metrics does not by itself establish which caused another.
+# Database and security
 
-### Strict as-of timestamp rule
+Supabase PostgreSQL is the central system of record.
 
-For historical event analysis, Futures and Options observations may be used as contemporaneous context for an AMT candle only when their source/observation timestamps are **at or before that AMT candle's close time**. A snapshot collected or sourced after the candle close is subsequent information and must be analysed as a later development, not backfilled into the earlier event.
+The current documented inventory includes:
 
-Where source timestamps are missing, ambiguous or not normalized, mark the match as uncertain or unavailable. Do not assume the collector's later timestamp proves that the underlying exchange measurement was available at an earlier time.
+- `amt_snapshots`
+- `futures_oi_snapshots`
+- `options_oi_snapshots`
+- `options_collection_runs`
+- `options_derived_snapshots`
+- `telegram_alert_events`
+- `system_signal_journal`
 
-## Database
+See [DATABASE.md](DATABASE.md) for the data dictionary, RLS model, timestamp provenance, constraints and event schemas.
 
-The automated backend currently uses five Supabase tables. See [DATABASE.md](DATABASE.md) for the data dictionary, table relationships, timestamp provenance and status semantics.
+## Access model
 
-## Scope
+- **Streamlit:** `SUPABASE_ANON_KEY` with read access governed by RLS.
+- **GitHub Actions backend:** `SUPABASE_SERVICE_ROLE_KEY` for trusted collection, event detection and alert operations.
+- **Service-role credentials and Telegram credentials must never be exposed to Streamlit/browser code or committed to Git.**
 
-This README documents the automated Supabase-backed backend and its collectors. The separate standalone manual Live Terminal (System B) and legacy research prototype are intentionally outside this automated-backend documentation scope.
+---
 
-## Setup and secrets
+# Archive and retention
 
-Configure credentials in the secret store for each workload:
+The `archive-retention.yml` workflow manages archive/retention operations.
 
-- **Streamlit Cloud:** `SUPABASE_URL` and `SUPABASE_ANON_KEY` (read-only access governed by RLS).
-- **GitHub Actions:** `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` for trusted backend workflows.
-- **Telegram alert workflow:** additionally requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+Historical data eligible for retention cleanup is archived before deletion according to the verified archive process. Archive manifests and integrity metadata, including row counts, file sizes and SHA-256 hashes, form the audit trail.
 
-Keep service-role and Telegram bot credentials private. Do not commit secrets or expose service-role keys in client-side code.
+Do not manually delete source data outside the verified archive-and-integrity procedure.
+
+---
+
+# Data integrity and research guardrails
+
+- **Missing data:** preserve as SQL `NULL`; never silently convert missing measurements to zero.
+- **Completed candles:** use completed 30-minute candles for AMT confirmation.
+- **No lookahead:** use only information available at or before the event timestamp.
+- **No retrospective reclassification:** later information is an outcome, not contemporaneous context.
+- **Timestamp provenance:** distinguish market observation time from collector/database insertion time.
+- **Futures coverage:** compare aggregate OI only with appropriate contributor coverage.
+- **Options provenance:** preserve expiry, snapshot ID, source collection time and metric status.
+- **No unsupported causal claims:** simultaneous movement does not by itself establish causation.
+
+## Strict as-of rule
+
+For historical event analysis, Futures and Options observations may be used as contemporaneous context for an AMT event only when their reliable source/observation timestamps are at or before the event time.
+
+Later observations are subsequent developments and must not be backfilled into the earlier explanation.
+
+---
+
+# Documentation contract
+
+## The three-tier documentation hierarchy
+
+### `README.md`
+
+The current system architecture, operating model, workflows and research philosophy.
+
+### `DATABASE.md`
+
+The database contract: table inventory, schemas, relationships, RLS and timestamp/data-quality conventions.
+
+### `CHANGELOG.md`
+
+The historical record of significant architecture, infrastructure and behavior changes.
+
+## Completion rule
+
+> **No architectural change is complete until its documentation impact has been reviewed.**
+
+For every future production change, the implementation workflow is:
+
+```text
+1. Discuss and approve logic
+        ↓
+2. Implement code / SQL / workflow
+        ↓
+3. Test and verify
+        ↓
+4. Review documentation impact
+        ↓
+5. Update README.md / DATABASE.md / CHANGELOG.md as applicable
+        ↓
+6. Commit documentation
+        ↓
+7. Mark change complete
+```
+
+Examples:
+
+| Change | Documentation impact |
+|---|---|
+| Architecture/workflow change | README + CHANGELOG |
+| Database schema/RLS change | DATABASE + CHANGELOG |
+| New table | DATABASE + README where architecturally relevant + CHANGELOG |
+| Alert/event logic change | README + CHANGELOG |
+| Significant bug fix | CHANGELOG |
+| Major System B UI redesign | README + CHANGELOG |
+| Minor display formatting | Usually none |
+
+A change may legitimately require no documentation update, but that decision should be made explicitly rather than forgotten.
+
+---
+
+# Setup and secrets
+
+Configure credentials in the appropriate secret store:
+
+- **Streamlit Cloud:** `SUPABASE_URL`, `SUPABASE_ANON_KEY`
+- **GitHub Actions:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+- **Telegram workflow:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+
+Never commit secrets or expose service-role credentials to client-side code.
