@@ -73,10 +73,9 @@ jobs:
         run: |
           git config user.name "$GIT_AUTHOR_NAME"
           git config user.email "$GIT_AUTHOR_EMAIL"
-
-          # Safely stages all files, even if 0 files exist
+          
           git add --all
-
+          
           if git diff --cached --quiet; then
             echo "No new archive files or manifest changes."
           else
@@ -93,5 +92,10 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           PYTHONUNBUFFERED: "1"
         run: |
-          # Added --archive-dir to fix the pathing issue
-          python retention_cron.py --execute --archive-dir ../btc_data_archive
+          # Check if the manifest exists before running retention
+          if [ -f ../btc_data_archive/archive_manifest.csv ]; then
+            echo "Manifest found. Running retention..."
+            python retention_cron.py --execute --archive-dir ../btc_data_archive
+          else
+            echo "No archive manifest found (no data older than 5 days). Skipping retention."
+          fi
