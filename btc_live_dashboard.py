@@ -729,11 +729,38 @@ with st.expander("Raw options chain — nearest strikes"):
         display_df["Call_OI_M"] = display_df["OI_USD_Call"] / 1e6
         display_df["Put_OI_M"] = display_df["OI_USD_Put"] / 1e6
         display_df = display_df.sort_values(by="Dist_to_Spot", ascending=True)
-        display_df = display_df[["Mark_Call", "Call_OI_M", "Volume_Call", "IV_Call", "Strike", "IV_Put", "Volume_Put", "Put_OI_M", "Mark_Put"]]
-        def highlight_cmp_and_walls(row):
-            if row["Strike"] == atm_strike:
-                return ["background-color: #6A1B9A; color: white; font-weight: bold"] * len(row)
-            return [""] * len(row)
+
+        def classify_amt_location(strike):
+            if strike > provisional_vah:
+                return "Above Value"
+            if strike < provisional_val:
+                return "Below Value"
+            if abs(strike - provisional_poc) <= 50:
+                return "At Dev POC"
+            return "Inside Value"
+
+        display_df["AMT Location"] = display_df["Strike"].apply(classify_amt_location)
+        display_df = display_df[
+            ["Mark_Call", "Call_OI_M", "Volume_Call", "IV_Call", "Strike",
+             "AMT Location", "IV_Put", "Volume_Put", "Put_OI_M", "Mark_Put"]
+        ]
+
+        def highlight_amt_and_gex_walls(row):
+            styles = [""] * len(row)
+            strike = row["Strike"]
+            strike_index = row.index.get_loc("Strike")
+
+            if abs(strike - provisional_poc) <= 50:
+                styles = [
+                    "background-color: #6A1B9A; color: white; font-weight: bold"
+                ] * len(row)
+
+            if call_gamma_wall is not None and strike == float(call_gamma_wall["Strike"]):
+                styles[strike_index] = "background-color: #2E7D32; color: white; font-weight: bold"
+            if put_gamma_wall is not None and strike == float(put_gamma_wall["Strike"]):
+                styles[strike_index] = "background-color: #C62828; color: white; font-weight: bold"
+
+            return styles
         raw_options_config = {
             "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
             "Mark_Call": st.column_config.NumberColumn("Mark_Call", format="$%.2f"),
@@ -746,7 +773,7 @@ with st.expander("Raw options chain — nearest strikes"):
             "IV_Put": st.column_config.NumberColumn("IV_Put", format="%.1f%%"),
         }
         st.dataframe(
-            display_df.style.apply(highlight_cmp_and_walls, axis=1),
+            display_df.style.apply(highlight_amt_and_gex_walls, axis=1),
             column_config=raw_options_config,
             use_container_width=True,
             hide_index=True,
