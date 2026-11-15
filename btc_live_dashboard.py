@@ -728,7 +728,17 @@ if not options_df.empty and atm_row is not None:
     st.caption("Delta options · Expiry: " + str(loaded_expiry))
     o1, o2, o3, o4 = st.columns(4)
     o1.metric("Spot / CMP", "$" + format(latest_price, ",.2f"))
-    o2.metric("ATM Straddle", "$" + format(straddle_price, ",.2f") if straddle_valid else "N/A")
+    straddle_pct = (
+        (straddle_price / latest_price) * 100
+        if straddle_valid and latest_price > 0
+        else np.nan
+    )
+    o2.metric(
+        "ATM Straddle",
+        "$" + format(straddle_price, ",.2f") + f" ({straddle_pct:.2f}%)"
+        if straddle_valid and pd.notna(straddle_pct)
+        else "N/A"
+    )
     o3.metric("Max Pain", "$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A")
     o4.metric("Local OI PCR · Contracts ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A")
     call_gex_text = "$" + format(call_gamma_wall["GEX_Call"] / 1e6, ".2f") + "M" if call_gamma_wall is not None and pd.notna(call_gamma_wall["GEX_Call"]) else "N/A"
@@ -772,6 +782,9 @@ with st.expander("Options OI clusters"):
         top_band = raw_chain_df.copy()
         top_band["Strike"] = pd.to_numeric(top_band["Strike"], errors="coerce")
         top_band["OI_USD"] = pd.to_numeric(top_band["OI_USD"], errors="coerce")
+        top_band["OI_Contracts"] = pd.to_numeric(
+            top_band["OI_Contracts"], errors="coerce"
+        )
         top_band = top_band[
             top_band["Strike"].between(latest_price * 0.85, latest_price * 1.15)
             & top_band["OI_USD"].notna()
@@ -787,7 +800,7 @@ with st.expander("Options OI clusters"):
             with col:
                 st.markdown(f"**{heading}**")
                 top_rows = top_band[top_band["Type"] == opt_type].nlargest(3, "OI_USD")[
-                    ["Strike", "OI_USD", "Distance ($)", "Distance (%)"]
+                    ["Strike", "OI_USD", "OI_Contracts", "Distance ($)", "Distance (%)"]
                 ].copy()
                 top_rows = top_rows.sort_values(
                     "Strike",
@@ -800,6 +813,9 @@ with st.expander("Options OI clusters"):
                         column_config={
                             "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
                             "OI_USD": st.column_config.NumberColumn("OI (USD M)", format="$%.2fM"),
+                            "OI_Contracts": st.column_config.NumberColumn(
+                                "OI (Contracts)", format="%.0f"
+                            ),
                             "Distance ($)": st.column_config.NumberColumn("Distance ($)", format="$%+.0f"),
                             "Distance (%)": st.column_config.NumberColumn("Distance (%)", format="%+.2f%%"),
                         },
