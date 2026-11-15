@@ -94,7 +94,49 @@ def evaluate_gex_breach():
     )
     if not res_opt.data: return None
     opt = res_opt.data[0]
-    
+
+    # Require a successful collection run for this exact options snapshot.
+    snapshot_id = opt.get("snapshot_id")
+    if not snapshot_id:
+        print("GEX check skipped: options snapshot has no snapshot_id.")
+        return None
+
+    res_run = (
+        supabase.table("options_collection_runs")
+        .select("snapshot_id,status")
+        .eq("snapshot_id", snapshot_id)
+        .eq("status", "SUCCESS")
+        .limit(1)
+        .execute()
+    )
+    if not res_run.data:
+        print(f"GEX check skipped: no SUCCESS collection run for snapshot {snapshot_id}.")
+        return None
+
+    # The options data must be contemporaneous with the AMT candle being tested.
+    try:
+        source_time = datetime.fromisoformat(
+            str(opt["source_collected_at"]).replace("Z", "+00:00")
+        )
+        candle_time = datetime.fromisoformat(
+            str(curr["candle_close_time"]).replace("Z", "+00:00")
+        )
+        if source_time.tzinfo is None:
+            source_time = source_time.replace(tzinfo=timezone.utc)
+        if candle_time.tzinfo is None:
+            candle_time = candle_time.replace(tzinfo=timezone.utc)
+
+        age = candle_time - source_time
+        if age.total_seconds() < 0 or age > timedelta(minutes=35):
+            print(
+                "GEX check skipped: options snapshot is outside the allowed "
+                f"freshness window (age={age})."
+            )
+            return None
+    except (KeyError, TypeError, ValueError) as exc:
+        print(f"GEX check skipped: invalid options/AMT timestamp: {exc}")
+        return None
+
     # Check metric status (Handle string or dict)
     metric_status = parse_json_safely(opt.get("metric_status"))
     if metric_status.get("call_gex") != "OK" or metric_status.get("put_gex") != "OK":
