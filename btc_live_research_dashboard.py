@@ -21,7 +21,7 @@ def fetch_layer2_supabase_data():
     }
     try:
         url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+        key = st.secrets["SUPABASE_ANON_KEY"]
         client = create_client(url, key)
 
         response = client.table("futures_oi_snapshots").select("created_at,oi_usd,funding_rate,basis_pct,status").eq("exchange", "AGGREGATE").order("created_at", desc=True).limit(100).execute()
@@ -124,7 +124,7 @@ def process_options_snapshot(client, snapshot_id, expiry_date):
 def fetch_options_forensics():
     try:
         url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+        key = st.secrets["SUPABASE_ANON_KEY"]
         client = create_client(url, key)
         
         runs = client.table("options_collection_runs").select("snapshot_id, completed_at").eq("status", "SUCCESS").order("completed_at", desc=True).limit(2).execute()
@@ -175,7 +175,7 @@ def fetch_nearest_valid_options_metrics():
     empty = {"status": "NO_DERIVED_METRICS", "expiry_date": None, "metric_status": {}}
     try:
         url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+        key = st.secrets["SUPABASE_ANON_KEY"]
         client = create_client(url, key)
         runs = client.table("options_collection_runs").select(
             "snapshot_id, completed_at, status"
@@ -350,7 +350,7 @@ def analyze_aggressor_trades(df, current_price):
 def fetch_amt_shadow_state():
     try:
         url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+        key = st.secrets["SUPABASE_ANON_KEY"]
         client = create_client(url, key)
         res = client.table("amt_snapshots").select("candle_open_time, confirmed_state, developing_state, project_echo_code, project_echo_name, project_echo_version, developing_poc, developing_vah, developing_val").order("candle_open_time", desc=True).limit(1).execute()
         if res.data: return res.data[0]
