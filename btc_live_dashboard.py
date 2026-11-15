@@ -726,10 +726,11 @@ st.divider()
 st.subheader("3 · OPTIONS CONTEXT")
 if not options_df.empty and atm_row is not None:
     st.caption("Delta options · Expiry: " + str(loaded_expiry))
-    o1, o2, o3 = st.columns(3)
-    o1.metric("ATM Straddle", "$" + format(straddle_price, ",.2f") if straddle_valid else "N/A")
-    o2.metric("Max Pain", "$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A")
-    o3.metric("Local OI PCR · Contracts ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A")
+    o1, o2, o3, o4 = st.columns(4)
+    o1.metric("Spot / CMP", "$" + format(latest_price, ",.2f"))
+    o2.metric("ATM Straddle", "$" + format(straddle_price, ",.2f") if straddle_valid else "N/A")
+    o3.metric("Max Pain", "$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A")
+    o4.metric("Local OI PCR · Contracts ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A")
     call_gex_text = "$" + format(call_gamma_wall["GEX_Call"] / 1e6, ".2f") + "M" if call_gamma_wall is not None and pd.notna(call_gamma_wall["GEX_Call"]) else "N/A"
     put_gex_text = "$" + format(put_gamma_wall["GEX_Put"] / 1e6, ".2f") + "M" if put_gamma_wall is not None and pd.notna(put_gamma_wall["GEX_Put"]) else "N/A"
     g1, g2 = st.columns(2)
