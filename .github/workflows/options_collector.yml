@@ -2,6 +2,7 @@ name: BTC Options OI Collector
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
