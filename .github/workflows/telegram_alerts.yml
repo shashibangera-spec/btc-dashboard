@@ -9,6 +9,12 @@ on:
     types:
       - completed
   workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "Send a test Telegram message"
+        required: false
+        default: "false"
+        type: boolean
 
 permissions:
   contents: read
@@ -43,4 +49,5 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TEST_MODE: ${{ inputs.test_mode || 'false' }}
         run: python telegram_alerts.py
