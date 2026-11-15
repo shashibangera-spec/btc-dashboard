@@ -943,7 +943,7 @@ def _render_dashboard():
             else:
                 delta_text = "$" + format(delta_value, ",+.0f")
                 column.metric(label, "$" + format(current_value, ",.0f"), delta_text)
-    
+
         state_change = "UNCHANGED"
         if previous_ui_snapshot.get("state") != current_amt_state:
             state_change = "FROM " + state_names.get(previous_ui_snapshot.get("state"), "UNKNOWN")
