@@ -3,9 +3,7 @@ name: BTC High-Signal Telegram Alerts
 on:
   workflow_run:
     workflows:
-      - BTC AMT Historical Collector
-      - BTC Futures OI Collector
-      - BTC Options OI Collector
+      - BTC Data Collection Coordinator
     types:
       - completed
   workflow_dispatch:
@@ -25,6 +23,8 @@ concurrency:
 
 jobs:
   evaluate-and-send:
+    # workflow_run fires for every conclusion; only process successful coordinator runs.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     name: Evaluate Structural Alerts
     runs-on: ubuntu-latest
     timeout-minutes: 5
