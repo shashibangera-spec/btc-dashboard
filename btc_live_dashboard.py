@@ -748,9 +748,9 @@ with st.expander("Raw options chain — nearest strikes"):
             default="Inside Value",
         )
 
-        # Standard options ladder: lowest strike first, highest strike last.
+        # Put the strikes nearest to current BTC spot at the top of the table.
         display_df = display_df.sort_values(
-            by="Strike",
+            by="Dist_to_Spot",
             ascending=True,
             kind="stable",
             na_position="last",
