@@ -63,6 +63,7 @@ def log_event(event_key, event_type, event_time, payload, status, message_id=Non
             "payload": payload,
             "delivery_status": status,
             "telegram_message_id": message_id if status == "SENT" else None,
+            "sent_at": datetime.now(timezone.utc).isoformat() if status == "SENT" else None,
         }
         # Upsert lets a later successful retry replace an earlier FAILED attempt.
         supabase.table("telegram_alert_events").upsert(
