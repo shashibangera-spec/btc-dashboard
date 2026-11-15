@@ -816,6 +816,14 @@ with st.expander("Raw options chain — nearest strikes"):
         display_df = filtered_options.copy()
         display_df["Strike"] = pd.to_numeric(display_df["Strike"], errors="coerce")
         display_df["Dist_to_Spot"] = display_df["Strike"] - latest_price
+        # Keep the signed distance readable while marking the ATM strike explicitly.
+        display_df["Dist_to_Spot"] = display_df["Dist_to_Spot"].map(
+            lambda distance: "N/A" if pd.isna(distance) else "$" + format(distance, "+.0f")
+        )
+        if pd.notna(atm_strike):
+            display_df.loc[
+                display_df["Strike"] == float(atm_strike), "Dist_to_Spot"
+            ] = "ATM"
         display_df["Call_OI_M"] = display_df["OI_USD_Call"] / 1e6
         display_df["Put_OI_M"] = display_df["OI_USD_Put"] / 1e6
 
@@ -893,7 +901,7 @@ with st.expander("Raw options chain — nearest strikes"):
 
         raw_options_config = {
             "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
-            "Dist_to_Spot": st.column_config.NumberColumn("Dist to Spot", format="$%+.0f"),
+            "Dist_to_Spot": st.column_config.TextColumn("Dist to Spot"),
             "Mark_Call": st.column_config.NumberColumn("Mark_Call", format="$%.2f"),
             "Mark_Put": st.column_config.NumberColumn("Mark_Put", format="$%.2f"),
             "Call_OI_M": st.column_config.NumberColumn("Call_OI_M", format="$%.2fM"),
