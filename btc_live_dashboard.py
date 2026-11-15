@@ -726,20 +726,35 @@ with st.expander("Options OI clusters"):
 with st.expander("Raw options chain — nearest strikes"):
     if not filtered_options.empty:
         display_df = filtered_options.copy()
+        display_df["Strike"] = pd.to_numeric(display_df["Strike"], errors="coerce")
         display_df["Call_OI_M"] = display_df["OI_USD_Call"] / 1e6
         display_df["Put_OI_M"] = display_df["OI_USD_Put"] / 1e6
-        display_df = display_df.sort_values(by="Dist_to_Spot", ascending=True)
 
-        def classify_amt_location(strike):
-            if strike > provisional_vah:
-                return "Above Value"
-            if strike < provisional_val:
-                return "Below Value"
-            if abs(strike - provisional_poc) <= 50:
-                return "At Dev POC"
-            return "Inside Value"
+        # Use the provisional profile's scalar levels explicitly for every strike.
+        dev_vah = float(provisional_vah) if pd.notna(provisional_vah) else np.nan
+        dev_val = float(provisional_val) if pd.notna(provisional_val) else np.nan
+        dev_poc = float(provisional_poc) if pd.notna(provisional_poc) else np.nan
+        strike_values = display_df["Strike"]
 
-        display_df["AMT Location"] = display_df["Strike"].apply(classify_amt_location)
+        amt_conditions = [
+            strike_values > dev_vah,
+            strike_values < dev_val,
+            (strike_values - dev_poc).abs() <= 50,
+        ]
+        amt_labels = ["Above Value", "Below Value", "At Dev POC"]
+        display_df["AMT Location"] = np.select(
+            amt_conditions,
+            amt_labels,
+            default="Inside Value",
+        )
+
+        # Standard options ladder: lowest strike first, highest strike last.
+        display_df = display_df.sort_values(
+            by="Strike",
+            ascending=True,
+            kind="stable",
+            na_position="last",
+        )
         display_df = display_df[
             ["Mark_Call", "Call_OI_M", "Volume_Call", "IV_Call", "Strike",
              "AMT Location", "IV_Put", "Volume_Put", "Put_OI_M", "Mark_Put"]
