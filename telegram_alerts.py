@@ -221,8 +221,8 @@ def main():
     if os.environ.get("TEST_MODE", "false").lower() == "true":
         print("TEST MODE: Sending test Telegram message...")
         test_msg = (
-            "🧪 TEST ALERT\\n\\n"
-            "This is a verification message from the BTC alert system.\\n"
+            "🧪 TEST ALERT\n\n"
+            "This is a verification message from the BTC alert system.\n"
             "If you see this, delivery works."
         )
         success, msg_id = send_telegram(test_msg)
