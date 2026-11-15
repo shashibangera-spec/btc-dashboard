@@ -74,7 +74,7 @@ jobs:
           git config user.name "$GIT_AUTHOR_NAME"
           git config user.email "$GIT_AUTHOR_EMAIL"
 
-          # THIS IS THE FIX: git add --all safely handles zero new files
+          # Safely stages all files, even if 0 files exist
           git add --all
 
           if git diff --cached --quiet; then
@@ -93,4 +93,5 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           PYTHONUNBUFFERED: "1"
         run: |
-          python retention_cron.py --execute
+          # Added --archive-dir to fix the pathing issue
+          python retention_cron.py --execute --archive-dir ../btc_data_archive
