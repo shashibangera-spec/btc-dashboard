@@ -34,7 +34,7 @@ SIGNAL_TABLE = "system_signal_journal"
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "30"
 
-AMT_HISTORY_LIMIT = 120
+AMT_HISTORY_LIMIT = 1000
 FUTURES_HISTORY_LIMIT = 120
 OPTIONS_RUN_LIMIT = 120
 OPTIONS_DERIVED_LIMIT = 1000
@@ -493,6 +493,10 @@ def detect_latest_gex_breach(amt_rows, options_rows, futures_rows, now):
 
         walls = options_walls_asof(options_rows, candle_close)
         if walls is None:
+            # Without a valid wall observation we cannot establish either
+            # an outside breach or an inside-wall re-arm. Require a fresh,
+            # observed inside-wall close before starting a new breach cycle.
+            armed = False
             candidate = None
             continue
 
