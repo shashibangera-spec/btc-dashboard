@@ -12,12 +12,20 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ## 2026-11-16
 
+### Fixed — GEX Telegram production schema mismatch and alert isolation
+
+- Production incident: the merged notifier queried `system_signal_journal.created_at`, but the live table has no such column. The actual journal insertion/detection timestamp is `detected_at` (default `now()`); `event_timestamp` is the underlying market-event time.
+- Corrected the GEX journal SELECT, cutover filter, ordering, eligibility validation and outbox payload to use `detected_at`. No SQL migration or database schema change was made.
+- Added failure isolation around GEX evaluation in `main()`: a GEX query/evaluation exception is logged and treated as an empty GEX result for that run, allowing independent AMT and OI evaluation and dispatch to continue. The failed GEX event is not added to the alert batch or marked SENT and remains eligible for a later retry.
+- Updated offline regression tests to assert the actual `detected_at` column in the query, filter, ordering, eligibility and payload, and to verify AMT/OI dispatch continues when GEX evaluation raises.
+- Corrected the journal timestamp contract in `DATABASE.md` §7 and the GEX operational description in `README.md`.
+
 ### Changed — GEX Telegram notification source of truth
 
 - Replaced the Telegram notifier's independent GEX calculation from `options_derived_snapshots` and AMT candles with consumption of detector-confirmed `GEX_WALL_BREACH` rows from `system_signal_journal`.
 - Removed the notifier-side options freshness check (including the former `0 <= age <= 35 minutes` gate). The journal row represents a detector-confirmed two-consecutive-candle event; the notifier does not recalculate or re-age the options snapshot.
-- GEX confirmation price is sourced from `event_details.confirmation_close_price`; breached level is sourced from `event_details.breached_level`. Journal `event_timestamp` is used as event time and `created_at` controls deployment cutover.
-- Cutover eligibility is `created_at >= GEX_ALERT_CUTOVER_UTC`. The review branch carries `PLACEHOLDER_SET_AT_MERGE`; it must be replaced by the UTC timestamp of the merge-to-main commit in a visible final pre-merge diff.
+- GEX confirmation price is sourced from `event_details.confirmation_close_price`; breached level is sourced from `event_details.breached_level`. Journal `event_timestamp` is market-event time and `detected_at` controls deployment cutover.
+- Cutover eligibility is `detected_at >= GEX_ALERT_CUTOVER_UTC`. The review branch carries `PLACEHOLDER_SET_AT_MERGE`; it must be replaced by the UTC timestamp of the merge-to-main commit in a visible final pre-merge diff.
 - New GEX outbox key: `SYSTEM_SIGNAL_GEX_WALL_BREACH_{journal_id}`. Historical keys `GEX_CALL_BREACH_*` and `GEX_PUT_BREACH_*` do not match the new identity and are not automatically reconciled; the cutover deliberately separates old and new delivery identities.
 - Incomplete or malformed GEX `event_details` fail closed for that row and do not block AMT/OI evaluation. Failed GEX delivery is retried on the next scheduled Telegram workflow run. Telegram's send-then-database-write boundary remains non-transactional; a process interruption after Telegram accepts a message but before the outbox records SENT can still produce a duplicate on retry.
 - AMT and OI remain locally recomputed from their existing source tables. Only GEX is journal-driven in this change; migrating AMT/OI is a future consideration and is out of scope.

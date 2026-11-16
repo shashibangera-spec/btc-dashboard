@@ -45,7 +45,7 @@ def journal_row(**overrides):
         "event_type": "GEX_WALL_BREACH",
         "event_key": "PUT:2026-11-16:64600.00000000",
         "event_details": dict(REAL_ROW_6_DETAILS),
-        "created_at": "2026-11-16T06:30:01Z",
+        "detected_at": "2026-11-16T06:30:01Z",
     }
     row.update(overrides)
     return row
@@ -59,6 +59,7 @@ def test_real_detector_event_details_validate_and_build_message():
     assert "Confirmation close: $64,473.05" in alert["msg"]
     assert "Breached wall: $64,600.00" in alert["msg"]
     assert alert["time"] == "2026-11-16T06:29:59.999Z"
+    assert alert["payload"]["detected_at"] == "2026-11-16T06:30:01Z"
 
 
 def test_missing_or_malformed_required_wall_details_fail_closed():
@@ -82,10 +83,10 @@ def test_missing_or_malformed_required_wall_details_fail_closed():
     )
 
 
-def test_cutover_uses_created_at_not_event_timestamp():
+def test_cutover_uses_detected_at_not_event_timestamp():
     # Event timestamp is just before cutover, but the journal insertion is after it.
     assert notifier.gex_row_is_eligible(journal_row(), CUTOVER)
-    pre_cutover = journal_row(created_at="2026-11-16T06:29:59.999Z")
+    pre_cutover = journal_row(detected_at="2026-11-16T06:29:59.999Z")
     assert not notifier.gex_row_is_eligible(pre_cutover, CUTOVER)
 
 
@@ -94,13 +95,13 @@ def test_wrong_event_type_and_invalid_timestamp_are_ineligible():
         journal_row(event_type="AMT_STATE_CHANGE"), CUTOVER
     )
     assert not notifier.gex_row_is_eligible(
-        journal_row(created_at="not-a-timestamp"), CUTOVER
+        journal_row(detected_at="not-a-timestamp"), CUTOVER
     )
 
 
 def test_duplicate_identity_is_stable_and_independent_of_event_time():
     first = notifier.build_gex_alert(journal_row())
-    replay = notifier.build_gex_alert(journal_row(created_at="2026-11-16T07:00:00Z"))
+    replay = notifier.build_gex_alert(journal_row(detected_at="2026-11-16T07:00:00Z"))
     assert first["key"] == replay["key"] == "SYSTEM_SIGNAL_GEX_WALL_BREACH_6"
 
 
@@ -124,6 +125,48 @@ def test_confirmation_price_and_breached_level_are_from_event_details():
     assert "$64,600.00" in alert["msg"]
     assert "$99,999.00" not in alert["msg"]
     assert "$88,888.00" not in alert["msg"]
+
+
+
+def test_live_query_uses_detected_at_for_selection_filter_and_order(monkeypatch):
+    calls = []
+    class Query:
+        def select(self, columns): calls.append(("select", columns)); return self
+        def eq(self, column, value): calls.append(("eq", column, value)); return self
+        def gte(self, column, value): calls.append(("gte", column, value)); return self
+        def order(self, column, desc=False): calls.append(("order", column, desc)); return self
+        def limit(self, count): calls.append(("limit", count)); return self
+        def execute(self): return types.SimpleNamespace(data=[])
+    class FakeClient:
+        def table(self, name):
+            assert name == "system_signal_journal"
+            return Query()
+    monkeypatch.setattr(notifier, "supabase", FakeClient())
+    monkeypatch.setattr(notifier, "GEX_ALERT_CUTOVER_UTC", CUTOVER)
+    assert notifier.evaluate_gex_breach() == []
+    assert ("select", "id,event_timestamp,event_type,event_key,event_details,detected_at") in calls
+    assert any(x[0] == "gte" and x[1] == "detected_at" for x in calls)
+    assert any(x[0] == "order" and x[1] == "detected_at" for x in calls)
+    assert not any(x[0] == "select" and "created_at" in x[1] for x in calls)
+
+
+def test_gex_failure_isolated_and_amt_oi_still_dispatch(monkeypatch, capsys):
+    amt = {"key":"a","type":"AMT_STATE_CHANGE","time":"t","msg":"AMT","payload":{}}
+    oi = {"key":"o","type":"OI_SHOCK","time":"t","msg":"OI","payload":{}}
+    sent, logged = [], []
+    monkeypatch.setenv("TEST_MODE", "false")
+    monkeypatch.setattr(notifier, "evaluate_amt_transition", lambda: amt)
+    def fail_gex(): raise RuntimeError("schema failure")
+    monkeypatch.setattr(notifier, "evaluate_gex_breach", fail_gex)
+    monkeypatch.setattr(notifier, "evaluate_oi_shock", lambda: oi)
+    monkeypatch.setattr(notifier, "send_telegram", lambda msg: (sent.append(msg) or (True, 123)))
+    monkeypatch.setattr(notifier, "log_event", lambda *a, **k: logged.append(a[1]))
+    def unexpected(*a, **k): raise AssertionError("GEX must not be logged")
+    monkeypatch.setattr(notifier, "log_gex_event", unexpected)
+    notifier.main()
+    assert sent and "AMT" in sent[0] and "OI" in sent[0]
+    assert logged == ["AMT_STATE_CHANGE", "OI_SHOCK"]
+    assert "GEX evaluation failed; continuing with AMT/OI alerts" in capsys.readouterr().out
 
 
 def test_failed_delivery_is_retryable_on_next_run_and_sent_is_suppressed(monkeypatch):
