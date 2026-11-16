@@ -12,6 +12,15 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ## 2026-11-17
 
+### Documentation — AMT-first theoretical foundation and 30-day research plan
+
+- Added a Theoretical Framework section establishing AMT and completed price action as the structural foundation; Futures OI and Options OI remain descriptive positioning measurements and neither is a standalone directional signal.
+- Added a 30-day research vector to screen for tight completed-candle price ranges concurrent with comparable aggregate Futures OI expansion. The documented method requires stable contributor coverage, valid 25–35-minute observation continuity, strict as-of AMT alignment, price-range/OI-change distributions, USD-notional OI normalization sensitivity and manual review. Results are explicitly absorption candidates, not proof of passive absorption or a directional edge.
+- Recorded Aggressive Participation (full-market CVD / Spot CVD) and Liquidations as missing data layers for a possible future research phase. Current sampled options taker activity is not a substitute for either layer.
+- Documentation-only change. No production code, collector, database schema, workflow, dashboard or alert behavior changed.
+
+## 2026-11-17
+
 ### Changed — Context-only Futures OI_SHOCK updates
 
 - Added as-of AMT Price Location (`ABOVE_VAH`, `BELOW_VAL`, `INSIDE_VALUE`) and confirmed AMT State to the Signal Detector OI_SHOCK event payload, using the latest valid completed AMT candle at or before the OI observation and its Prior VAH/VAL.
