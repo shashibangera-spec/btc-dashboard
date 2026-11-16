@@ -143,12 +143,14 @@ The Telegram workflow listens for completion of **BTC Data Collection Coordinato
 
 It evaluates alerts only after a successful Coordinator run, meaning the collection sequence and signal detector have already completed.
 
-The Telegram outbox is operationally separate from the research signal journal:
+The research journal and Telegram outbox have distinct responsibilities, but the delivery paths are not identical across event types:
 
-- **`system_signal_journal`:** records significant system events for research and later outcome analysis.
-- **`telegram_alert_events`:** records notification delivery, deduplication and retry/audit state.
+- **GEX:** `GEX_WALL_BREACH` alerts now read confirmed events from `system_signal_journal`; the notifier does not independently recompute GEX walls from options snapshots.
+- **AMT:** `AMT_STATE_CHANGE` alerts still recompute locally from `amt_snapshots`.
+- **OI:** `OI_SHOCK` alerts still recompute locally from `futures_oi_snapshots`.
+- **`telegram_alert_events`:** remains the operational notification outbox for delivery status, deduplication and retry/audit state.
 
-This separation is intentional. Not every research event must become a notification, and notification delivery state should not be used as the canonical research history.
+Thus, GEX delivery is journal-driven while AMT and OI remain locally evaluated. Migrating AMT/OI to journal-driven delivery is a future consideration and is not part of the GEX notification correction. The research journal remains the canonical record of detected system events; the outbox records notification delivery.
 
 ---
 
