@@ -7,7 +7,7 @@ import json
 from datetime import timezone
 from supabase import create_client
 from amt_core import fetch_binance_data
-from research_options_adapter import load_canonical_research_options, parse_optional_float
+from research_options_adapter import load_canonical_research_options, parse_optional_float, validated_prior_values
 
 st.set_page_config(page_title="BTC Combined Research", layout="wide")
 st.title("🔬 BTC Combined Research Terminal")
@@ -315,13 +315,9 @@ def render_live_dashboard():
     current_price = completed_df.iloc[-1]['close']
 
     shadow_state = fetch_amt_shadow_state()
-    prior_values_valid = (
-        isinstance(shadow_state, dict)
-        and str(shadow_state.get("data_status", "")).upper() == "VALID"
-        and all(shadow_state.get(key) is not None for key in ("prior_vah", "prior_poc", "prior_val"))
-    )
-    if prior_values_valid:
-        vah, poc, val = (float(shadow_state[key]) for key in ("prior_vah", "prior_poc", "prior_val"))
+    prior_values = validated_prior_values(shadow_state)
+    if prior_values is not None:
+        vah, poc, val = prior_values
     else:
         vah = poc = val = np.nan
 
@@ -749,7 +745,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
     with raw_tab:
         st.subheader("Raw Options Chain — 10 Nearest Strikes")
         if opt_forensics and "data" in opt_forensics:
-            closest_df = get_nearest_strikes(opt_df, current_price, count=10).copy()
+            closest_df = get_nearest_strikes(opt_df, options_reference_price, count=10).copy()
             evidence_df = closest_df.drop(columns=["distance"], errors="ignore").copy()
 
             # Presentation-only evidence markers: reuse existing analyzer/derived outputs.
