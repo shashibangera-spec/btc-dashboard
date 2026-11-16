@@ -229,11 +229,35 @@ def render_live_dashboard():
         status = result.get("status", "UNAVAILABLE")
         reason = result.get("reason")
         return f"{status} ({reason})" if reason else status
+
+    # Explicitly separate the live Binance candle reference from the options
+    # snapshot-local spot. All timestamps are emitted in ISO-8601 UTC form.
+    report_generated_at_utc = datetime.datetime.now(timezone.utc).isoformat()
+    live_binance_candle_close_utc = pd.to_datetime(
+        completed_df.iloc[-1]["close_time"], unit="ms", utc=True, errors="coerce"
+    )
+    live_binance_candle_close_text = (
+        live_binance_candle_close_utc.isoformat()
+        if pd.notna(live_binance_candle_close_utc) else "N/A"
+    )
+    options_snapshot_id = (
+        opt_forensics.get("snapshot_id", "N/A")
+        if opt_forensics and opt_forensics.get("status") == "OK" else "N/A"
+    )
+    options_snapshot_completed_at = (
+        opt_forensics.get("timestamp", "N/A")
+        if opt_forensics and opt_forensics.get("status") == "OK" else "N/A"
+    )
+    options_snapshot_spot = (
+        opt_forensics.get("spot_price")
+        if opt_forensics and opt_forensics.get("status") == "OK" else None
+    )
     report_text = f"""--- BTC TERMINAL LIVE REPORT ---
-Time (UTC): {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}
+Report Generated At (UTC): {report_generated_at_utc}
 
 [AMT COCKPIT]
-Current Price: USD {float(current_price):,.2f}
+Live Binance Price (AMT market reference): USD {float(current_price):,.2f}
+Live Binance Candle Close Timestamp (UTC): {live_binance_candle_close_text}
 AMT State: {report_shadow_state.get('confirmed_state') or 'N/A'}
 Developing State: {report_shadow_state.get('developing_state') or 'N/A'}
 Project Echo: {report_shadow_state.get('project_echo_code') or 'N/A'} / {report_shadow_state.get('project_echo_name') or 'N/A'} (v{report_shadow_state.get('project_echo_version') or 'N/A'})
@@ -252,9 +276,14 @@ Weighted Basis: {f'{float(layer2_data["basis_pct"]):+.4f}%' if layer2_data.get('
 Weighted Funding: {f'{float(layer2_data["funding_rate"]):+.4f}%' if layer2_data.get('funding_rate') is not None else 'N/A'}
 Exchange Coverage: {layer2_data.get('coverage', 'UNKNOWN')}
 
-[OPTIONS RESEARCH]
-Expiry: {report_options.get('expiry_date') or 'N/A'}
-Options Metric Status: {report_options.get('status', 'N/A')}
+[OPTIONS RESEARCH — CANONICAL PINNED SNAPSHOT]
+Options Snapshot ID: {options_snapshot_id}
+Options Expiry: {report_options.get('expiry_date') or opt_forensics.get('expiry_date', 'N/A') if opt_forensics else 'N/A'}
+Options Snapshot-Local Spot Price: {f'USD {float(options_snapshot_spot):,.2f}' if options_snapshot_spot is not None else 'N/A'}
+Options Snapshot Run Completed At (UTC): {options_snapshot_completed_at}
+Options Source Collection Timestamp (UTC): {report_options.get('source_collected_at') or 'N/A'}
+Options Derived Metrics Calculated At (UTC): {report_options.get('calculated_at') or 'N/A'}
+Options Derived Metrics Status: {report_options.get('status', 'N/A')}
 Max Pain (theoretical): {f'USD {float(report_options["max_pain_strike"]):,.0f}' if report_options.get('max_pain_strike') is not None else 'N/A'}
 ATM Straddle: {f'USD {float(report_options["atm_straddle_price"]):,.2f}' if report_options.get('atm_straddle_price') is not None else 'N/A'}
 ATM Straddle (% Spot): {f'{float(report_options["atm_straddle_pct_spot"]):.2f}%' if report_options.get('atm_straddle_pct_spot') is not None else 'N/A'}
