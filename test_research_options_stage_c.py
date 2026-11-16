@@ -56,3 +56,20 @@ def test_dashboard_map_does_not_fill_missing_oi_and_uses_pinned_snapshot_spot():
     assert "options_metrics.get(\"max_pain_strike\")" in raw_code
     assert "options_metrics.get(\"atm_strike\")" in raw_code
     assert "opt_forensics.get(\"expiry_date\")" in source
+
+def test_raw_chain_and_derived_annotations_share_one_canonical_selection():
+    source = Path("btc_live_research_dashboard.py").read_text(encoding="utf-8")
+    fetch_start = source.index("def fetch_options_forensics():")
+    fetch_end = source.index("@st.cache_data(ttl=120)", fetch_start)
+    fetch_code = source[fetch_start:fetch_end]
+    assert "snapshot.snapshot_id, snapshot.expiry_date, raw=snapshot.raw" in fetch_code
+    assert '"metrics": canonical["derived"]' in fetch_code
+    assert '"expiry_date": snapshot.expiry_date' in fetch_code
+    assert '"spot_price": snapshot.spot_price' in fetch_code
+    premium_query_start = source.index("premium = client.table")
+    premium_query_end = source.index("if premium.data:", premium_query_start)
+    premium_query = source[premium_query_start:premium_query_end]
+    assert '.eq("snapshot_id", snapshot_id)' in premium_query
+    assert '.eq("expiry_date", expiry_date)' in premium_query
+    assert 'options_metrics.get("max_pain_strike")' in source
+    assert 'options_metrics.get("atm_strike")' in source
