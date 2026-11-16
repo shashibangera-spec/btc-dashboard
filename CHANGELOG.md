@@ -263,6 +263,14 @@ Minor formatting-only changes generally do not require a changelog entry unless 
 
 
 
+### Corrected — Descriptive IV Skew and Sampled Taker Activity
+
+- Removed the IV Skew ±5% classification threshold and the `BULLISH_URGENCY`, `BEARISH_URGENCY`, and `NEUTRAL` labels. The backend now exposes the continuous relative Call IV premium as `metric = CALL_IV_PREMIUM` and `call_iv_premium_pct`.
+- Removed `AGGRESSIVE_BUYING`, `AGGRESSIVE_SELLING`, and `NEUTRAL_FLOW` from Sampled Taker Activity. The backend now exposes sampled buy volume, sampled sell volume, buy-minus-sell balance, and percentage balance (NULL when total sampled volume is zero).
+- Updated System B and the Research Dashboard to display the descriptive metrics without bullish/bearish green/red styling. Existing layout, CSS, snapshot selection, null-preservation, Nearby OI, 24h Volume/OI and OI Migration logic remain unchanged.
+- Added backend and dashboard regression coverage for continuous IV values, raw sampled taker metrics, partial-data handling and neutral UI output.
+- This is a measurement/presentation correction only. No directional prediction, alert, trade signal, database migration, collector or persistence change is introduced.
+
 ### Added — isolated Options Filters backend (Stage 2)
 
 - Added `options_filters.py` with a read-only Canonical Snapshot Selector, shared raw-chain validation, null-preserving aggregation and five independent calculators (Nearby OI, IV Skew, 24h Volume / OI, OI Migration and Sampled Taker Trade Activity).
