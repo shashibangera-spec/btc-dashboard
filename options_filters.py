@@ -350,23 +350,31 @@ def calculate_oi_migration(snapshot: CanonicalSnapshot) -> dict:
 
 
 def calculate_taker_activity(snapshot: CanonicalSnapshot) -> dict:
-    chain = _nearest(_aggregate_chain(snapshot.raw), snapshot.spot_price)
-    if chain.empty:
+    # Validate every raw contract at the five nearest strikes before summing.
+    # A populated Put must not hide a missing Call observation at the same strike.
+    nearest = _nearest(_aggregate_chain(snapshot.raw), snapshot.spot_price)
+    if nearest.empty:
         return _result("Sampled Taker Trade Activity", "UNAVAILABLE", snapshot, reason="NO_DATA")
+    selected_strikes = set(nearest["strike_price"].tolist())
+    sample = snapshot.raw.copy()
+    sample["strike_price"] = pd.to_numeric(sample["strike_price"], errors="coerce")
+    sample = sample[sample["strike_price"].isin(selected_strikes)]
     fields = ["taker_buy_volume", "taker_sell_volume"]
-    if chain[fields].isna().any().any():
+    for field in fields:
+        sample[field] = pd.to_numeric(sample[field], errors="coerce")
+    if sample.empty or sample[fields].isna().any().any():
         return _result("Sampled Taker Trade Activity", "PARTIAL", snapshot,
                        reason="INCOMPLETE_NEAREST_STRIKE_TAKER_SAMPLE",
-                       buy_observations=int(chain[fields[0]].count()),
-                       sell_observations=int(chain[fields[1]].count()))
-    buy, sell = float(chain[fields[0]].sum()), float(chain[fields[1]].sum())
+                       buy_observations=int(sample[fields[0]].count()),
+                       sell_observations=int(sample[fields[1]].count()),
+                       sample_strikes=sorted(selected_strikes))
+    buy, sell = float(sample[fields[0]].sum()), float(sample[fields[1]].sum())
     status = "NEUTRAL_FLOW"
     if buy > sell * 1.3 and buy > 10: status = "AGGRESSIVE_BUYING"
     elif sell > buy * 1.3 and sell > 10: status = "AGGRESSIVE_SELLING"
     return _result("Sampled Taker Trade Activity", "OK", snapshot,
                    classification=status, taker_buy=buy, taker_sell=sell,
-                   sample_strikes=chain["strike_price"].tolist())
-
+                   sample_strikes=sorted(selected_strikes))
 
 def calculate_all_filters(snapshot: CanonicalSnapshot) -> dict:
     """Isolate each calculator so one failure cannot suppress the other four."""
