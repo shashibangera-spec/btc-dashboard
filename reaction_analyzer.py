@@ -167,8 +167,10 @@ def calculate_reaction(anchor_price, candles, window_end):
     horizon_closes = [candles[index]["close"] for index in (0, 1, 3, 7)]
     window_high = max(row["high"] for row in candles)
     window_low = min(row["low"] for row in candles)
-    max_up_usd = window_high - anchor_price
-    max_down_usd = window_low - anchor_price
+    # Excursions are floored at zero on the non-occurring side.
+    # max_down remains signed (zero or negative) for neutral reporting.
+    max_up_usd = max(0.0, window_high - anchor_price)
+    max_down_usd = min(0.0, window_low - anchor_price)
     first_open = datetime.fromtimestamp(candles[0]["open_time_ms"] / 1000, tz=timezone.utc)
 
     return {
@@ -219,19 +221,27 @@ def build_incomplete_result(candles, window_end, reason):
     }
 
 
-def load_existing_signal_ids(client):
+def load_existing_complete_signal_ids(client):
+    # COMPLETE rows are final for this analysis version.
+    # INCOMPLETE rows are retried on the next daily run so a temporary
+    # exchange-data gap cannot permanently suppress a valid analysis.
     existing = set()
     offset = 0
     while True:
         response = (
             client.table(REACTION_TABLE)
-            .select("signal_id")
+            .select("signal_id,analysis_status")
             .eq("analysis_version", VERSION)
+            .eq("analysis_status", "COMPLETE")
             .range(offset, offset + PAGE_SIZE - 1)
             .execute()
         )
         rows = response.data or []
-        existing.update(int(row["signal_id"]) for row in rows if row.get("signal_id") is not None)
+        existing.update(
+            int(row["signal_id"])
+            for row in rows
+            if row.get("signal_id") is not None
+        )
         if len(rows) < PAGE_SIZE:
             break
         offset += PAGE_SIZE
@@ -283,11 +293,11 @@ def main():
     print(f"[START] {iso_utc(run_time)} | version={VERSION}")
     print(f"[FILTER] event_timestamp <= {iso_utc(cutoff)}")
 
-    existing_ids = load_existing_signal_ids(client)
+    existing_ids = load_existing_complete_signal_ids(client)
     eligible = load_eligible_signals(client, cutoff)
     pending = [row for row in eligible if int(row["id"]) not in existing_ids]
 
-    print(f"[QUEUE] eligible={len(eligible)} already_analyzed={len(existing_ids)} pending={len(pending)}")
+    print(f"[QUEUE] eligible={len(eligible)} already_complete={len(existing_ids)} pending={len(pending)}")
     complete = incomplete = skipped = failed = 0
 
     for signal in pending:
