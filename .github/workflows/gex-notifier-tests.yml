@@ -15,7 +15,10 @@ on:
       - "fix/gex-telegram-journal-outbox"
     paths:
       - "telegram_alerts.py"
+      - "signal_detector.py"
+      - "btc_live_dashboard.py"
       - "test_gex_notifier.py"
+      - "test_oi_shock_context.py"
       - ".github/workflows/gex-notifier-tests.yml"
 
 permissions:
