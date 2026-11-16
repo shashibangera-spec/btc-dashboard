@@ -174,8 +174,8 @@ def build_gex_alert(row):
     direction = "ABOVE CALL" if side == "CALL" else "BELOW PUT"
     message = (
         f"⚠️ GEX WALL BREACH — PRICE CLOSED {direction} CONCENTRATION\n\n"
-        f"Confirmation close: $\{confirmation_price:,.2f}\n"
-        f"Breached wall: $\{breached_level:,.2f}\n"
+        f"Confirmation close: ${confirmation_price:,.2f}\n"
+        f"Breached wall: ${breached_level:,.2f}\n"
         f"Expiry: {details['expiry_date']}\n"
         f"Confirmed: {details['confirmation_close_timestamp']}"
     )
