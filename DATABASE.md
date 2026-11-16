@@ -371,7 +371,7 @@ Stores versioned, non-directional market reaction measurements linked to the imm
 |---|---|
 | `id` | UUID primary key |
 | `signal_id` | BIGINT foreign key to the original signal |
-| `analysis_version` | Calculation version, initially `reaction-v1.0` |
+| `analysis_version` | Calculation version, current `reaction-v1.1`; prior `reaction-v1.0` identifies the Binance Spot methodology |
 | `anchor_price` | Original signal journal price |
 | `window_start`, `window_end` | First eligible candle open and event-relative four-hour deadline |
 | `price_after_30m`, `price_after_1h`, `price_after_2h`, `price_after_4h` | Completed candle close at each horizon |
@@ -388,7 +388,11 @@ Stores versioned, non-directional market reaction measurements linked to the imm
 ## Calculation and eligibility contract
 
 - Anchor price is `system_signal_journal.price`; the journal itself is never updated.
-- Source is Binance Spot `BTCUSDT`, interval `30m`.
+- Current source is Delta Exchange India `BTCUSD` perpetual, interval `30m`, via `/v2/history/candles` with `resolution=30m` and Unix-second `start`/`end` parameters.
+- Delta response candle fields are normalized to the analyzer's `open_time_ms`, `open`, `high`, `low`, `close`, and `close_time_ms` representation.
+- Delta `time` is treated as the candle open time; eight bars are requested in one four-hour range (well below the documented 2,000-candle response cap, so pagination is unnecessary).
+- The journal anchor comes from the BTCUSDT AMT feed while the current reaction bars are BTCUSD perpetual. Venue/contract basis differences are a measurement limitation and must be disclosed in downstream statistical evaluation.
+- `reaction-v1.0` refers to the original Binance Spot BTCUSDT method; `reaction-v1.1` is the Delta BTCUSD perpetual method. Do not pool versions without an explicit methodology/basis review.
 - Eligible candles must open strictly after `event_timestamp`, be fully closed, and close no later than `event_timestamp + 4 hours`.
 - Exactly eight contiguous candles are required. The event candle is excluded.
 - Horizon prices use the closes of candles 1, 2, 4 and 8; a complete eight-candle window therefore requires the event to align with the 30-minute close boundary.
