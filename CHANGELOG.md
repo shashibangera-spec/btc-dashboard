@@ -12,6 +12,15 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ## 2026-11-16
 
+### Fixed — Fast Dashboard Supabase environment configuration
+
+- Changed the Options Filters fetch integration to read `SUPABASE_URL` and its key from process environment variables rather than app-specific Streamlit secrets.
+- Uses `SUPABASE_ANON_KEY` first, with `SUPABASE_SERVICE_ROLE_KEY` as a fallback when the anon key is not configured; credential values are never logged.
+- Missing configuration now returns a clear `UNAVAILABLE / MISSING_SUPABASE_ENV` result and writes only the missing variable names to the server log.
+- Added regression checks for environment-based credential lookup, service-role fallback order and fail-closed behavior.
+- No filter formulas, CSS, UI layout, panel rendering, AMT or Futures logic changed.
+
+
 ### Fixed — Options Filters database-boundary diagnostics
 
 - Added explicit required-key validation for collection-run, derived-snapshot and raw option-contract records before processing; missing fields now return a structured `UNAVAILABLE / MISSING_REQUIRED_COLUMNS` selection result with source table, exact missing columns and record indexes.
