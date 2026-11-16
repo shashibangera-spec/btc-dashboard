@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-17
+
+### Documentation — Prior Value overlap regime added to OI research architecture
+
+- Added a mathematical Value Area overlap framework comparing each completed Developing Value Area with its frozen Prior Value Area. Prior-Value Coverage % is the primary measure; Developing-Value Coverage % and symmetric Intersection-over-Union are retained as diagnostics.
+- Added provisional high-overlap (candidate Balance), intermediate and low-overlap (candidate Value Migration) research buckets, with sensitivity testing and no claim that the cutoffs are universal AMT constants.
+- Split the Futures OI breach research into two conditional studies: in high-overlap environments, compare 30-minute OI change with prior-day and 3-/7-day OI changes for absorption-candidate outcomes; in low-overlap environments, test 30-minute OI change at VAL/VAH edges against continuation versus failed-auction outcomes.
+- Added continuous breach-depth normalization by Prior Value width and ATR, plus strict as-of AMT alignment, stable contributor coverage, non-overlapping episode handling, and explicit outcome definitions.
+- Explicitly documents balance/trend and OI-predictor relationships as hypotheses for empirical testing, not established rules or directional signals.
+- Documentation-only change. No production code, database schema, collector, workflow, dashboard, alert or CSS behavior changed.
+
+
 All notable production architecture, infrastructure, database-contract and significant behavior changes are recorded here.
 
 The project follows the Documentation Contract:
