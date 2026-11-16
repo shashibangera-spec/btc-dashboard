@@ -194,3 +194,12 @@ Minor formatting-only changes generally do not require a changelog entry unless 
 - OI Migration uses the immediately preceding eligible successful snapshot for the same expiry only when the full contract identity universe matches; elapsed time is reported.
 - Calculator failures are isolated. No database migration, new persistence, collector, scheduler, Fast Dashboard UI, AMT code or Futures code is included.
 - Added offline tests in `test_options_filters.py` and GitHub Actions workflow `.github/workflows/options-filters-tests.yml`.
+
+### Added — Options Filters Fast Dashboard integration (Stage 3)
+
+- Integrated the five existing Options Filters outputs into System B (`btc_live_dashboard.py`) using the shared `options_filters.py` backend: Nearby OI, IV Skew, 24h Volume / OI, OI Migration and Sampled Taker Trade Activity.
+- Added a collapsible Streamlit expander after the Futures panel. The integration preserves the established **AMT → Futures → Options** information hierarchy and leaves AMT/Futures logic and calculations unchanged.
+- Added a cached Supabase fetch/calculation wrapper with a **180-second Streamlit cache TTL**.
+- The UI renders validated backend outputs only; it does not duplicate filter formulas or thresholds. Unavailable results are handled gracefully, without fallback to a different snapshot.
+- Added `test_fast_dashboard_options_ui.py` and `.github/workflows/fast-dashboard-options-ui.yml` to check UI integration boundaries, panel placement, backend-only sourcing, caching and preservation of the existing dashboard styling.
+- No database schema migration, new persistence, collector, scheduler, AMT logic or Futures logic was introduced by this UI integration.
