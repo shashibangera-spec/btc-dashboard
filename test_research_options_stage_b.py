@@ -89,13 +89,15 @@ def test_ai_report_includes_full_options_and_live_price_provenance_without_layou
         "Options Expiry:",
         "Options Snapshot-Local Spot Price:",
         "Options Snapshot Run Completed At (UTC):",
-        "Options Source Collection Timestamp (UTC):",
+        "Options Raw Contract Collection Time Range (UTC):",
+        "Options Derived Source Collection Timestamp (UTC):",
         "Options Derived Metrics Calculated At (UTC):",
         "Live Binance Price (AMT market reference):",
         "Live Binance Candle Close Timestamp (UTC):",
     )
     for field in required:
         assert field in source
+    assert "opt_forensics.get('raw_collected_at_min'" in source
     assert "report_options.get('source_collected_at')" in source
     assert "report_options.get('calculated_at')" in source
     assert 'st.expander("📋 Copy/Paste Text Report for AI"' in source
