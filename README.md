@@ -71,7 +71,16 @@ Its information hierarchy remains:
 
 **AMT structure → Futures context → Options context**
 
-The current visually optimized System B UI is a frozen baseline. It includes the custom terminal skin, CSS hero header, visual Value Area ladder, side-by-side context charts and terminal-styled expanders.
+The current visually optimized System B UI retains its established terminal skin, CSS hero header, visual Value Area ladder and side-by-side context charts. The Options Filters integration is an additive panel and does not redesign the existing UI.
+
+### Options Filters — Stage 3 Fast Dashboard integration
+
+The five Options Filters research outputs are now integrated into System B through a collapsible Streamlit expander positioned after the Futures panel. The panel presents Nearby OI, IV Skew, 24h Volume / OI, OI Migration and Sampled Taker Trade Activity as separate research measurements.
+
+- The UI consumes the validated results from the shared `options_filters.py` backend; filter formulas and classifications are not reimplemented in the dashboard.
+- The Supabase fetch/calculation wrapper uses Streamlit data caching with a **180-second TTL**.
+- If the selected snapshot or an individual filter is unavailable, the panel handles that result without substituting an older snapshot or disrupting the rest of the dashboard.
+- The integration preserves the existing information hierarchy: **AMT structure → Futures context → Options context**. The five filters are an additional Options-context layer; they do not alter AMT or Futures calculations, state logic or presentation.
 
 ### Division of labor for future System B changes
 
