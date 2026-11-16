@@ -7,7 +7,10 @@ import json
 from datetime import timezone
 from supabase import create_client
 from amt_core import fetch_binance_data
-from research_options_adapter import (\n    load_canonical_research_options, parse_optional_float, validated_prior_values,\n    pivot_option_metric, aggregate_taker_volumes, nearest_strikes_by_reference,\n)
+from research_options_adapter import (
+    load_canonical_research_options, parse_optional_float, validated_prior_values,
+    pivot_option_metric, aggregate_taker_volumes, nearest_strikes_by_reference,
+)
 
 st.set_page_config(page_title="BTC Combined Research", layout="wide")
 st.title("🔬 BTC Combined Research Terminal")
@@ -160,24 +163,6 @@ def fetch_options_forensics():
 @st.cache_data(ttl=120)
 def get_cached_binance_data():
     return fetch_binance_data()
-
-# --- OPTIONS CLASSIFIERS (With Semantic Guards) ---
-def get_nearest_strikes(df, current_price, count=5):
-    if df is None or df.empty or 'strike_price' not in df.columns:
-        return pd.DataFrame()
-    try:
-        price = float(current_price)
-    except (TypeError, ValueError, OverflowError):
-        return pd.DataFrame()
-    if not np.isfinite(price):
-        return pd.DataFrame()
-    df_copy = df.copy()
-    df_copy['strike_price'] = pd.to_numeric(df_copy['strike_price'], errors='coerce')
-    df_copy = df_copy[np.isfinite(df_copy['strike_price'])]
-    if df_copy.empty:
-        return pd.DataFrame()
-    df_copy['distance'] = abs(df_copy['strike_price'] - price)
-    return df_copy.nsmallest(count, 'distance').sort_values('strike_price')
 
 # --- AMT ENGINE ---
 @st.cache_data(ttl=120, show_spinner=False)
@@ -676,7 +661,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
         if opt_forensics and opt_forensics.get("status") == "OK" and opt_df is not None:
             # Raw chain and every annotation below share this one pinned
             # snapshot/expiry and its matching derived metrics.
-            closest_df = get_nearest_strikes(opt_df, options_reference_price, count=10).copy()
+            closest_df = nearest_strikes_by_reference(opt_df, options_reference_price, count=10).copy()
             evidence_df = closest_df.drop(columns=["distance"], errors="ignore").copy()
 
             # Presentation-only evidence markers: reuse existing analyzer/derived outputs.
