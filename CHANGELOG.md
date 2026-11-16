@@ -141,3 +141,14 @@ Minor formatting-only changes generally do not require a changelog entry unless 
 ### Research methodology guardrail
 
 - Documented that multiple signal types can originate from one completed candle and share the same reaction window. Future edge evaluation must distinguish event-row counts from unique event-time clusters to avoid overstating the independent sample size.
+
+
+### Reaction Analyzer data-source migration — `reaction-v1.1`
+
+- Replaced Binance Spot OHLC requests (which returned HTTP 451 from GitHub Actions) with Delta Exchange India `GET /v2/history/candles`.
+- Uses `resolution=30m`, `symbol=BTCUSD` (Delta India perpetual market), and Unix-second `start`/`end` parameters.
+- Normalizes Delta's `time`, `open`, `high`, `low`, and `close` fields into the analyzer's common candle structure.
+- Retains strict event-candle exclusion, eight contiguous completed bars, four-hour deadline, and standard UTC 30-minute boundary validation.
+- The four-hour request needs only eight candles, below the endpoint's 2,000-candle response limit; no pagination is needed for this analysis window.
+- Bumped the analysis version to `reaction-v1.1` so Delta-based observations are distinct from the prior `reaction-v1.0` Binance Spot methodology.
+- Documented the cross-market limitation: journal anchor from the BTCUSDT AMT feed, reaction OHLC from Delta BTCUSD perpetual. Do not pool versions or treat the result as executable P&L without explicit basis/methodology validation.
