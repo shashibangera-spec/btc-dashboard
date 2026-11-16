@@ -95,6 +95,17 @@ def process_options_snapshot(client, snapshot_id, expiry_date, raw=None):
         df = pd.DataFrame(chain.data)
     else:
         df = raw.copy()
+        # Premium is a presentation-only field not consumed by the canonical filters.
+        # Fetch it separately, but constrain it to the already-pinned snapshot + expiry.
+        premium = client.table("options_oi_snapshots").select(
+            "product_id, symbol, option_type, strike_price, mark_price"
+        ).eq("snapshot_id", snapshot_id).eq("expiry_date", expiry_date).execute()
+        if premium.data:
+            premium_df = pd.DataFrame(premium.data)
+            identity = ["product_id", "symbol", "option_type", "strike_price"]
+            df = df.merge(premium_df, on=identity, how="left", validate="one_to_one")
+        else:
+            df["mark_price"] = np.nan
     if df.empty: return None
     
     pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
