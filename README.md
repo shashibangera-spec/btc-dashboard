@@ -98,6 +98,11 @@ The five Options Research cards now consume the validated filter results produce
 
 The OI Concentration Map and Raw Options Chain now share the Stage A canonical snapshot's pinned expiry and spot. Both views select the ten nearest strikes through the shared adapter selector. The OI map retains null OI values, distinguishes missing values from observed zero, and does not fill missing OI with zero. Raw table aggregation also preserves all-null OI, USD OI, volume and taker groups as missing. Derived annotations are sourced from the matching canonical derived record. Existing chart/table presentation and dashboard layout remain unchanged.
 
+
+### Research Dashboard — Stage D AI report provenance and final verification
+
+The copy/paste AI report identifies the exact pinned options snapshot ID, expiry, snapshot-local spot, run completion time, raw-contract collection time range, derived source-collection timestamp and derived calculation timestamp. It separately identifies the live Binance market price and its completed candle close timestamp; these values are not interchangeable. All source timestamps are explicitly UTC. An offline parity regression executes the Fast Dashboard loader and Research Dashboard adapter against the same fixture snapshot and requires exact equality for all five filter result dictionaries and their pinned snapshot identity. Stage D does not modify AMT or Futures calculations, formulas, CSS or dashboard layout.
+
 ### Division of labor for future System B changes
 
 - **ChatGPT:** backend logic, APIs, GEX/AMT calculations, database infrastructure, Telegram alerts and minor Python/dataframe changes.

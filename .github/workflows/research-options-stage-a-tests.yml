@@ -13,7 +13,7 @@ on:
   push:
     branches:
       - main
-      - "feature/research-dashboard-oi-map-raw-table-stage-c"
+      - "feature/research-dashboard-ai-report-parity-stage-d"
     paths:
       - "btc_live_research_dashboard.py"
       - "research_options_adapter.py"
@@ -38,7 +38,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "pandas>=2.1.0" numpy pytest
-      - name: Run Stage A, Stage B and Stage C regression tests
+      - name: Run Stage A through Stage D regression tests
         run: pytest -q test_research_options_stage_a.py test_research_options_stage_b.py test_research_options_stage_c.py test_options_filters.py
       - name: Compile Research Dashboard modules
-        run: python -m py_compile btc_live_research_dashboard.py research_options_adapter.py options_filters.py
+        run: python -m py_compile btc_live_research_dashboard.py btc_live_dashboard.py research_options_adapter.py options_filters.py
