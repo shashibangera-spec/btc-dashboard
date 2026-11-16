@@ -7,6 +7,7 @@ import datetime
 import math
 import logging
 import os
+import json
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import timezone, timedelta
@@ -338,6 +339,77 @@ def fetch_futures_context():
         return None, None, None, None
     except Exception:
         return None, None, None, None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_futures_oi_context():
+    """Fetch aggregate OI and its as-of confirmed AMT context for display only."""
+    unavailable = {"status": "UNAVAILABLE"}
+    try:
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        if not url or not key:
+            return unavailable
+        client = create_client(url, key)
+        response = (client.table("futures_oi_snapshots")
+            .select("created_at,oi_usd,status").eq("exchange", "AGGREGATE")
+            .order("created_at", desc=True).limit(20).execute())
+        observations = []
+        for row in response.data or []:
+            try:
+                status = row.get("status")
+                if isinstance(status, str):
+                    status = json.loads(status)
+                if not isinstance(status, dict):
+                    status = {}
+                contributors = (status.get("coverage") or {}).get("contributors")
+                if not isinstance(contributors, list):
+                    contributors = status.get("oi_contributors", [])
+                contributors = sorted({str(v).upper() for v in contributors if v})
+                observed_at = parse_timestamp(status.get("collected_at"))
+                oi_value = float(row.get("oi_usd"))
+                if observed_at is None or not np.isfinite(oi_value) or oi_value <= 0 or not contributors:
+                    continue
+                observations.append({"observed_at": observed_at, "oi_usd": oi_value, "contributors": contributors})
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        observations.sort(key=lambda item: item["observed_at"])
+        if not observations:
+            return unavailable
+        current = observations[-1]
+        baseline = None
+        interval_minutes = None
+        for previous in observations[:-1]:
+            age = (current["observed_at"] - previous["observed_at"]).total_seconds() / 60.0
+            if 25.0 <= age <= 35.0 and previous["contributors"] == current["contributors"]:
+                if baseline is None or abs(age - 30.0) < abs(interval_minutes - 30.0):
+                    baseline, interval_minutes = previous, age
+        change_pct = None
+        direction = "N/A"
+        if baseline is not None:
+            change_pct = ((current["oi_usd"] / baseline["oi_usd"]) - 1.0) * 100.0
+            direction = "EXPANDING" if change_pct > 0 else "CONTRACTING" if change_pct < 0 else "UNCHANGED"
+        amt_response = (client.table("amt_snapshots")
+            .select("candle_close_time,close_price,prior_vah,prior_val,confirmed_state")
+            .eq("exchange", "BINANCE").eq("symbol", "BTCUSDT").eq("timeframe", "30")
+            .eq("data_status", "VALID").lte("candle_close_time", current["observed_at"].isoformat())
+            .order("candle_close_time", desc=True).limit(1).execute())
+        amt_rows = amt_response.data or []
+        amt = amt_rows[0] if amt_rows else {}
+        try:
+            price, vah, val = float(amt.get("close_price")), float(amt.get("prior_vah")), float(amt.get("prior_val"))
+            valid = all(np.isfinite(v) for v in (price, vah, val)) and vah >= val
+        except (TypeError, ValueError):
+            valid = False
+        location = ("ABOVE_VAH" if price > vah else "BELOW_VAL" if price < val else "INSIDE_VALUE") if valid else "LOCATION_UNAVAILABLE"
+        return {"status": "OK", "oi_usd": current["oi_usd"], "change_pct": change_pct,
+            "direction": direction, "interval_minutes": interval_minutes,
+            "coverage": current["contributors"], "observed_at": current["observed_at"].isoformat(),
+            "price_location": location, "amt_state": amt.get("confirmed_state") or "AMT_STATE_UNAVAILABLE"}
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Futures OI context unavailable: %s", exc)
+        return unavailable
+
 
 @st.cache_data(ttl=180, show_spinner=False)
 def fetch_options_filter_results():
@@ -1173,6 +1245,28 @@ def _render_dashboard():
         unsafe_allow_html=True,
     )
     st.markdown('<div class="foot">Independent dashboard classification; not a prediction or a replacement for the locked Pine AMT reference.</div>', unsafe_allow_html=True)
+
+    # ---------- FUTURES OI CONTEXT — descriptive only ----------
+    oi_context = fetch_futures_oi_context()
+    st.markdown("**Futures OI Context**")
+    oi_context_cols = st.columns(4)
+    if oi_context.get("status") == "OK":
+        oi_context_cols[0].metric("Aggregate OI", "$" + format(oi_context["oi_usd"] / 1e6, ".2f") + "M")
+        oi_change = oi_context.get("change_pct")
+        oi_context_cols[1].metric("OI Change", f"{oi_change:+.2f}%" if oi_change is not None else "N/A",
+            oi_context.get("direction", "N/A") if oi_change is not None else "No comparable baseline", delta_color="off")
+        oi_context_cols[2].metric("Price Location", oi_context.get("price_location", "LOCATION_UNAVAILABLE"))
+        oi_context_cols[3].metric("Confirmed AMT State", oi_context.get("amt_state", "AMT_STATE_UNAVAILABLE"))
+        interval = oi_context.get("interval_minutes")
+        interval_text = f"{interval:.1f}m comparison" if interval is not None else "No matched 25–35m baseline"
+        st.caption("As-of aggregate OI observation · " + interval_text
+            + " · Coverage: " + ", ".join(oi_context.get("coverage", []))
+            + " · " + str(oi_context.get("observed_at", "timestamp unavailable"))
+            + " · Context only; no directional trading signal has been validated.")
+    else:
+        for column, label in zip(oi_context_cols, ("Aggregate OI", "OI Change", "Price Location", "Confirmed AMT State")):
+            column.metric(label, "N/A")
+        st.caption("Futures OI context unavailable; no values are inferred or zero-filled.")
     
     with st.expander("Prior value reference and provisional / forming profile"):
         x1, x2, x3 = st.columns(3)

@@ -147,7 +147,9 @@ A new breach cannot be logged until price has first returned inside the walls an
 
 Logged when aggregate Futures OI changes by **more than 3.0%** over a valid 25–35-minute comparison interval with **exactly matching exchange coverage**.
 
-OI remains non-directional context; the event records an abnormal measured change, not whether longs or shorts caused it.
+The event payload also records the latest valid completed AMT candle available as-of the OI observation: `price_location` (`ABOVE_VAH`, `BELOW_VAL`, or `INSIDE_VALUE`) and its `confirmed_state`. If no eligible AMT candle or valid Prior Value levels are available, location is `LOCATION_UNAVAILABLE`; the OI event is still retained. Missing confirmed state is `AMT_STATE_UNAVAILABLE`.
+
+This is a **context alert only**. OI expansion/contraction and AMT location do not establish which side initiated exposure, predict a bounce/drop, or constitute a validated directional trading signal. No directional OI rule has been validated.
 
 ### 4. `VALUE_MIGRATION`
 
@@ -177,7 +179,7 @@ The research journal and Telegram outbox have distinct responsibilities, but the
 
 - **GEX:** `GEX_WALL_BREACH` alerts read confirmed events from `system_signal_journal`; the notifier does not independently recompute GEX walls from options snapshots. Cutover eligibility uses `detected_at` (journal insertion/detection time), while `event_timestamp` remains the underlying market-event time.
 - **AMT:** `AMT_STATE_CHANGE` alerts still recompute locally from `amt_snapshots`.
-- **OI:** `OI_SHOCK` alerts still recompute locally from `futures_oi_snapshots`.
+- **OI:** `OI_SHOCK` alerts still recompute locally from `futures_oi_snapshots`; the message adds as-of AMT Price Location and confirmed AMT State as descriptive context only. Missing AMT context is labelled unavailable and does not suppress an otherwise valid OI event.
 - **`telegram_alert_events`:** remains the operational notification outbox for delivery status, deduplication and retry/audit state.
 
 Thus, GEX delivery is journal-driven while AMT and OI remain locally evaluated. Migrating AMT/OI to journal-driven delivery is a future consideration and is not part of the GEX notification correction. The research journal remains the canonical record of detected system events; the outbox records notification delivery.
