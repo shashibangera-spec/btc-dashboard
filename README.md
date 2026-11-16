@@ -364,3 +364,20 @@ Required GitHub Actions secrets: `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
 ### Statistical sample independence
 
 One completed 30-minute candle can generate more than one journal event type (for example, an AMT state transition and a Developing POC migration). Their reaction windows can therefore be identical or highly overlapping. For edge evaluation, report both event-type observations and unique underlying event-time clusters; do not count same-candle events as independent samples.
+
+
+## Options filters backend (isolated research module)
+
+**Files:** `options_filters.py`, `test_options_filters.py`
+
+The backend-only options research module exposes a canonical, read-only snapshot selector and five independently evaluated filters. It is intentionally not wired into System B or either Streamlit UI.
+
+- The selector pins one latest `SUCCESS` collection run, one future expiry with derived chain status `OK`, and raw contracts carrying the same `snapshot_id` and expiry. If the selected run/expiry/chain fails validation, it fails closed rather than falling back to older data.
+- Nearest-five selection uses the selected raw options snapshot's own `spot_price`, not a Binance candle close.
+- Aggregation preserves all-null groups as missing values. Filter-specific completeness checks distinguish missing observations from observed zero.
+- The five calculators preserve the existing research thresholds and classifications: Nearby OI, IV Skew, 24h Volume / OI, OI Migration, and Sampled Taker Trade Activity.
+- OI Migration uses the immediately preceding eligible successful snapshot for the same expiry only when its contract identity set matches; elapsed time is included.
+- Each calculator has an independent exception boundary. The module performs no writes, adds no tables, and creates no collection or scheduling workflow.
+- The taker measurement remains a sampled subset of available trade activity, not complete order flow.
+
+CI runs the offline backend regression suite through `.github/workflows/options-filters-tests.yml`.

@@ -185,3 +185,12 @@ Minor formatting-only changes generally do not require a changelog entry unless 
 - A production Supabase query confirmed five persisted `reaction-v1.1` rows (signal IDs 2–6), all with `analysis_status = COMPLETE` and `error_message = NULL`. The five pre-existing rows were not reprocessed during this run.
 - This verifies the live analyzer workflow, idempotent handling of already-analyzed signals, successful processing of the pending signal, and persistence to `signal_reaction_analysis`. No implementation or schema change was made as part of this verification record.
 
+
+
+### Added — isolated Options Filters backend (Stage 2)
+
+- Added `options_filters.py` with a read-only Canonical Snapshot Selector, shared raw-chain validation, null-preserving aggregation and five independent calculators (Nearby OI, IV Skew, 24h Volume / OI, OI Migration and Sampled Taker Trade Activity).
+- The selector pins the latest `SUCCESS` run, selected future expiry, `snapshot_id` and raw snapshot spot. Invalid selected data fails closed; it does not fall back to a different snapshot.
+- OI Migration uses the immediately preceding eligible successful snapshot for the same expiry only when the full contract identity universe matches; elapsed time is reported.
+- Calculator failures are isolated. No database migration, new persistence, collector, scheduler, Fast Dashboard UI, AMT code or Futures code is included.
+- Added offline tests in `test_options_filters.py` and GitHub Actions workflow `.github/workflows/options-filters-tests.yml`.
