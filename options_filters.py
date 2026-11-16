@@ -5,6 +5,7 @@ Supabase-compatible read client. All filter results retain source provenance.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import math
 from typing import Any, List, Optional, Tuple
