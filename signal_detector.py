@@ -126,7 +126,7 @@ def load_amt_history(client, now):
     response = (
         client.table(AMT_TABLE)
         .select(
-            "candle_open_time,candle_close_time,close_price,confirmed_state,"
+            "candle_open_time,candle_close_time,close_price,prior_vah,prior_val,confirmed_state,"
             "developing_state,developing_poc,developing_vah,developing_val,data_status"
         )
         .eq("exchange", "BINANCE")
@@ -305,11 +305,28 @@ def futures_oi_asof(futures_rows, event_time):
 
 
 def amt_row_asof(amt_rows, event_time):
+    """Return the latest valid completed AMT candle at or before event_time."""
     eligible = [
         row for row in amt_rows
         if parse_timestamp(row["candle_close_time"]) <= event_time
     ]
     return eligible[-1] if eligible else None
+
+
+def classify_amt_price_location(row):
+    """Classify the AMT candle close against its frozen Prior Value references."""
+    if not isinstance(row, dict):
+        return "LOCATION_UNAVAILABLE"
+    price = safe_float(row.get("close_price"))
+    vah = safe_float(row.get("prior_vah"))
+    val = safe_float(row.get("prior_val"))
+    if price is None or vah is None or val is None or vah < val:
+        return "LOCATION_UNAVAILABLE"
+    if price > vah:
+        return "ABOVE_VAH"
+    if price < val:
+        return "BELOW_VAL"
+    return "INSIDE_VALUE"
 
 
 def build_event_row(event_type, event_time, event_key, market_row,
@@ -458,17 +475,33 @@ def detect_oi_shock(futures_rows, amt_rows, options_rows):
 
     market_row = amt_row_asof(amt_rows, current_time)
     if market_row is None:
-        print("[OI] No AMT candle available as-of the OI observation; snapshot context unavailable.")
-        return None
+        print("[OI] No AMT candle available as-of the OI observation; context marked unavailable.")
+        market_row = {}
+
+    amt_state = market_row.get("confirmed_state") or "AMT_STATE_UNAVAILABLE"
+    price_location = classify_amt_price_location(market_row)
+    event_market_row = market_row or {
+        "close_price": None,
+        "confirmed_state": None,
+        "candle_close_time": None,
+        "developing_poc": None,
+        "developing_vah": None,
+        "developing_val": None,
+    }
 
     event = build_event_row(
         "OI_SHOCK",
         current_time,
         "AGGREGATE:" + ",".join(current["contributors"]),
-        market_row,
+        event_market_row,
         futures_rows,
         options_rows,
         {
+            "price_location": price_location,
+            "amt_state": amt_state,
+            "amt_candle_close_time": iso_utc(parse_timestamp(market_row.get("candle_close_time"))) if market_row.get("candle_close_time") else None,
+            "prior_vah": safe_float(market_row.get("prior_vah")),
+            "prior_val": safe_float(market_row.get("prior_val")),
             "previous_oi_usd": previous["oi_usd"],
             "current_oi_usd": current["oi_usd"],
             "change_pct": change_pct,
