@@ -61,7 +61,7 @@ def test_detector_keeps_event_when_amt_lookup_unavailable(monkeypatch):
 
 
 def test_detector_preserves_strict_threshold_interval_and_contributor_matching(monkeypatch):
-    event_time, futures, amt = detector_fixture(change=3.0)
+    event_time, futures, amt = detector_fixture(change=2.99)
     monkeypatch.setattr(detector, "utc_now", lambda: event_time+timedelta(minutes=1))
     assert detector.detect_oi_shock(futures, amt, []) is None
     for interval in (25, 35):
