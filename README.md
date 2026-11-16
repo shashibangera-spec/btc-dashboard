@@ -357,3 +357,8 @@ Excursions are measured relative to the event's journal price. The upside excurs
 The analysis version is `reaction-v1.0`. A future methodology change must use a new version rather than silently overwrite the meaning of historical observations.
 
 Required GitHub Actions secrets: `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. The service-role key is never exposed to System B.
+
+
+### Statistical sample independence
+
+One completed 30-minute candle can generate more than one journal event type (for example, an AMT state transition and a Developing POC migration). Their reaction windows can therefore be identical or highly overlapping. For edge evaluation, report both event-type observations and unique underlying event-time clusters; do not count same-candle events as independent samples.
