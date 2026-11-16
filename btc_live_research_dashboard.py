@@ -6,7 +6,8 @@ import datetime
 import json
 from datetime import timezone
 from supabase import create_client
-from amt_core import fetch_binance_data, calculate_tpo
+from amt_core import fetch_binance_data
+from research_options_adapter import load_canonical_research_options
 
 st.set_page_config(page_title="BTC Combined Research", layout="wide")
 st.title("🔬 BTC Combined Research Terminal")
@@ -41,8 +42,8 @@ def fetch_layer2_supabase_data():
             parsed_rows.append({
                 "time": timestamp, 
                 "oi": float(row.get("oi_usd")) if row.get("oi_usd") else None,
-                "funding": float(row.get("funding_rate")) if row.get("funding_rate") else None,
-                "basis": float(row.get("basis_pct")) if row.get("basis_pct") else None,
+                "funding": float(row.get("funding_rate")) if row.get("funding_rate") is not None else None,
+                "basis": float(row.get("basis_pct")) if row.get("basis_pct") is not None else None,
                 "contributors": set(status_json.get("oi_contributors", [])),
                 "coverage": status_json.get("coverage", {}).get("label", "UNKNOWN")
             })
@@ -85,13 +86,15 @@ def fetch_layer2_supabase_data():
     except Exception as exc:
         return {**empty_result, "status": f"ERROR: {exc}"}
 
-def process_options_snapshot(client, snapshot_id, expiry_date):
+def process_options_snapshot(client, snapshot_id, expiry_date, raw=None):
     # Keep the raw chain on one expiry. A collector snapshot contains many expiries;
     # grouping only by strike would incorrectly add OI and blend premiums across expiries.
-    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_price, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).eq("expiry_date", expiry_date).execute()
-    if not chain.data: return None
-    
-    df = pd.DataFrame(chain.data)
+    if raw is None:
+        chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_price, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).eq("expiry_date", expiry_date).execute()
+        if not chain.data: return None
+        df = pd.DataFrame(chain.data)
+    else:
+        df = raw.copy()
     if df.empty: return None
     
     pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
@@ -122,97 +125,27 @@ def process_options_snapshot(client, snapshot_id, expiry_date):
 
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_options_forensics():
+    """Load one canonical raw options snapshot and its matching derived expiry."""
     try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_ANON_KEY"]
-        client = create_client(url, key)
-        
-        runs = client.table("options_collection_runs").select("snapshot_id, completed_at").eq("status", "SUCCESS").order("completed_at", desc=True).limit(2).execute()
-        
-        if not runs.data or len(runs.data) < 2:
-            latest_run = client.table("options_collection_runs").select("snapshot_id, completed_at").eq("status", "SUCCESS").order("completed_at", desc=True).limit(1).execute()
-            snapshots = latest_run.data if latest_run.data else []
-        else:
-            snapshots = runs.data
-            
-        if not snapshots: return None
-        
-        latest_snapshot = snapshots[0]
-        previous_snapshot = snapshots[1] if len(snapshots) > 1 else None
-
-        # Use the same nearest valid expiry selected by the existing options metrics panel.
-        # Never combine multiple expiry chains into one strike-level OI/premium row.
-        selected_metrics = fetch_nearest_valid_options_metrics()
-        selected_expiry = selected_metrics.get("expiry_date") if selected_metrics else None
-        if not selected_expiry:
-            return {
-                "snapshot_id": latest_snapshot["snapshot_id"],
-                "timestamp": latest_snapshot["completed_at"],
-                "previous_timestamp": previous_snapshot["completed_at"] if previous_snapshot else None,
-                "expiry_date": None,
-                "data": None,
-                "previous_data": None,
-                "status": "NO_SELECTED_EXPIRY"
-            }
-
-        current_df = process_options_snapshot(client, latest_snapshot["snapshot_id"], selected_expiry)
-        previous_df = process_options_snapshot(client, previous_snapshot["snapshot_id"], selected_expiry) if previous_snapshot else None
-
+        client = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_ANON_KEY"])
+        canonical = load_canonical_research_options(client)
+        if canonical.get("status") != "OK":
+            return canonical
+        snapshot = canonical["snapshot"]
+        current_df = process_options_snapshot(client, snapshot.snapshot_id, snapshot.expiry_date, raw=snapshot.raw)
+        previous_df = (
+            process_options_snapshot(client, snapshot.previous_snapshot_id, snapshot.expiry_date, raw=snapshot.previous_raw)
+            if snapshot.previous_raw is not None else None
+        )
         return {
-            "snapshot_id": latest_snapshot["snapshot_id"],
-            "timestamp": latest_snapshot["completed_at"],
-            "previous_timestamp": previous_snapshot["completed_at"] if previous_snapshot else None,
-            "expiry_date": selected_expiry,
-            "data": current_df,
-            "previous_data": previous_df
+            "status": "OK", "snapshot_id": snapshot.snapshot_id,
+            "timestamp": snapshot.completed_at, "previous_snapshot_id": snapshot.previous_snapshot_id,
+            "previous_timestamp": snapshot.previous_completed_at, "expiry_date": snapshot.expiry_date,
+            "spot_price": snapshot.spot_price, "metrics": canonical["derived"],
+            "data": current_df, "previous_data": previous_df,
         }
-    except Exception as e:
-        return {"error": str(e)}
-
-@st.cache_data(ttl=120, show_spinner=False)
-def fetch_nearest_valid_options_metrics():
-    """Latest collector run, then nearest future expiry with a complete source chain."""
-    empty = {"status": "NO_DERIVED_METRICS", "expiry_date": None, "metric_status": {}}
-    try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_ANON_KEY"]
-        client = create_client(url, key)
-        runs = client.table("options_collection_runs").select(
-            "snapshot_id, completed_at, status"
-        ).in_("status", ["SUCCESS", "PARTIAL"]).order("completed_at", desc=True).limit(1).execute()
-        if not runs.data:
-            return empty
-        run = runs.data[0]
-        derived = client.table("options_derived_snapshots").select(
-            "snapshot_id,expiry_date,calculated_at,source_collected_at,underlying_spot_price,"
-            "max_pain_strike,atm_strike,atm_straddle_price,atm_straddle_pct_spot,"
-            "call_gex_wall_strike,call_gex_wall_value,put_gex_wall_strike,put_gex_wall_value,"
-            "gex_contract_multiplier,local_oi_pcr,local_put_oi_contracts,local_call_oi_contracts,"
-            "local_oi_band_pct,metric_version,metric_status"
-        ).eq("snapshot_id", run["snapshot_id"]).order("expiry_date", desc=False).execute()
-        rows = derived.data or []
-        if not rows:
-            return {**empty, "status": "NO_DERIVED_ROWS", "source_collected_at": run.get("completed_at")}
-        today = datetime.datetime.now(timezone.utc).date()
-        future_rows = []
-        for row in rows:
-            expiry_value = pd.to_datetime(row.get("expiry_date"), errors="coerce")
-            if pd.notna(expiry_value) and expiry_value.date() >= today:
-                future_rows.append(row)
-        valid_rows = [
-            row for row in future_rows
-            if isinstance(row.get("metric_status"), dict)
-            and row["metric_status"].get("chain") == "OK"
-        ]
-        selected = valid_rows[0] if valid_rows else (future_rows[0] if future_rows else rows[0])
-        selected = dict(selected)
-        selected["run_completed_at"] = run.get("completed_at")
-        selected["run_status"] = run.get("status")
-        selected["status"] = "OK" if selected.get("metric_status", {}).get("chain") == "OK" else "INCOMPLETE_CHAIN"
-        return selected
     except Exception as exc:
-        return {**empty, "status": f"ERROR: {exc}"}
-
+        return {"status": "UNAVAILABLE", "reason": type(exc).__name__, "error": str(exc)}
 
 @st.cache_data(ttl=120)
 def get_cached_binance_data():
