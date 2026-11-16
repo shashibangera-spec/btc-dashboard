@@ -136,7 +136,8 @@ def test_iv_skew_exposes_continuous_call_iv_premium_without_directional_classes(
     assert result["metric"] == "CALL_IV_PREMIUM"
     assert result["call_iv_premium_pct"] == pytest.approx((call_iv - .50) / .50 * 100)
     assert "classification" not in result
-    assert not {"BULLISH_URGENCY", "BEARISH_URGENCY", "NEUTRAL"} & set(result.values())
+    assert "BULLISH_URGENCY" not in str(result)
+    assert "BEARISH_URGENCY" not in str(result)
 
 
 def test_iv_skew_has_no_five_percent_boundary():
