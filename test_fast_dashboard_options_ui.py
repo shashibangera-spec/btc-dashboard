@@ -84,3 +84,13 @@ def test_supabase_service_role_key_is_fallback_only():
         'os.environ.get("SUPABASE_ANON_KEY")\n'
         '            or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")'
     ) in source
+
+
+def test_fast_dashboard_uses_descriptive_options_metrics_without_directional_labels():
+    source = _source()
+    assert 'result.get("call_iv_premium_pct")' in source
+    assert 'result.get("sampled_buy_volume")' in source
+    assert 'result.get("sampled_sell_volume")' in source
+    assert 'result.get("sampled_volume_balance")' in source
+    assert 'result.get("classification", "N/A")' not in source[source.index('if key == "iv_skew":'):source.index('if key == "volume_oi":')]
+    assert 'result.get("classification", "N/A")' not in source[source.index('if key == "taker_activity":'):source.index('return "N/A", "UNAVAILABLE · UNKNOWN_FILTER"')]
