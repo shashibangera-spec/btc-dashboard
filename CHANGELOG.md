@@ -136,3 +136,8 @@ Minor formatting-only changes generally do not require a changelog entry unless 
 - Added `.github/workflows/reaction-analyzer.yml`, scheduled daily at 07:00 UTC (12:30 PM IST) with manual dispatch.
 - RLS: anon read-only; trusted backend service-role management. No client-side writes.
 - No changes to Signal Detector, AMT logic, Telegram workflow, dashboard UI or order execution.
+
+
+### Research methodology guardrail
+
+- Documented that multiple signal types can originate from one completed candle and share the same reaction window. Future edge evaluation must distinguish event-row counts from unique event-time clusters to avoid overstating the independent sample size.
