@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from research_options_adapter import load_canonical_research_options
+from options_filters import load_and_calculate_options_filters
 from test_research_options_stage_a import Client, make_db
 
 
@@ -55,3 +56,47 @@ def test_dashboard_removes_legacy_filter_calculators_and_maps_canonical_fields()
     assert 'walls_res.get("walls", [])' in source
     assert 'else "Stable"' not in source
     assert "filter_report_status" in source
+
+
+
+def test_fast_and_research_dashboards_produce_identical_five_filter_outputs_for_same_snapshot():
+    # The Fast Dashboard calls load_and_calculate_options_filters(); the
+    # Research Dashboard adapter calls the same canonical selector and
+    # calculate_all_filters() path while also loading matching derived metrics.
+    client = Client(make_db())
+    fast = load_and_calculate_options_filters(client)
+    research = load_canonical_research_options(client)
+    assert fast["status"] == research["status"] == "OK"
+    assert fast["selection"]["snapshot_id"] == research["snapshot"].snapshot_id
+    assert fast["selection"]["expiry_date"] == research["snapshot"].expiry_date
+    assert fast["selection"]["spot_price"] == research["snapshot"].spot_price
+    assert fast["selection"]["completed_at"] == research["snapshot"].completed_at
+    assert set(fast["filters"]) == {
+        "nearby_oi", "iv_skew", "volume_oi", "oi_migration", "taker_activity"
+    }
+    assert fast["filters"] == research["filters"]
+    for key in fast["filters"]:
+        result = fast["filters"][key]
+        assert result["snapshot_id"] == research["snapshot"].snapshot_id
+        assert result["expiry_date"] == research["snapshot"].expiry_date
+        assert result["spot_price"] == research["snapshot"].spot_price
+
+
+def test_ai_report_includes_full_options_and_live_price_provenance_without_layout_changes():
+    source = Path("btc_live_research_dashboard.py").read_text(encoding="utf-8")
+    required = (
+        "Options Snapshot ID:",
+        "Options Expiry:",
+        "Options Snapshot-Local Spot Price:",
+        "Options Snapshot Run Completed At (UTC):",
+        "Options Source Collection Timestamp (UTC):",
+        "Options Derived Metrics Calculated At (UTC):",
+        "Live Binance Price (AMT market reference):",
+        "Live Binance Candle Close Timestamp (UTC):",
+    )
+    for field in required:
+        assert field in source
+    assert "report_options.get('source_collected_at')" in source
+    assert "report_options.get('calculated_at')" in source
+    assert 'st.expander("📋 Copy/Paste Text Report for AI"' in source
+    assert 'st.code(report_text, language="text")' in source
