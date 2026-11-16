@@ -45,14 +45,14 @@ def test_dashboard_map_does_not_fill_missing_oi_and_uses_pinned_snapshot_spot():
     map_start = source.index('st.subheader("📊 OI Concentration Map")')
     map_end = source.index('with raw_tab:', map_start)
     map_code = source[map_start:map_end]
-    assert "get_nearest_strikes(opt_df, options_reference_price, count=10)" in map_code
+    assert "nearest_strikes_by_reference(opt_df, options_reference_price, count=10)" in map_code
     assert ".fillna(0)" not in map_code
-    assert '"OI State"' in map_code and '"Missing"' in map_code
+    assert '"OI State"' in map_code and '"Missing"' in map_code and '" 0"' in map_code
     raw_start = source.index('with raw_tab:')
     raw_end = source.index('render_live_dashboard()', raw_start)
     raw_code = source[raw_start:raw_end]
     assert 'opt_forensics.get("status") == "OK"' in raw_code
-    assert "get_nearest_strikes(opt_df, options_reference_price, count=10)" in raw_code
+    assert "nearest_strikes_by_reference(opt_df, options_reference_price, count=10)" in raw_code
     assert "options_metrics.get(\"max_pain_strike\")" in raw_code
     assert "options_metrics.get(\"atm_strike\")" in raw_code
     assert "opt_forensics.get(\"expiry_date\")" in source
