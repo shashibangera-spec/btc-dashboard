@@ -21,6 +21,58 @@ def validated_prior_values(shadow_state):
     return (vah, poc, val) if vah >= poc >= val else None
 
 
+
+def nearest_strikes_by_reference(df: pd.DataFrame, reference_price: float, count: int = 10) -> pd.DataFrame:
+    """Select nearest strike rows using the canonical snapshot's spot price."""
+    if df is None or df.empty or "strike_price" not in df.columns:
+        return pd.DataFrame()
+    try:
+        price = float(reference_price)
+    except (TypeError, ValueError, OverflowError):
+        return pd.DataFrame()
+    if not pd.notna(price):
+        return pd.DataFrame()
+    work = df.copy()
+    work["strike_price"] = pd.to_numeric(work["strike_price"], errors="coerce")
+    work = work[work["strike_price"].notna()]
+    if work.empty:
+        return pd.DataFrame()
+    work["distance"] = (work["strike_price"] - price).abs()
+    return work.nsmallest(count, "distance").sort_values("strike_price")
+
+
+def pivot_option_metric(df: pd.DataFrame, value_column: str, output_columns: dict,
+                        *, aggregation: str = "sum") -> pd.DataFrame:
+    """Pivot CALL/PUT values without converting all-null groups into observed zeroes."""
+    if df is None or df.empty or not {"strike_price", "option_type", value_column}.issubset(df.columns):
+        return pd.DataFrame(columns=["strike_price", *output_columns.values()])
+    work = df.loc[:, ["strike_price", "option_type", value_column]].copy()
+    work[value_column] = pd.to_numeric(work[value_column], errors="coerce")
+    grouped = work.groupby(["strike_price", "option_type"], dropna=False)[value_column]
+    if aggregation == "sum":
+        values = grouped.agg(lambda series: series.sum(min_count=1))
+    elif aggregation == "mean":
+        values = grouped.mean()
+    else:
+        raise ValueError(f"Unsupported option metric aggregation: {aggregation}")
+    pivot = values.unstack("option_type").reindex(columns=list(output_columns))
+    pivot = pivot.rename(columns=output_columns).reset_index()
+    return pivot
+
+
+def aggregate_taker_volumes(df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate sampled taker volumes per strike while preserving missing sides."""
+    columns = ["taker_buy_volume", "taker_sell_volume"]
+    if df is None or df.empty or "strike_price" not in df.columns:
+        return pd.DataFrame(columns=["strike_price", *columns])
+    work = df.copy()
+    for column in columns:
+        if column not in work.columns:
+            work[column] = pd.NA
+        work[column] = pd.to_numeric(work[column], errors="coerce")
+    grouped = work.groupby("strike_price", dropna=False)[columns]
+    return grouped.agg(lambda series: series.sum(min_count=1)).reset_index()
+
 def load_canonical_research_options(client: Any, *, as_of: date | None = None) -> dict:
     snapshot, selection = select_canonical_snapshot(client, as_of=as_of)
     if snapshot is None:

@@ -7,7 +7,10 @@ import json
 from datetime import timezone
 from supabase import create_client
 from amt_core import fetch_binance_data
-from research_options_adapter import load_canonical_research_options, parse_optional_float, validated_prior_values
+from research_options_adapter import (
+    load_canonical_research_options, parse_optional_float, validated_prior_values,
+    pivot_option_metric, aggregate_taker_volumes, nearest_strikes_by_reference,
+)
 
 st.set_page_config(page_title="BTC Combined Research", layout="wide")
 st.title("🔬 BTC Combined Research Terminal")
@@ -108,30 +111,29 @@ def process_options_snapshot(client, snapshot_id, expiry_date, raw=None):
             df["mark_price"] = np.nan
     if df.empty: return None
     
-    pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
-    pivot_oi_usd = df.pivot_table(index='strike_price', columns='option_type', values='oi_value_usd', aggfunc='sum').reset_index()
-    # Display the API mark_price exactly as stored; no currency or contract multiplier.
-    pivot_premium = df.pivot_table(index='strike_price', columns='option_type', values='mark_price', aggfunc='mean')
-    # Keep both side columns present even if a snapshot has no valid mark/spot for one side.
-    pivot_premium = pivot_premium.reindex(columns=['CALL', 'PUT']).reset_index()
-    pivot_premium.rename(columns={'CALL': 'Mark_Call', 'PUT': 'Mark_Put'}, inplace=True)
-    pivot_oi_usd.rename(columns={'CALL': 'OI_USD_Call', 'PUT': 'OI_USD_Put'}, inplace=True)
-    pivot_iv = df.pivot_table(index='strike_price', columns='option_type', values='mark_iv', aggfunc='mean').reset_index()
-    pivot_vol = df.pivot_table(index='strike_price', columns='option_type', values='volume_24h', aggfunc='sum').reset_index()
-    
-    pivot_oi.rename(columns={'CALL': 'Call OI', 'PUT': 'Put OI'}, inplace=True)
-    pivot_iv.rename(columns={'CALL': 'Call IV', 'PUT': 'Put IV'}, inplace=True)
-    pivot_vol.rename(columns={'CALL': 'Call Vol', 'PUT': 'Put Vol'}, inplace=True)
-    
-    merged = pd.merge(pivot_oi, pivot_oi_usd, on='strike_price', how='outer')
-    merged = pd.merge(merged, pivot_premium, on='strike_price', how='outer')
-    merged = pd.merge(merged, pivot_iv, on='strike_price', how='outer')
-    merged = pd.merge(merged, pivot_vol, on='strike_price', how='outer')
-    
-    if 'taker_buy_volume' in df.columns:
-        taker_agg = df.groupby('strike_price')[['taker_buy_volume', 'taker_sell_volume']].sum().reset_index()
-        merged = pd.merge(merged, taker_agg, on='strike_price', how='outer')
-    
+    pivot_oi = pivot_option_metric(
+        df, "oi_contracts", {"CALL": "Call OI", "PUT": "Put OI"}
+    )
+    pivot_oi_usd = pivot_option_metric(
+        df, "oi_value_usd", {"CALL": "OI_USD_Call", "PUT": "OI_USD_Put"}
+    )
+    pivot_premium = pivot_option_metric(
+        df, "mark_price", {"CALL": "Mark_Call", "PUT": "Mark_Put"}, aggregation="mean"
+    )
+    pivot_iv = pivot_option_metric(
+        df, "mark_iv", {"CALL": "Call IV", "PUT": "Put IV"}, aggregation="mean"
+    )
+    pivot_vol = pivot_option_metric(
+        df, "volume_24h", {"CALL": "Call Vol", "PUT": "Put Vol"}
+    )
+
+    merged = pivot_oi
+    for metric in (pivot_oi_usd, pivot_premium, pivot_iv, pivot_vol):
+        merged = pd.merge(merged, metric, on="strike_price", how="outer")
+
+    taker_agg = aggregate_taker_volumes(df)
+    merged = pd.merge(merged, taker_agg, on="strike_price", how="outer")
+
     return merged.sort_values('strike_price')
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -161,24 +163,6 @@ def fetch_options_forensics():
 @st.cache_data(ttl=120)
 def get_cached_binance_data():
     return fetch_binance_data()
-
-# --- OPTIONS CLASSIFIERS (With Semantic Guards) ---
-def get_nearest_strikes(df, current_price, count=5):
-    if df is None or df.empty or 'strike_price' not in df.columns:
-        return pd.DataFrame()
-    try:
-        price = float(current_price)
-    except (TypeError, ValueError, OverflowError):
-        return pd.DataFrame()
-    if not np.isfinite(price):
-        return pd.DataFrame()
-    df_copy = df.copy()
-    df_copy['strike_price'] = pd.to_numeric(df_copy['strike_price'], errors='coerce')
-    df_copy = df_copy[np.isfinite(df_copy['strike_price'])]
-    if df_copy.empty:
-        return pd.DataFrame()
-    df_copy['distance'] = abs(df_copy['strike_price'] - price)
-    return df_copy.nsmallest(count, 'distance').sort_values('strike_price')
 
 # --- AMT ENGINE ---
 @st.cache_data(ttl=120, show_spinner=False)
@@ -609,11 +593,11 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
         st.markdown("---")
         st.subheader("📊 OI Concentration Map")
         st.caption("Visual concentration across the same 10 nearest strikes shown in the evidence table. Call OI extends left; Put OI extends right.")
-        if opt_forensics and "data" in opt_forensics:
-            chart_df = get_nearest_strikes(opt_df, options_reference_price, count=10).copy()
+        if opt_forensics and opt_forensics.get("status") == "OK" and opt_df is not None:
+            chart_df = nearest_strikes_by_reference(opt_df, options_reference_price, count=10).copy()
             if not chart_df.empty and "Call OI" in chart_df.columns and "Put OI" in chart_df.columns:
-                chart_df["Call OI"] = pd.to_numeric(chart_df["Call OI"], errors="coerce").fillna(0)
-                chart_df["Put OI"] = pd.to_numeric(chart_df["Put OI"], errors="coerce").fillna(0)
+                chart_df["Call OI"] = pd.to_numeric(chart_df["Call OI"], errors="coerce")
+                chart_df["Put OI"] = pd.to_numeric(chart_df["Put OI"], errors="coerce")
                 chart_df["Call OI Display"] = -chart_df["Call OI"]
                 chart_df["Strike"] = chart_df["strike_price"].map(lambda x: "$" + format(float(x), ",.0f"))
                 oi_chart_data = chart_df.melt(
@@ -626,35 +610,58 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     "Call OI Display": "Call OI",
                     "Put OI": "Put OI",
                 })
+                oi_chart_data["OI State"] = np.where(oi_chart_data["OI"].isna(), "Missing", "Observed")
+                oi_chart_data["Missing Label"] = np.where(oi_chart_data["OI"].isna(), oi_chart_data["Side"] + " Missing", np.where(oi_chart_data["OI"] == 0, oi_chart_data["Side"] + " 0", ""))
                 st.vega_lite_chart(
                     oi_chart_data,
                     {
-                        "mark": "bar",
-                        "encoding": {
-                            "y": {"field": "Strike", "type": "ordinal", "sort": None, "title": "Strike"},
-                            "x": {"field": "OI", "type": "quantitative", "title": "OI (Call left / Put right)"},
-                            "color": {"field": "Side", "type": "nominal", "legend": {"title": None}},
-                            "tooltip": [
-                                {"field": "Strike", "type": "nominal"},
-                                {"field": "Side", "type": "nominal"},
-                                {"field": "OI", "type": "quantitative", "format": ",.0f"},
-                            ],
-                        },
+                        "layer": [
+                            {
+                                "mark": "bar",
+                                "encoding": {
+                                    "y": {"field": "Strike", "type": "ordinal", "sort": None, "title": "Strike"},
+                                    "x": {"field": "OI", "type": "quantitative", "title": "OI (Call left / Put right)"},
+                                    "color": {"field": "Side", "type": "nominal", "legend": {"title": None}},
+                                    "tooltip": [
+                                        {"field": "Strike", "type": "nominal"},
+                                        {"field": "Side", "type": "nominal"},
+                                        {"field": "OI", "type": "quantitative", "format": ",.0f"},
+                                        {"field": "OI State", "type": "nominal"},
+                                    ],
+                                },
+                            },
+                            {
+                                "transform": [{"filter": "datum['OI State'] === 'Missing' || datum['OI'] === 0"}],
+                                "mark": {"type": "text", "align": "left", "dx": 4, "color": "#888888"},
+                                "encoding": {
+                                    "y": {"field": "Strike", "type": "ordinal", "sort": None},
+                                    "x": {"datum": 0, "type": "quantitative"},
+                                    "text": {"field": "Missing Label"},
+                                    "tooltip": [
+                                        {"field": "Strike", "type": "nominal"},
+                                        {"field": "Side", "type": "nominal"},
+                                        {"field": "OI State", "type": "nominal"},
+                                    ],
+                                },
+                            },
+                        ],
                         "height": 420,
                     },
                     use_container_width=True,
                 )
             else:
                 st.info("No usable Call/Put OI columns are available for the concentration map.")
-        elif opt_forensics and "error" in opt_forensics:
-            st.error(f"Error loading options data: {opt_forensics['error']}")
+        elif opt_forensics and opt_forensics.get("status") != "OK":
+            st.info(f"Options data unavailable: {opt_forensics.get('reason', opt_forensics.get('selection', {}).get('reason', 'CANONICAL_SNAPSHOT_UNAVAILABLE'))}")
         else:
             st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
 
     with raw_tab:
         st.subheader("Raw Options Chain — 10 Nearest Strikes")
-        if opt_forensics and "data" in opt_forensics:
-            closest_df = get_nearest_strikes(opt_df, options_reference_price, count=10).copy()
+        if opt_forensics and opt_forensics.get("status") == "OK" and opt_df is not None:
+            # Raw chain and every annotation below share this one pinned
+            # snapshot/expiry and its matching derived metrics.
+            closest_df = nearest_strikes_by_reference(opt_df, options_reference_price, count=10).copy()
             evidence_df = closest_df.drop(columns=["distance"], errors="ignore").copy()
 
             # Presentation-only evidence markers: reuse existing analyzer/derived outputs.
@@ -851,8 +858,8 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 )
             else:
                 st.info("Aggressor taker-volume fields are unavailable in this snapshot.")
-        elif opt_forensics and "error" in opt_forensics:
-            st.error(f"Error loading options data: {opt_forensics['error']}")
+        elif opt_forensics and opt_forensics.get("status") != "OK":
+            st.info(f"Options data unavailable: {opt_forensics.get('reason', opt_forensics.get('selection', {}).get('reason', 'CANONICAL_SNAPSHOT_UNAVAILABLE'))}")
         else:
             st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
 
