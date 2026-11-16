@@ -442,3 +442,32 @@ Stores versioned, non-directional market reaction measurements linked to the imm
 ## Reaction sample independence
 
 A single completed AMT candle can create multiple journal records with the same `event_timestamp` and anchor price (for example, `AMT_STATE_CHANGE` and `VALUE_MIGRATION`). Their reaction rows may therefore represent the same market path. Statistical evaluation must report event-type counts separately from unique event-time clusters and must not treat same-candle events as independent observations.
+
+
+---
+
+# Options research filter backend contract
+
+**Implementation:** `options_filters.py` (read-only, on-demand; no database migration).
+
+## Canonical selection
+
+- Select the latest `options_collection_runs` row with `status = SUCCESS`, ordered by `completed_at DESC`.
+- Pin its `snapshot_id`; select the nearest future expiry whose matching `options_derived_snapshots` row reports `metric_status.chain = OK`.
+- Read raw contracts only for that exact `snapshot_id` and `expiry_date`. Validate snapshot/expiry identity, unique contract identities, both option sides, finite strikes and a consistent positive raw `spot_price`.
+- A failed latest-run/expiry/raw-chain validation fails closed. Do not silently substitute another run or expiry.
+- The nearest-five strike calculations use the pinned raw snapshot's `spot_price`.
+
+## Missingness and filter eligibility
+
+- Pandas aggregation must preserve all-null groups as `NULL/NaN`; missing observations are not observed zero.
+- Each filter checks the required fields it consumes. One filter's missing data or exception must not suppress the other four.
+- Nearby OI, IV Skew and 24h Volume / OI use the five nearest strikes. OI Migration uses the complete selected expiry chain. Taker Activity is a sampled nearest-strike measurement and must not be described as complete market order flow.
+- Volume/OI uses `volume_24h` and `oi_contracts`; it does not use `turnover_usd`.
+
+## OI migration baseline
+
+- Compare only with the immediately preceding eligible `SUCCESS` run for the same expiry.
+- Require a valid raw chain and exactly matching contract identity set; missing OI coverage is not classified as stable.
+- Results expose the previous snapshot ID, previous completion time and elapsed seconds.
+- No new persistence, collector, scheduled workflow, or schema object is introduced.
