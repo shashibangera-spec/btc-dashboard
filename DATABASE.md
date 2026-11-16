@@ -401,7 +401,7 @@ Stores versioned, non-directional market reaction measurements linked to the imm
 - Percent excursions divide those signed USD movements by anchor price and multiply by 100.
 - These are neutral movements, not directional MFE/MAE, realized P&L or executable trade returns.
 - Incomplete windows are recorded as terminal `INCOMPLETE` results for that immutable historical event/window and analysis version. They are excluded from completed observation samples. Transient API/database failures are not persisted and remain retryable.
-- Transient API/database failures are not persisted as terminal rows; the signal remains eligible for retry.
+- Transient Delta API/database failures are not persisted as terminal rows; the signal remains eligible for retry.
 - A new calculation methodology must use a new `analysis_version`.
 
 ## Access model
