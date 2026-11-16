@@ -2,8 +2,7 @@
 from pathlib import Path
 import pandas as pd
 
-from research_options_adapter import pivot_option_metric, aggregate_taker_volumes
-from btc_test_helpers import nearest_strikes_by_reference
+from research_options_adapter import pivot_option_metric, aggregate_taker_volumes, nearest_strikes_by_reference
 
 
 def test_oi_pivot_preserves_missing_and_observed_zero_separately():
