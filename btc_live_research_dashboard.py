@@ -150,11 +150,18 @@ def fetch_options_forensics():
             process_options_snapshot(client, snapshot.previous_snapshot_id, snapshot.expiry_date, raw=snapshot.previous_raw)
             if snapshot.previous_raw is not None else None
         )
+        raw_collection_times = pd.to_datetime(
+            snapshot.raw.get("collected_at", pd.Series(dtype="object")),
+            utc=True, errors="coerce"
+        ).dropna()
         return {
             "status": "OK", "snapshot_id": snapshot.snapshot_id,
             "timestamp": snapshot.completed_at, "previous_snapshot_id": snapshot.previous_snapshot_id,
             "previous_timestamp": snapshot.previous_completed_at, "expiry_date": snapshot.expiry_date,
-            "spot_price": snapshot.spot_price, "metrics": canonical["derived"],
+            "spot_price": snapshot.spot_price,
+            "raw_collected_at_min": raw_collection_times.min().isoformat() if not raw_collection_times.empty else None,
+            "raw_collected_at_max": raw_collection_times.max().isoformat() if not raw_collection_times.empty else None,
+            "metrics": canonical["derived"],
             "data": current_df, "previous_data": previous_df, "filters": canonical["filters"],
         }
     except Exception as exc:
@@ -281,7 +288,8 @@ Options Snapshot ID: {options_snapshot_id}
 Options Expiry: {report_options.get('expiry_date') or opt_forensics.get('expiry_date', 'N/A') if opt_forensics else 'N/A'}
 Options Snapshot-Local Spot Price: {f'USD {float(options_snapshot_spot):,.2f}' if options_snapshot_spot is not None else 'N/A'}
 Options Snapshot Run Completed At (UTC): {options_snapshot_completed_at}
-Options Source Collection Timestamp (UTC): {report_options.get('source_collected_at') or 'N/A'}
+Options Raw Contract Collection Time Range (UTC): {opt_forensics.get('raw_collected_at_min', 'N/A') if opt_forensics else 'N/A'} to {opt_forensics.get('raw_collected_at_max', 'N/A') if opt_forensics else 'N/A'}
+Options Derived Source Collection Timestamp (UTC): {report_options.get('source_collected_at') or 'N/A'}
 Options Derived Metrics Calculated At (UTC): {report_options.get('calculated_at') or 'N/A'}
 Options Derived Metrics Status: {report_options.get('status', 'N/A')}
 Max Pain (theoretical): {f'USD {float(report_options["max_pain_strike"]):,.0f}' if report_options.get('max_pain_strike') is not None else 'N/A'}
