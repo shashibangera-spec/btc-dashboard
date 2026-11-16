@@ -5,6 +5,11 @@ import pandas as pd
 from options_filters import DERIVED_COLUMNS, CanonicalSnapshot, _execute, _missing_record_keys, select_canonical_snapshot
 
 
+def parse_optional_float(value):
+    """Convert optional numeric database values without treating zero as missing."""
+    return None if value is None else float(value)
+
+
 def load_canonical_research_options(client: Any, *, as_of: date | None = None) -> dict:
     snapshot, selection = select_canonical_snapshot(client, as_of=as_of)
     if snapshot is None:
