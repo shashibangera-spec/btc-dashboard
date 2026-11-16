@@ -13,6 +13,7 @@ from urllib3.util.retry import Retry
 from datetime import timezone, timedelta
 from supabase import create_client
 from options_filters import load_and_calculate_options_filters
+from pine_state_machine import Candle, PineConfig, PineStateMachine, STATE_NAMES
 
 st.set_page_config(page_title="BTC Data Terminal", page_icon="₿", layout="wide")
 
@@ -232,14 +233,8 @@ hr { border-color: var(--border) !important; margin: 0.6rem 0 !important; }
 # ==========================================
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
-state_names = {
-    0: "BUILDING", 1: "DEVELOPMENT", 2: "DISCOVERY ABOVE", 3: "DISCOVERY BELOW",
-    4: "ACCEPTANCE UP", 5: "ACCEPTANCE DOWN", 6: "POC BREAK ABOVE",
-    7: "POC BREAK BELOW", 8: "NEW AREA UP", 9: "NEW AREA DOWN", 10: "FAILED DISC UP",
-    11: "FAILED DISC DOWN", 12: "ACC FAILURE UP", 13: "ACC FAILURE DOWN",
-    14: "RE-ENTRY CONFIRMED", 15: "STALLED ABOVE", 16: "STALLED BELOW",
-    17: "FAILED UP (CAND)", 18: "FAILED DOWN (CAND)"
-}
+# Canonical TradingView v7.2.2 auction phase labels.
+state_names = STATE_NAMES
 
 @st.cache_resource
 def get_persistent_state():
@@ -602,145 +597,71 @@ def calculate_session_journey(df, prev_vah, prev_val):
     return pd.DataFrame(sessions)
 
 def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc):
-    if df.empty: return pd.DataFrame(), manual_valid, {}
-    df['prev_close'] = df['close'].shift(1)
-    df['tr0'] = abs(df['high'] - df['low']); df['tr1'] = abs(df['high'] - df['prev_close']); df['tr2'] = abs(df['low'] - df['prev_close'])
-    df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1); df['atr20'] = df['tr'].ewm(alpha=1/20, adjust=False).mean()    
-    today_str = df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    today_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') == today_str].copy()
-    yesterday_df = df[df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str].copy()
-    if yesterday_df.empty or today_df.empty: return pd.DataFrame(), manual_valid, {}
+    """
+    Replay completed 30m candles through the standalone Pine v7.2.2 engine.
 
-    last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
-    
-    if manual_valid: prevVAH, prevVAL, prevPOC = manual_vah, manual_val, manual_poc
-    else: prevVAH, prevVAL, prevPOC = calculate_tpo(prev_day_df)
-    if pd.isna(prevVAH) or pd.isna(prevVAL) or pd.isna(prevPOC): return pd.DataFrame(), manual_valid, {}
+    The state machine derives prior-cycle value from its own TPO profile, as
+    TradingView does. The legacy manual-value arguments remain in the signature
+    for call-site compatibility, but do not override Pine-derived state inputs.
+    """
+    if df.empty:
+        return pd.DataFrame(), manual_valid, {}
 
-    journal = []; candle_state_map = {}; auctionState = 0; discoveryStartBar = 0; cycleBars = 0
-    aboveValueBars = 0; belowValueBars = 0; insideValueBars = 0; acceptancePullbackBarsDown = 0
-    acceptanceConfirmedDown = False; pocAboveBars = 0; pocBelowBars = 0; reentryInsideBars = 0
-    prev_currVAH, prev_currVAL, prev_currPOC = np.nan, np.nan, np.nan
-    
-    # ACTIVE PROGRESS TRACKING VARIABLES
-    lowestSinceDiscDown = np.nan
-    highestSinceDiscUp = np.nan
-    barsWithoutNewLow = 0
-    barsWithoutNewHigh = 0
+    required = {"Date", "ShiftedDate", "open", "high", "low", "close"}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(f"AMT state replay missing required columns: {sorted(missing)}")
 
-    for i in range(len(today_df)):
-        bar = today_df.iloc[i]; current_bar_df = today_df.iloc[:i+1]; cycleBars += 1
-        currVAH, currVAL, currPOC = calculate_tpo(current_bar_df); close = bar['close']
-        
-        if close > prevVAH: aboveValueBars += 1; belowValueBars = 0; insideValueBars = 0
-        elif close < prevVAL: belowValueBars += 1; aboveValueBars = 0; insideValueBars = 0
-        else: aboveValueBars = 0; belowValueBars = 0; insideValueBars += 1
+    replay_df = df.sort_values("Date").reset_index(drop=True).copy()
+    candles = [
+        Candle(
+            open_time=row["Date"].to_pydatetime(),
+            open=float(row["open"]),
+            high=float(row["high"]),
+            low=float(row["low"]),
+            close=float(row["close"]),
+        )
+        for _, row in replay_df.iterrows()
+    ]
 
-        if not pd.isna(currPOC):
-            if currPOC > prevVAH: pocAboveBars += 1; pocBelowBars = 0
-            elif currPOC < prevVAL: pocBelowBars += 1; pocAboveBars = 0
-            else: pocAboveBars = 0; pocBelowBars = 0
+    engine = PineStateMachine(PineConfig())
+    results = engine.replay(candles)
+    if len(results) != len(replay_df):
+        raise RuntimeError("Pine state replay did not return one result per completed candle.")
 
-        barRange = bar['high'] - bar['low']
-        wideBar = not pd.isna(bar['atr20']) and barRange > bar['atr20'] * 1.5
-        effectiveTimeout = 6
-        if not pd.isna(bar['atr20']): effectiveTimeout = max(3, min(20, round(6 * (bar['atr20'] / 250.0))))
+    # Dashboard journal is scoped to the current 00:00 UTC / 05:30 IST AMT cycle.
+    current_cycle = replay_df["ShiftedDate"].iloc[-1].strftime("%Y-%m-%d")
+    current_indices = [
+        i for i, value in enumerate(replay_df["ShiftedDate"])
+        if value.strftime("%Y-%m-%d") == current_cycle
+    ]
+    if not current_indices:
+        return pd.DataFrame(), manual_valid, {}
 
-        if belowValueBars >= 2:
-            if bar['high'] >= prevVAL and close < prevVAL and wideBar:
-                acceptancePullbackBarsDown += 1
-                if acceptancePullbackBarsDown >= 2: acceptanceConfirmedDown = True
-            elif close > prevVAL: acceptancePullbackBarsDown = 0; acceptanceConfirmedDown = False
-        else: acceptancePullbackBarsDown = 0; acceptanceConfirmedDown = False
+    journal = []
+    candle_state_map = {}
+    previous_state = None
+    last_index = current_indices[-1]
 
-        vaShiftDown = not pd.isna(prev_currVAH) and currVAH < prev_currVAH and currVAL < prev_currVAL
-        pocShiftDown = not pd.isna(prev_currPOC) and (prev_currPOC - currPOC) >= (50.0 * 1.0)
-        valueMigrationDown = vaShiftDown and pocShiftDown
-        newValueDevelopingDown = pocBelowBars >= 2 and cycleBars >= 3
+    for i in current_indices:
+        bar = replay_df.iloc[i]
+        result = results[i]
+        state_code = int(result.state_code)
+        time_label = bar["Date"].strftime("%H:%M")
+        candle_state_map[time_label] = state_code
 
-        if auctionState in (3, 16): # Discovery Below or Stalled Below
-            if pd.isna(lowestSinceDiscDown) or bar['low'] < lowestSinceDiscDown:
-                lowestSinceDiscDown = bar['low']
-                barsWithoutNewLow = 0
-            else:
-                barsWithoutNewLow += 1
-        else:
-            lowestSinceDiscDown = np.nan
-            barsWithoutNewLow = 0
+        if previous_state is None or state_code != previous_state or i == last_index:
+            journal.append({
+                "Time": time_label,
+                "Close": float(bar["close"]),
+                "Code": state_code,
+                "State Name": result.state_name,
+                "Dev VAH": result.developing_vah if result.developing_vah is not None else np.nan,
+                "Dev POC": result.developing_poc if result.developing_poc is not None else np.nan,
+                "Dev VAL": result.developing_val if result.developing_val is not None else np.nan,
+            })
+        previous_state = state_code
 
-        if auctionState in (2, 15): # Discovery Above or Stalled Above
-            if pd.isna(highestSinceDiscUp) or bar['high'] > highestSinceDiscUp:
-                highestSinceDiscUp = bar['high']
-                barsWithoutNewHigh = 0
-            else:
-                barsWithoutNewHigh += 1
-        else:
-            highestSinceDiscUp = np.nan
-            barsWithoutNewHigh = 0
-
-        timed_out_down = barsWithoutNewLow >= effectiveTimeout
-        timed_out_up = barsWithoutNewHigh >= effectiveTimeout
-
-        if auctionState == 0:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
-            elif cycleBars >= 3: auctionState = 1
-        elif auctionState == 1:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
-        elif auctionState == 2:
-            if close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
-            elif close <= prevVAH: auctionState = 17
-            elif timed_out_up: auctionState = 15
-        elif auctionState == 3:
-            if acceptanceConfirmedDown: auctionState = 5
-            elif close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
-            elif close >= prevVAL: auctionState = 18
-            elif timed_out_down: auctionState = 16
-        elif auctionState == 5:
-            if valueMigrationDown: auctionState = 7
-            elif close >= prevVAL: auctionState = 13
-        elif auctionState == 7:
-            if newValueDevelopingDown: auctionState = 9
-            elif close >= prevVAL: auctionState = 13
-        elif auctionState == 15: # STALLED ABOVE
-            if close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
-            elif close >= prevVAL and close <= prevVAH: auctionState = 17
-            elif close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
-        elif auctionState == 16: # STALLED BELOW
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
-            elif close >= prevVAL and close <= prevVAH: auctionState = 11
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
-        elif auctionState == 17:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
-            elif insideValueBars >= 2: auctionState = 10
-        elif auctionState == 18:
-            if close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
-            elif close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
-            elif insideValueBars >= 2: auctionState = 11
-        elif auctionState == 10:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
-            elif insideValueBars >= 2: auctionState = 14
-        elif auctionState == 11:
-            if close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
-            elif close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
-            elif insideValueBars >= 2: auctionState = 14
-        elif auctionState == 14:
-            if close > prevVAH: auctionState = 2; discoveryStartBar = i; highestSinceDiscUp = bar['high']; barsWithoutNewHigh = 0
-            elif close < prevVAL: auctionState = 3; discoveryStartBar = i; lowestSinceDiscDown = bar['low']; barsWithoutNewLow = 0
-            else:
-                reentryInsideBars += 1
-                if reentryInsideBars >= 3 and cycleBars >= 3: auctionState = 1; reentryInsideBars = 0
-
-        if auctionState != 14: reentryInsideBars = 0
-        prev_currVAH, prev_currVAL, prev_currPOC = currVAH, currVAL, currPOC
-        candle_state_map[bar['Date'].strftime('%H:%M')] = auctionState
-        
-        if i == 0 or auctionState != journal[-1]['Code'] or i == len(today_df) - 1:
-            journal.append({"Time": bar['Date'].strftime('%H:%M'), "Close": close, "Code": auctionState, "State Name": state_names.get(auctionState, "UNKNOWN"), "Dev VAH": currVAH, "Dev POC": currPOC, "Dev VAL": currVAL})
     return pd.DataFrame(journal), manual_valid, candle_state_map
 
 def parse_timestamp(ts):
@@ -988,20 +909,9 @@ def _render_dashboard():
         unsafe_allow_html=True,
     )
     
-    story_context = {
-        0: "BUILDING INITIAL VALUE", 1: "CURRENTLY DEVELOPING",
-        2: "DISCOVERY ABOVE VALUE", 3: "DISCOVERY BELOW VALUE",
-        4: "ACCEPTANCE DEVELOPING UP", 5: "ACCEPTANCE DEVELOPING DOWN",
-        6: "POC BREAK ABOVE", 7: "POC BREAK BELOW",
-        8: "NEW AREA DEVELOPING ABOVE", 9: "NEW AREA DEVELOPING BELOW",
-        10: "FAILED DISCOVERY UP", 11: "FAILED DISCOVERY DOWN",
-        12: "ACCEPTANCE FAILURE UP", 13: "ACCEPTANCE FAILURE DOWN",
-        14: "RE-ENTRY CONFIRMED", 15: "STALLED ABOVE", 16: "STALLED BELOW",
-        17: "FAILED UP DISCOVERY CANDIDATE", 18: "FAILED DOWN DISCOVERY CANDIDATE",
-    }
     previous_ui_state = st.session_state.get("fast_prev_amt_state")
     previous_ui_name = state_names.get(previous_ui_state) if previous_ui_state is not None else None
-    current_story = story_context.get(current_amt_state, current_amt_name)
+    current_story = current_amt_name
     auction_story = (
         previous_ui_name + " → " + current_story
         if previous_ui_state is not None and previous_ui_state != current_amt_state
