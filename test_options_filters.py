@@ -144,7 +144,7 @@ def test_iv_skew_requires_both_iv_sides():
 
 def test_volume_oi_uses_24h_volume_and_fails_closed_on_null_nearest_contract():
     raw = raw_rows()
-    raw.loc[raw.strike_price == 1000, "volume_24h"] = 100
+    raw["volume_24h"] = 600
     assert f.calculate_volume_oi(snapshot(raw))["classification"] == "FRESH_MONEY_ENTERING"
     raw.loc[(raw.strike_price == 1000) & (raw.option_type == "CALL"), "volume_24h"] = None
     assert f.calculate_volume_oi(snapshot(raw))["status"] == "INSUFFICIENT_DATA"
