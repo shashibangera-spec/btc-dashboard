@@ -1,7 +1,7 @@
 # Supabase Database Schema — Data Dictionary
 
 **Database:** Supabase PostgreSQL  
-**Tables documented:** 7  
+**Tables documented:** 8  
 **Scope:** Automated Supabase-backed BTC research and observation infrastructure.
 
 This document is the project data dictionary. Before making a migration, confirm exact SQL types, defaults, nullability, indexes, constraints and policies against the live Supabase catalog.
@@ -34,6 +34,7 @@ The two event tables have intentionally different roles:
 | 5 | `options_derived_snapshots` | Expiry-specific derived options metrics and quality status |
 | 6 | `telegram_alert_events` | Telegram notification outbox, deduplication and delivery audit |
 | 7 | `system_signal_journal` | Automated research journal of significant system events |
+| 8 | `signal_reaction_analysis` | Versioned, non-directional post-event market reaction measurements |
 
 ---
 
@@ -395,7 +396,7 @@ Stores versioned, non-directional market reaction measurements linked to the imm
 - Downside excursion is `min(0, window_low - anchor_price)`.
 - Percent excursions divide those signed USD movements by anchor price and multiply by 100.
 - These are neutral movements, not directional MFE/MAE, realized P&L or executable trade returns.
-- Incomplete windows are recorded as `INCOMPLETE` and retried on later runs. Only `COMPLETE` rows belong in completed observation samples.
+- Incomplete windows are recorded as terminal `INCOMPLETE` results for that immutable historical event/window and analysis version. They are excluded from completed observation samples. Transient API/database failures are not persisted and remain retryable.
 - Transient API/database failures are not persisted as terminal rows; the signal remains eligible for retry.
 - A new calculation methodology must use a new `analysis_version`.
 
