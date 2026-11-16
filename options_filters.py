@@ -8,9 +8,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import math
+import logging
 from typing import Any, List, Optional, Tuple
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 RAW_COLUMNS = (
     "snapshot_id", "expiry_date", "symbol", "product_id", "option_type",
@@ -45,6 +48,44 @@ def _rows(response: Any) -> List[dict]:
     if data is None and isinstance(response, dict):
         data = response.get("data")
     return list(data or [])
+
+
+def _missing_record_keys(records: List[dict], required_columns: Tuple[str, ...]) -> dict:
+    """Return exact missing required keys by column and zero-based record index."""
+    row_indexes = {}
+    for index, record in enumerate(records):
+        missing = (
+            list(required_columns) if not isinstance(record, dict)
+            else [column for column in required_columns if column not in record]
+        )
+        for column in missing:
+            row_indexes.setdefault(column, []).append(index)
+    return {
+        "missing_columns": sorted(row_indexes),
+        "row_indexes": {key: row_indexes[key] for key in sorted(row_indexes)},
+    }
+
+
+def _missing_record_selection(source: str, details: dict) -> dict:
+    logger.warning(
+        "Options Filters database record validation failed: source=%s missing_columns=%s row_indexes=%s",
+        source, details["missing_columns"], details["row_indexes"],
+    )
+    return {
+        "status": "UNAVAILABLE",
+        "reason": "MISSING_REQUIRED_COLUMNS",
+        "source": source,
+        **details,
+    }
+
+
+class MissingRequiredRecordKeys(ValueError):
+    def __init__(self, source: str, details: dict):
+        self.source = source
+        self.details = details
+        super().__init__(
+            f"{source} missing required columns: {', '.join(details['missing_columns'])}"
+        )
 
 
 def _execute(query: Any) -> List[dict]:
@@ -90,6 +131,9 @@ def _query_raw(client: Any, snapshot_id: str, expiry: str) -> pd.DataFrame:
         if len(page) < page_size:
             break
         start += page_size
+    missing = _missing_record_keys(collected, RAW_COLUMNS)
+    if missing["missing_columns"]:
+        raise MissingRequiredRecordKeys("options_oi_snapshots", missing)
     return pd.DataFrame(collected, columns=list(RAW_COLUMNS))
 
 
@@ -159,6 +203,9 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
     )
     if not runs:
         return None, {"status": "UNAVAILABLE", "reason": "NO_SUCCESS_RUN"}
+    missing = _missing_record_keys(runs, RUN_COLUMNS)
+    if missing["missing_columns"]:
+        return None, _missing_record_selection("options_collection_runs", missing)
     current = runs[0]
     if not _run_is_complete(current):
         return None, {"status": "UNAVAILABLE", "reason": "RUN_COUNTER_MISMATCH"}
@@ -175,11 +222,17 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
         expiry_day, quality = _iso_date(row.get("expiry_date")), row.get("metric_status")
         if expiry_day is not None and expiry_day >= today and isinstance(quality, dict) and quality.get("chain") == "OK":
             future_valid.append(row)
+    missing = _missing_record_keys(derived, DERIVED_COLUMNS)
+    if missing["missing_columns"]:
+        return None, _missing_record_selection("options_derived_snapshots", missing)
     if not future_valid:
         return None, {"status": "UNAVAILABLE", "reason": "NO_VALID_FUTURE_EXPIRY",
                       "snapshot_id": snapshot_id, "completed_at": completed_at}
     expiry = str(future_valid[0]["expiry_date"])
-    raw = _query_raw(client, snapshot_id, expiry)
+    try:
+        raw = _query_raw(client, snapshot_id, expiry)
+    except MissingRequiredRecordKeys as exc:
+        return None, _missing_record_selection(exc.source, exc.details)
     validation = validate_raw_snapshot(raw, snapshot_id, expiry)
     if validation["status"] != "OK":
         return None, {"status": "UNAVAILABLE", "reason": "RAW_CHAIN_INVALID",
@@ -196,7 +249,10 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
                 .eq("expiry_date", expiry).limit(1)
             )
             if prev_derived and isinstance(prev_derived[0].get("metric_status"), dict) and prev_derived[0]["metric_status"].get("chain") == "OK":
-                candidate = _query_raw(client, prev_id, expiry)
+                try:
+                    candidate = _query_raw(client, prev_id, expiry)
+                except MissingRequiredRecordKeys as exc:
+                    return None, _missing_record_selection(exc.source, exc.details)
                 if validate_raw_snapshot(candidate, prev_id, expiry)["status"] == "OK":
                     current_ids = {_contract_identity(x) for x in raw.to_dict("records")}
                     previous_ids = {_contract_identity(x) for x in candidate.to_dict("records")}
