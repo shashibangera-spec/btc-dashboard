@@ -302,10 +302,10 @@ Gross Put GEX Concentration Wall: {f'USD {float(report_options["put_gex_wall_str
 Put GEX (model-derived, unsigned): {f'{float(report_options["put_gex_wall_value"]):,.2f}' if report_options.get('put_gex_wall_value') is not None else 'N/A'}
 Nearby OI Concentrations: {report_walls}
 Nearby OI Filter: {filter_report_status(walls_res)}
-IV Skew Filter: {filter_report_status(iv_analysis)} | Classification: {iv_analysis.get('classification', 'N/A')} | Skew: {f"{float(iv_analysis['skew_pct']):+.2f}%" if iv_analysis.get('status') == 'OK' and iv_analysis.get('skew_pct') is not None else 'N/A'}
+IV Skew Filter: {filter_report_status(iv_analysis)} | Metric: {iv_analysis.get('metric', 'N/A')} | Call IV Premium: {f"{float(iv_analysis['call_iv_premium_pct']):+.2f}%" if iv_analysis.get('status') == 'OK' and iv_analysis.get('call_iv_premium_pct') is not None else 'N/A'} (descriptive; no directional classification)
 24h Volume / OI Filter: {filter_report_status(vol_analysis)} | Classification: {vol_analysis.get('classification', 'N/A')} | Direction: {vol_analysis.get('direction', 'N/A')} | Call/Put: {f"{float(vol_analysis['call_ratio']):.3f}x / {float(vol_analysis['put_ratio']):.3f}x" if vol_analysis.get('status') == 'OK' else 'N/A'}
 OI Migration Filter: {filter_report_status(migration_analysis)} | Classification: {migration_analysis.get('classification', 'N/A')} | Call/Put shift: {f"{float(migration_analysis['call_shift']):+,.0f} / {float(migration_analysis['put_shift']):+,.0f}" if migration_analysis.get('status') == 'OK' else 'N/A'}
-Sampled Taker Activity Filter: {filter_report_status(aggressor_analysis)} | Classification: {aggressor_analysis.get('classification', 'N/A')} | Buy/Sell: {f"{float(aggressor_analysis['taker_buy']):,.0f} / {float(aggressor_analysis['taker_sell']):,.0f}" if aggressor_analysis.get('status') == 'OK' else 'N/A'} (sampled contracts only)
+Sampled Taker Activity Filter: {filter_report_status(aggressor_analysis)} | Sampled Buy/Sell: {f"{float(aggressor_analysis['sampled_buy_volume']):,.0f} / {float(aggressor_analysis['sampled_sell_volume']):,.0f}" if aggressor_analysis.get('status') == 'OK' else 'N/A'} | Balance: {f"{float(aggressor_analysis['sampled_volume_balance']):+,.0f} ({float(aggressor_analysis['sampled_volume_balance_pct']):+.1f}%)" if aggressor_analysis.get('status') == 'OK' and aggressor_analysis.get('sampled_volume_balance_pct') is not None else 'N/A'} (sampled options contracts only; descriptive)
 Metric Quality: {report_options.get('metric_status', 'N/A')}
 
 Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX is unsigned and does not identify dealer positioning or net gamma. AMT/price action remains primary; derivatives are context only."""
@@ -556,18 +556,16 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                         st.metric("Detected strike", "N/A")
                         st.caption(f"{walls_res.get('status', 'UNAVAILABLE')}: {walls_res.get('reason', 'No valid OI result').replace('_', ' ').lower()}.")
 
-            # 2. IV skew: positive means call IV exceeds put IV.
+            # 2. IV skew: continuous relative Call IV premium; descriptive only.
             with filter_cols[1]:
                 with st.container(border=True):
-                    st.markdown("**2. IV Skew**")
+                    st.markdown("**2. Call IV Premium**")
                     if iv_analysis and iv_analysis.get("status") == "OK":
-                        skew_value = float(iv_analysis["skew_pct"])
-                        skew_color = "green" if skew_value > 0 else "red" if skew_value < 0 else "gray"
-                        skew_label = "Call > Put" if skew_value > 0 else "Put > Call" if skew_value < 0 else "Equal"
-                        st.markdown(f"<div style='font-size:1.65rem;font-weight:700;color:{skew_color}'>{skew_value:+.2f}%</div>", unsafe_allow_html=True)
-                        st.caption(f"{skew_label} IV (relative to put IV); five-strike average.")
+                        premium_value = float(iv_analysis["call_iv_premium_pct"])
+                        st.metric("Call IV Premium", f"{premium_value:+.2f}%")
+                        st.caption("Average Call IV relative to average Put IV; five-strike sample. Descriptive only, not a directional signal.")
                     else:
-                        st.metric("Relative skew", "N/A")
+                        st.metric("Call IV Premium", "N/A")
                         st.caption(f"{iv_analysis.get('status', 'UNAVAILABLE')}: {iv_analysis.get('reason', 'Insufficient IV data').replace('_', ' ').lower()}.")
 
             # 3. Options turnover relative to OI.
@@ -608,23 +606,21 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                         st.metric("Peak-strike shift", "N/A")
                         st.caption(f"{migration_analysis.get('status', 'UNAVAILABLE')}: {migration_analysis.get('reason', 'Requires two usable snapshots').replace('_', ' ').lower()}.")
 
-            # 5. Combined nearby taker activity.
+            # 5. Sampled taker volumes: raw descriptive measurements only.
             with filter_cols_row2[1]:
                 with st.container(border=True):
-                    st.markdown("**5. Taker Activity**")
+                    st.markdown("**5. Sampled Taker Volumes**")
                     if aggressor_analysis and aggressor_analysis.get("status") == "OK":
-                        buy_volume = float(aggressor_analysis["taker_buy"])
-                        sell_volume = float(aggressor_analysis["taker_sell"])
-                        if aggressor_analysis["classification"] == "AGGRESSIVE_BUYING":
-                            taker_color, taker_label = "green", "Buy dominant"
-                        elif aggressor_analysis["classification"] == "AGGRESSIVE_SELLING":
-                            taker_color, taker_label = "red", "Sell dominant"
-                        else:
-                            taker_color, taker_label = "gray", "No clear dominance"
-                        st.markdown(f"<div style='font-size:1.05rem;font-weight:700;color:{taker_color}'>Buy {buy_volume:,.0f}<br>Sell {sell_volume:,.0f}</div>", unsafe_allow_html=True)
-                        st.caption(taker_label + "; calls and puts combined.")
+                        buy_volume = float(aggressor_analysis["sampled_buy_volume"])
+                        sell_volume = float(aggressor_analysis["sampled_sell_volume"])
+                        balance = float(aggressor_analysis["sampled_volume_balance"])
+                        balance_pct = aggressor_analysis.get("sampled_volume_balance_pct")
+                        st.metric("Sampled Buy Volume", f"{buy_volume:,.0f}")
+                        st.metric("Sampled Sell Volume", f"{sell_volume:,.0f}")
+                        balance_text = f"{balance:+,.0f} ({float(balance_pct):+.1f}%)" if balance_pct is not None else f"{balance:+,.0f} (N/A %)"
+                        st.caption("Buy − Sell balance: " + balance_text + ". Calls and puts combined; sampled contracts only. Descriptive, not spot/perpetual flow.")
                     else:
-                        st.metric("Buy / Sell", "N/A")
+                        st.metric("Sampled Buy / Sell", "N/A")
                         st.caption(f"{aggressor_analysis.get('status', 'UNAVAILABLE')}: {aggressor_analysis.get('reason', 'Insufficient taker-volume data').replace('_', ' ').lower()}.")
         # --- LAYER 2: OI CONCENTRATION MAP ---
         st.markdown("---")
