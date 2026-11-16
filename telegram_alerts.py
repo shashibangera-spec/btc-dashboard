@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import requests
 from datetime import datetime, timedelta, timezone
 from supabase import create_client
@@ -15,6 +16,9 @@ if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, TELEGRA
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 IST = timezone(timedelta(hours=5, minutes=30))
+
+# Final merge commit must replace this marker with its UTC commit timestamp.
+GEX_ALERT_CUTOVER_UTC = "PLACEHOLDER_SET_AT_MERGE"
 
 def parse_json_safely(data):
     if isinstance(data, str):
@@ -91,98 +95,177 @@ def evaluate_amt_transition():
         return {"key": event_key, "type": "AMT_STATE_CHANGE", "time": curr["candle_close_time"], "msg": msg, "payload": curr}
     return None
 
-def evaluate_gex_breach():
-    # Fetch last 2 completed AMT candles
-    res_amt = supabase.table("amt_snapshots").select("*").eq("data_status", "VALID").order("candle_close_time", desc=True).limit(2).execute()
-    if len(res_amt.data) < 2: return None
-    curr, prev = res_amt.data[0], res_amt.data[1]
-    
-    # Exclude contracts expiring today (UTC); evaluate only future expiries.
-    tomorrow_str = (
-        datetime.now(timezone.utc) + timedelta(days=1)
-    ).strftime("%Y-%m-%d")
+def parse_utc_timestamp(value):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("timestamp is missing")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
-    # Select the nearest future expiry first, then its freshest snapshot.
-    res_opt = (
-        supabase.table("options_derived_snapshots")
-        .select("*")
-        .gte("expiry_date", tomorrow_str)
-        .order("expiry_date", desc=False)
-        .order("source_collected_at", desc=True)
-        .limit(1)
-        .execute()
+
+def validate_gex_event_details(details):
+    """Validate the detector's complete GEX_WALL_BREACH evidence payload."""
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("event_details is not valid JSON") from exc
+    if not isinstance(details, dict):
+        raise ValueError("event_details must be an object")
+    required = (
+        "wall_side", "wall_identity", "expiry_date", "breached_level",
+        "first_close_timestamp", "first_close_price",
+        "confirmation_close_timestamp", "confirmation_close_price",
+        "wall_source_snapshot_id", "wall_source_collected_at",
+        "consecutive_confirmation", "rearm_rule",
     )
-    if not res_opt.data: return None
-    opt = res_opt.data[0]
-
-    # Require a successful collection run for this exact options snapshot.
-    snapshot_id = opt.get("snapshot_id")
-    if not snapshot_id:
-        print("GEX check skipped: options snapshot has no snapshot_id.")
-        return None
-
-    res_run = (
-        supabase.table("options_collection_runs")
-        .select("snapshot_id,status")
-        .eq("snapshot_id", snapshot_id)
-        .eq("status", "SUCCESS")
-        .limit(1)
-        .execute()
-    )
-    if not res_run.data:
-        print(f"GEX check skipped: no SUCCESS collection run for snapshot {snapshot_id}.")
-        return None
-
-    # The options data must be contemporaneous with the AMT candle being tested.
+    missing = [key for key in required if key not in details or details[key] is None]
+    if missing:
+        raise ValueError("missing required event_details keys: " + ", ".join(missing))
+    normalized = dict(details)
+    if normalized["wall_side"] not in ("CALL", "PUT"):
+        raise ValueError("wall_side must be CALL or PUT")
+    for key in ("wall_identity", "wall_source_snapshot_id", "rearm_rule"):
+        if not isinstance(normalized[key], str) or not normalized[key].strip():
+            raise ValueError(f"{key} must be a non-empty string")
     try:
-        source_time = datetime.fromisoformat(
-            str(opt["source_collected_at"]).replace("Z", "+00:00")
-        )
-        candle_time = datetime.fromisoformat(
-            str(curr["candle_close_time"]).replace("Z", "+00:00")
-        )
-        if source_time.tzinfo is None:
-            source_time = source_time.replace(tzinfo=timezone.utc)
-        if candle_time.tzinfo is None:
-            candle_time = candle_time.replace(tzinfo=timezone.utc)
+        expiry = datetime.strptime(str(normalized["expiry_date"]), "%Y-%m-%d").date()
+    except (TypeError, ValueError) as exc:
+        raise ValueError("expiry_date must be YYYY-MM-DD") from exc
+    normalized["expiry_date"] = expiry.isoformat()
+    for key in ("breached_level", "first_close_price", "confirmation_close_price"):
+        value = normalized[key]
+        if isinstance(value, bool):
+            raise ValueError(f"{key} must be a finite number")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be a finite number") from exc
+        if not math.isfinite(number):
+            raise ValueError(f"{key} must be a finite number")
+        normalized[key] = number
+    for key in ("first_close_timestamp", "confirmation_close_timestamp", "wall_source_collected_at"):
+        normalized[key] = parse_utc_timestamp(normalized[key]).isoformat()
+    if normalized["consecutive_confirmation"] is not True:
+        raise ValueError("consecutive_confirmation must be exactly true")
+    return normalized
 
-        age = candle_time - source_time
-        if age.total_seconds() < 0 or age > timedelta(minutes=35):
-            print(
-                "GEX check skipped: options snapshot is outside the allowed "
-                f"freshness window (age={age})."
-            )
-            return None
-    except (KeyError, TypeError, ValueError) as exc:
-        print(f"GEX check skipped: invalid options/AMT timestamp: {exc}")
-        return None
 
-    # Check metric status (Handle string or dict)
-    metric_status = parse_json_safely(opt.get("metric_status"))
-    if metric_status.get("call_gex") != "OK" or metric_status.get("put_gex") != "OK":
-        return None
-        
-    call_wall = float(opt.get("call_gex_wall_strike", 0))
-    put_wall = float(opt.get("put_gex_wall_strike", 0))
-    
-    if call_wall == 0 or put_wall == 0: return None
-    
-    c_close, p_close = float(curr["close_price"]), float(prev["close_price"])
-    
-    # 2 Consecutive closes above Call Wall
-    if c_close > call_wall and p_close > call_wall:
-        event_key = f"GEX_CALL_BREACH_{curr['candle_close_time']}"
-        if check_event_exists(event_key): return None
-        msg = f"⚠️ PRICE CLOSED ABOVE CALL GEX CONCENTRATION\n\nPrice: ${c_close:,.0f}\nCall Wall: ${call_wall:,.0f}\nExpiry: {opt['expiry_date']}"
-        return {"key": event_key, "type": "GEX_WALL_BREACH", "time": curr["candle_close_time"], "msg": msg, "payload": curr}
-        
-    # 2 Consecutive closes below Put Wall
-    if c_close < put_wall and p_close < put_wall:
-        event_key = f"GEX_PUT_BREACH_{curr['candle_close_time']}"
-        if check_event_exists(event_key): return None
-        msg = f"⚠️ PRICE CLOSED BELOW PUT GEX CONCENTRATION\n\nPrice: ${c_close:,.0f}\nPut Wall: ${put_wall:,.0f}\nExpiry: {opt['expiry_date']}"
-        return {"key": event_key, "type": "GEX_WALL_BREACH", "time": curr["candle_close_time"], "msg": msg, "payload": curr}
-    return None
+def gex_row_is_eligible(row, cutover_utc):
+    """Pure eligibility gate; created_at controls cutover, event_timestamp is display time."""
+    if not isinstance(row, dict) or row.get("event_type") != "GEX_WALL_BREACH" or row.get("id") is None:
+        return False
+    try:
+        created_at = parse_utc_timestamp(row.get("created_at"))
+        cutover = parse_utc_timestamp(cutover_utc)
+        parse_utc_timestamp(row.get("event_timestamp"))
+        validate_gex_event_details(row.get("event_details"))
+    except (TypeError, ValueError):
+        return False
+    return created_at >= cutover
+
+
+def build_gex_alert(row):
+    details = validate_gex_event_details(row["event_details"])
+    side = details["wall_side"]
+    confirmation_price = details["confirmation_close_price"]
+    breached_level = details["breached_level"]
+    direction = "ABOVE CALL" if side == "CALL" else "BELOW PUT"
+    message = (
+        f"⚠️ GEX WALL BREACH — PRICE CLOSED {direction} CONCENTRATION\n\n"
+        f"Confirmation close: $\{confirmation_price:,.2f}\n"
+        f"Breached wall: $\{breached_level:,.2f}\n"
+        f"Expiry: {details['expiry_date']}\n"
+        f"Confirmed: {details['confirmation_close_timestamp']}"
+    )
+    event_key = f"SYSTEM_SIGNAL_GEX_WALL_BREACH_{row['id']}"
+    return {
+        "key": event_key,
+        "type": "GEX_WALL_BREACH",
+        "time": row["event_timestamp"],
+        "msg": message,
+        "payload": {
+            "journal_id": row["id"],
+            "event_key": row.get("event_key"),
+            "event_timestamp": row["event_timestamp"],
+            "created_at": row["created_at"],
+            "event_details": details,
+        },
+    }
+
+
+def collect_alerts(amt, gex_alerts, oi):
+    """Keep alert types independent; a same-candle AMT and GEX pair both survive."""
+    alerts = []
+    if amt:
+        alerts.append(amt)
+    alerts.extend(gex_alerts or [])
+    if oi:
+        alerts.append(oi)
+    return alerts
+
+
+def log_gex_event(alert, status, message_id=None, error=None):
+    """GEX-specific outbox write with retry attempt accounting; shared legacy helper stays unchanged."""
+    key = alert["key"]
+    try:
+        existing = (
+            supabase.table("telegram_alert_events")
+            .select("attempt_count")
+            .eq("event_key", key)
+            .limit(1)
+            .execute()
+        )
+        prior_attempts = int(existing.data[0].get("attempt_count") or 0) if existing.data else 0
+        record = {
+            "event_key": key,
+            "event_type": alert["type"],
+            "event_time": alert["time"],
+            "payload": alert["payload"],
+            "delivery_status": status,
+            "telegram_message_id": message_id if status == "SENT" else None,
+            "sent_at": datetime.now(timezone.utc).isoformat() if status == "SENT" else None,
+            "attempt_count": prior_attempts + 1,
+            "last_error": str(error)[:1000] if error else None,
+        }
+        supabase.table("telegram_alert_events").upsert(
+            record, on_conflict="event_key"
+        ).execute()
+    except Exception as exc:
+        print(f"Failed to log GEX event ({status}): {exc}")
+
+
+def evaluate_gex_breach():
+    """Read detector-confirmed journal events; never recalculate walls or apply snapshot-age gates."""
+    try:
+        cutover = parse_utc_timestamp(GEX_ALERT_CUTOVER_UTC)
+    except ValueError:
+        print("GEX alert skipped: GEX_ALERT_CUTOVER_UTC has not been finalized.")
+        return []
+    response = (
+        supabase.table("system_signal_journal")
+        .select("id,event_timestamp,event_type,event_key,event_details,created_at")
+        .eq("event_type", "GEX_WALL_BREACH")
+        .gte("created_at", cutover.isoformat())
+        .order("created_at", desc=False)
+        .limit(200)
+        .execute()
+    )
+    alerts = []
+    for row in response.data or []:
+        if not gex_row_is_eligible(row, cutover.isoformat()):
+            print(f"GEX journal row skipped: invalid or pre-cutover row id={row.get('id')}.")
+            continue
+        try:
+            alert = build_gex_alert(row)
+        except (TypeError, ValueError) as exc:
+            print(f"GEX journal row skipped: invalid event_details id={row.get('id')}: {exc}")
+            continue
+        if check_event_exists(alert["key"]):
+            continue
+        alerts.append(alert)
+    return alerts
 
 def evaluate_oi_shock():
     # Fetch last 2 aggregate OI records
@@ -251,11 +334,10 @@ def main():
     amt = evaluate_amt_transition()
     if amt: alerts.append(amt)
     
-    gex = evaluate_gex_breach()
-    if gex: alerts.append(gex)
+    gex_alerts = evaluate_gex_breach()
     
     oi = evaluate_oi_shock()
-    if oi: alerts.append(oi)
+    alerts = collect_alerts(amt, gex_alerts, oi)
     
     if alerts:
         combined_msg = "\n\n".join([a["msg"] for a in alerts])
@@ -266,10 +348,17 @@ def main():
         valid_message_id = msg_id if delivery_status == "SENT" else None
 
         for a in alerts:
-            log_event(
-                a["key"], a["type"], a["time"], a["payload"],
-                status=delivery_status, message_id=valid_message_id
-            )
+            if a["type"] == "GEX_WALL_BREACH":
+                log_gex_event(
+                    a, delivery_status,
+                    message_id=valid_message_id,
+                    error=None if delivery_status == "SENT" else msg_id,
+                )
+            else:
+                log_event(
+                    a["key"], a["type"], a["time"], a["payload"],
+                    status=delivery_status, message_id=valid_message_id
+                )
 
         if delivery_status == "SENT":
             print(f"Alert sent and logged successfully (message_id={valid_message_id}).")
