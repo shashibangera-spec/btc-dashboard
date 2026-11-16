@@ -286,6 +286,99 @@ A useful end-of-period query is therefore a **windowed join**, not a single-row 
 
 ---
 
+### Research vector: Prior Value overlap regime (Balance versus Value Migration)
+
+Research question: **Does the relationship between the current Developing Value Area and the frozen Prior Value Area change how Futures OI should be interpreted at a VAL/VAH breach?**
+
+This is a regime-conditioning hypothesis. High overlap is a candidate balance environment and low overlap is a candidate value-migration/trending environment; neither classification by itself proves balance, trend or predictive power.
+
+#### Value Area Overlap % definition
+
+For each valid completed AMT observation, define:
+
+- Prior Value interval: \\(P=[prior\\_val,prior\\_vah]\\)
+- Developing Value interval: \\(D=[developing\\_val,developing\\_vah]\\)
+
+The shared width is:
+
+\\[
+I=\\max(0,\\min(prior\\_vah,developing\\_vah)-\\max(prior\\_val,developing\\_val))
+\\]
+
+Use **Prior-Value Coverage %** as the primary, interpretable overlap measure:
+
+\\[
+OVL_P=100\\times\\frac{I}{prior\\_vah-prior\\_val}
+\\]
+
+This answers how much of the prior session's value range is covered by current Developing Value. Also retain two diagnostics so width changes do not distort interpretation:
+
+- Developing-Value Coverage %: \\(OVL_D=100\\times I/(developing\\_vah-developing\\_val)\\)
+- Symmetric Intersection-over-Union: \\(IoU=100\\times I/(W_P+W_D-I)\\), where \\(W_P=prior\\_vah-prior\\_val\\) and \\(W_D=developing\\_vah-developing\\_val\\).
+
+Require positive, non-null widths and \\(data\\_status=VALID\\). Calculate overlap from the same completed AMT row used for the as-of OI observation; never use a later developing value or an in-progress candle.
+
+For initial research segmentation only, use provisional buckets:
+
+- **High overlap / candidate Balance:** \\(OVL_P\\geq70\\%\\)
+- **Intermediate / transitional:** \\(30\\%\\leq OVL_P<70\\%\\)
+- **Low overlap / candidate Value Migration:** \\(OVL_P<30\\%\\)
+
+Retain the continuous values and repeat the analysis with alternative cutoffs (for example 60/40 and 80/20). These are operational research bins, not universal AMT constants. Report how often the three overlap measures disagree.
+
+#### Split the OI breach study by environment
+
+**A. Balanced environment — high overlap**
+
+Research question: when price probes below Prior VAL or above Prior VAH while current Developing Value remains highly overlapped with Prior Value, does prior-session or multi-day positioning explain the subsequent response better than the latest 30-minute OI change?
+
+Compare, as separate predictors:
+
+1. 30-minute OI percentage change using the existing valid 25–35-minute interval and stable contributor set.
+2. Prior-day OI change, measured between comparable observations approximately one session apart.
+3. Multi-day net OI change (initially 3-day and 7-day endpoint changes), requiring comparable contributor coverage across the full measurement span.
+
+For each measure, compare absorption-candidate outcomes at the breached edge: price-range compression, failure to extend beyond the breach extreme, and recovery/acceptance back inside Prior Value over predeclared 1h, 4h and 24h horizons. Use matched observations and non-overlapping episodes. Do not assume prior-day or multi-day OI is superior; test it against the 30-minute measure.
+
+**B. Trending / low-overlap environment**
+
+Research question: when Developing Value has migrated away from Prior Value, does the 30-minute OI change measured at the VAL/VAH edge add information about continuation versus failed auction?
+
+At each breach, retain the OI change over the valid 25–35-minute comparison interval, breach side (below VAL / above VAH), penetration depth and overlap metrics. Define outcomes before examining results:
+
+- **Continuation candidate:** subsequent completed candles remain outside the relevant Prior Value boundary and extend the excursion beyond the breach extreme within the selected horizon.
+- **Failed-auction candidate:** price re-enters Prior Value and satisfies a predeclared completed-candle acceptance/reclaim condition within the selected horizon.
+- **Unresolved:** neither outcome occurs or the required candles/data are missing.
+
+Test 30-minute OI change as a continuous variable first; any expansion/contraction buckets are secondary sensitivity analysis. Do not infer buyer/seller identity from OI.
+
+#### Breach depth and data controls
+
+For a downside breach, define penetration points as \\(prior\\_val-episode\\_low\\); for an upside breach, use \\(episode\\_high-prior\\_vah\\). Normalize depth by Prior Value width and, separately, by the contemporaneous ATR:
+
+\\[
+Depth_{VA}=100\\times\\frac{penetration}{prior\\_vah-prior\\_val}
+\\]
+
+\\[
+Depth_{ATR}=\\frac{penetration}{ATR_{21}}
+\\]
+
+Keep penetration continuous initially. If shallow/deep categories are later needed, select cutoffs from the observed distribution or pre-register sensitivity bands rather than choosing them after seeing outcomes.
+
+Across both environments:
+
+- Use the latest valid completed AMT candle at or before each OI observation (strict as-of alignment).
+- Require stable non-empty aggregate contributor coverage and valid OI continuity; do not bridge missing intervals or coverage changes.
+- Preserve source timestamp offsets, nulls, and missing outcome windows.
+- Distinguish USD-notional OI changes from contract-count changes; include the existing BTC-equivalent normalization sensitivity.
+- Deduplicate overlapping breach windows into independent episodes and report both raw observations and episode counts.
+- Compare the same outcome horizons and controls across regimes; report effect sizes, confidence intervals, sample counts and multiple-testing adjustments.
+
+**Interpretation guardrail:** the balanced/trending split is a research stratification, not a pre-validated AMT law. The claims that intraday OI is less informative in balance and that 30-minute OI is more informative during value migration are hypotheses to test, not assumptions to encode into alerts or trading rules.
+
+---
+
 # Database and security
 
 Supabase PostgreSQL is the central system of record.
