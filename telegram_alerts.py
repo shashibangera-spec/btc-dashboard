@@ -18,7 +18,8 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # Final merge commit must replace this marker with its UTC commit timestamp.
-GEX_ALERT_CUTOVER_UTC = "PLACEHOLDER_SET_AT_MERGE"
+# NOTE: Update this to the exact current UTC time before committing the final merge.
+GEX_ALERT_CUTOVER_UTC = "2026-11-16T15:00:00Z"
 
 def parse_json_safely(data):
     if isinstance(data, str):
