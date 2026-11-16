@@ -407,3 +407,8 @@ Stores versioned, non-directional market reaction measurements linked to the imm
 - `service_role` has backend management access; no browser/client write access is granted.
 - The analyzer uses `SUPABASE_SERVICE_ROLE_KEY` only in GitHub Actions.
 - The original signal journal remains the immutable event record; this table stores subsequent outcomes separately.
+
+
+## Reaction sample independence
+
+A single completed AMT candle can create multiple journal records with the same `event_timestamp` and anchor price (for example, `AMT_STATE_CHANGE` and `VALUE_MIGRATION`). Their reaction rows may therefore represent the same market path. Statistical evaluation must report event-type counts separately from unique event-time clusters and must not treat same-candle events as independent observations.
