@@ -69,7 +69,7 @@ def database(rows=None, status="SUCCESS"):
     raw = (rows if rows is not None else raw_rows()).to_dict("records")
     return {
         "options_collection_runs": [{
-            "snapshot_id": "s1", "status": status, "completed_at": "2026-11-16T12:30:00Z",
+            "snapshot_id": "s1", "status": status, "started_at": "2026-11-16T12:00:00Z", "completed_at": "2026-11-16T12:30:00Z",
             "expected_contracts": len(raw), "received_contracts": len(raw), "inserted_contracts": len(raw),
         }],
         "options_derived_snapshots": [{
@@ -103,7 +103,7 @@ def test_selector_uses_success_run_and_matching_snapshot_rows():
 def test_latest_success_without_valid_expiry_fails_closed_without_fallback():
     db = database()
     db["options_collection_runs"].insert(0, {
-        "snapshot_id": "newest", "status": "SUCCESS", "completed_at": "2026-11-16T13:00:00Z",
+        "snapshot_id": "newest", "status": "SUCCESS", "started_at": "2026-11-16T12:45:00Z", "completed_at": "2026-11-16T13:00:00Z",
         "expected_contracts": 1, "received_contracts": 1, "inserted_contracts": 1,
     })
     selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
@@ -181,3 +181,45 @@ def test_one_calculator_exception_does_not_suppress_other_filters(monkeypatch):
     assert results["iv_skew"]["status"] == "ERROR"
     assert results["nearby_oi"]["status"] == results["volume_oi"]["status"] == "OK"
     assert results["taker_activity"]["status"] == "OK"
+
+
+
+@pytest.mark.parametrize(
+    ("table", "missing_column", "expected_source"),
+    [
+        ("options_collection_runs", "expected_contracts", "options_collection_runs"),
+        ("options_derived_snapshots", "calculated_at", "options_derived_snapshots"),
+        ("options_oi_snapshots", "mark_iv", "options_oi_snapshots"),
+    ],
+)
+def test_database_boundary_missing_required_record_key_fails_closed(
+    table, missing_column, expected_source, caplog
+):
+    db = database()
+    if table == "options_oi_snapshots":
+        for row in db[table]:
+            row.pop(missing_column, None)
+    else:
+        db[table][0].pop(missing_column, None)
+
+    selected, meta = f.select_canonical_snapshot(
+        Client(db), as_of=date(2026, 11, 16)
+    )
+
+    assert selected is None
+    assert meta["status"] == "UNAVAILABLE"
+    assert meta["reason"] == "MISSING_REQUIRED_COLUMNS"
+    assert meta["source"] == expected_source
+    assert missing_column in meta["missing_columns"]
+    assert missing_column in caplog.text
+
+
+def test_missing_required_keys_report_record_indexes():
+    details = f._missing_record_keys(
+        [{"snapshot_id": "s1"}, {"snapshot_id": "s2", "status": "SUCCESS"}],
+        ("snapshot_id", "status"),
+    )
+    assert details == {
+        "missing_columns": ["status"],
+        "row_indexes": {"status": [0]},
+    }
