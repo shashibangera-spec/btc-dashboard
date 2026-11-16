@@ -69,7 +69,7 @@ def database(rows=None, status="SUCCESS"):
     raw = (rows if rows is not None else raw_rows()).to_dict("records")
     return {
         "options_collection_runs": [{
-            "snapshot_id": "s1", "status": status, "completed_at": "2026-11-16T12:30:00Z",
+            "snapshot_id": "s1", "status": status, "started_at": "2026-11-16T12:00:00Z", "completed_at": "2026-11-16T12:30:00Z",
             "expected_contracts": len(raw), "received_contracts": len(raw), "inserted_contracts": len(raw),
         }],
         "options_derived_snapshots": [{
@@ -103,7 +103,7 @@ def test_selector_uses_success_run_and_matching_snapshot_rows():
 def test_latest_success_without_valid_expiry_fails_closed_without_fallback():
     db = database()
     db["options_collection_runs"].insert(0, {
-        "snapshot_id": "newest", "status": "SUCCESS", "completed_at": "2026-11-16T13:00:00Z",
+        "snapshot_id": "newest", "status": "SUCCESS", "started_at": "2026-11-16T12:45:00Z", "completed_at": "2026-11-16T13:00:00Z",
         "expected_contracts": 1, "received_contracts": 1, "inserted_contracts": 1,
     })
     selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
