@@ -247,7 +247,7 @@ def build_incomplete_result(candles, window_end, reason):
         "candles_expected": EXPECTED_CANDLES,
         "candles_received": len(candles),
         "analysis_status": "INCOMPLETE",
-        "data_source": "DELTA_INDIA_API:BTCUSD:30m",
+        "data_source": "DELTA_INDIA_API:BTCUSD_PERPETUAL:30m",
         "error_message": reason[:1000],
         "analyzed_at": iso_utc(utc_now()),
     }
