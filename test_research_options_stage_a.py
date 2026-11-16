@@ -87,7 +87,8 @@ def test_adapter_rejects_derived_expiry_or_chain_mismatch():
     db["options_derived_snapshots"][0]["metric_status"] = {"chain": "PARTIAL"}
     result = load_canonical_research_options(Client(db), as_of=date(2026, 11, 16))
     assert result["status"] == "UNAVAILABLE"
-    assert result["reason"] == "DERIVED_CHAIN_NOT_VALID"
+    # The canonical selector rejects PARTIAL chains before the adapter reads metrics.
+    assert result["selection"]["reason"] == "NO_VALID_FUTURE_EXPIRY"
 
 
 def test_futures_optional_numeric_parser_preserves_zero():
