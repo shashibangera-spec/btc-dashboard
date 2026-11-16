@@ -132,7 +132,7 @@ Minor formatting-only changes generally do not require a changelog entry unless 
 - Added `reaction_analyzer.py` (`reaction-v1.0`) to measure neutral post-event price movement using Binance Spot BTCUSDT 30-minute OHLC.
 - The analyzer excludes the event candle and requires eight contiguous completed candles strictly after the event and fully inside the event-relative four-hour window.
 - Added 30m/1h/2h/4h close observations, window high/low, and signed neutral upside/downside excursion in USD and percent.
-- Incomplete candle windows are marked `INCOMPLETE` and retried; transient processing failures remain retryable.
+- Incomplete candle windows are stored as `INCOMPLETE` and excluded from complete samples; transient processing failures are not persisted and remain retryable.
 - Added `.github/workflows/reaction-analyzer.yml`, scheduled daily at 07:00 UTC (12:30 PM IST) with manual dispatch.
 - RLS: anon read-only; trusted backend service-role management. No client-side writes.
 - No changes to Signal Detector, AMT logic, Telegram workflow, dashboard UI or order execution.
