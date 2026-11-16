@@ -1255,8 +1255,6 @@ def _render_dashboard():
         else:
             st.info("Options context unavailable or ATM quote validation did not pass. Missing values are not treated as zero.")
     
-        render_options_filter_panel(options_filter_results)
-
         st.markdown('<div class="mini" style="margin-top:8px">FUTURES</div>', unsafe_allow_html=True)
         basis_status = "Discount" if sp_prem is not None and sp_prem < 0 else "Premium" if sp_prem is not None and sp_prem > 0 else "Unavailable"
         _basis_tone = {"Discount": "down", "Premium": "up"}.get(basis_status, "flat")
@@ -1267,6 +1265,8 @@ def _render_dashboard():
             ], "g2"),
             unsafe_allow_html=True,
         )
+
+        render_options_filter_panel(options_filter_results)
     
     st.markdown('<div class="foot">Futures OI and basis are context, not directional signals. OI direction is unavailable without a comparable prior observation.</div>', unsafe_allow_html=True)
     
