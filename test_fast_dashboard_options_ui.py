@@ -11,8 +11,10 @@ def _source():
 
 
 def _style_block(source):
-    marker = '</style>\\n""", unsafe_allow_html=True)'
-    start = source.index('st.markdown("""\\n<style>')
+    marker = "</style>" + chr(10) + '""" , unsafe_allow_html=True)'
+    marker = marker.replace('""" ,', '""",')
+    start_marker = 'st.markdown("""' + chr(10) + "<style>"
+    start = source.index(start_marker)
     end = source.index(marker, start)
     return source[start:end + len(marker)]
 
