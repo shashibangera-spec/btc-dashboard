@@ -82,6 +82,12 @@ The five Options Filters research outputs are now integrated into System B throu
 - If the selected snapshot or an individual filter is unavailable, the panel handles that result without substituting an older snapshot or disrupting the rest of the dashboard.
 - The integration preserves the existing information hierarchy: **AMT structure → Futures context → Options context**. The five filters are an additional Options-context layer; they do not alter AMT or Futures calculations, state logic or presentation.
 
+### Research Dashboard — Stage A canonical data integration
+
+`btc_live_research_dashboard.py` remains the detailed forensic/research interface. Its options data path now uses `research_options_adapter.py` and the shared `options_filters.py` canonical selector. The dashboard pins one eligible SUCCESS run, snapshot ID, future expiry and raw snapshot spot; derived metrics must match that same snapshot and expiry. Legacy filter formulas are intentionally retained until Migration Stage B, but nearest-strike selection now uses the pinned options spot. The existing card/layout presentation is unchanged.
+
+The Research Dashboard's Prior VAH/POC/VAL display reads the latest `amt_snapshots` row only when `data_status=VALID`; it no longer independently recomputes prior TPO values from Binance candles. Futures funding and basis preserve valid zero values.
+
 ### Division of labor for future System B changes
 
 - **ChatGPT:** backend logic, APIs, GEX/AMT calculations, database infrastructure, Telegram alerts and minor Python/dataframe changes.
