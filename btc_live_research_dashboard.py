@@ -7,7 +7,7 @@ import json
 from datetime import timezone
 from supabase import create_client
 from amt_core import fetch_binance_data
-from research_options_adapter import load_canonical_research_options
+from research_options_adapter import load_canonical_research_options, parse_optional_float
 
 st.set_page_config(page_title="BTC Combined Research", layout="wide")
 st.title("🔬 BTC Combined Research Terminal")
@@ -42,8 +42,8 @@ def fetch_layer2_supabase_data():
             parsed_rows.append({
                 "time": timestamp, 
                 "oi": float(row.get("oi_usd")) if row.get("oi_usd") else None,
-                "funding": float(row.get("funding_rate")) if row.get("funding_rate") is not None else None,
-                "basis": float(row.get("basis_pct")) if row.get("basis_pct") is not None else None,
+                "funding": parse_optional_float(row.get("funding_rate")),
+                "basis": parse_optional_float(row.get("basis_pct")),
                 "contributors": set(status_json.get("oi_contributors", [])),
                 "coverage": status_json.get("coverage", {}).get("label", "UNKNOWN")
             })
