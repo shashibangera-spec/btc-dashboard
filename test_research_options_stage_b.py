@@ -49,10 +49,11 @@ def test_dashboard_removes_legacy_filter_calculators_and_maps_canonical_fields()
         assert legacy not in source
     assert 'filter_results = opt_forensics.get("filters", {})' in source
     assert 'migration_analysis.get("classification")' in source
-    assert 'aggressor_analysis["taker_buy"]' in source
-    assert 'aggressor_analysis["taker_sell"]' in source
+    assert 'aggressor_analysis["sampled_buy_volume"]' in source
+    assert 'aggressor_analysis["sampled_sell_volume"]' in source
+    assert 'aggressor_analysis["sampled_volume_balance"]' in source
     assert 'vol_analysis["call_ratio"]' in source
-    assert 'iv_analysis["skew_pct"]' in source
+    assert 'iv_analysis["call_iv_premium_pct"]' in source
     assert 'walls_res.get("walls", [])' in source
     assert 'else "Stable"' not in source
     assert "filter_report_status" in source
