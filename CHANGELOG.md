@@ -24,6 +24,7 @@ Dates use the project change date in UTC unless a change explicitly documents an
 - `TEST_MODE` remains the existing canned connectivity test and bypasses all live alert evaluation. Its pre-existing behavior logs the test row as `event_type="AMT_STATE_CHANGE"`; this is a known labeling defect intentionally not changed in this branch and is queued for a separate micro-fix.
 - Added offline pytest coverage in `test_gex_notifier.py` and CI workflow `.github/workflows/gex-notifier-tests.yml`, using the verified live journal row 6 `event_details` as a fixture. No live Telegram or Supabase connection is required for these unit tests.
 - No database schema, RLS policy, signal detector, or Telegram workflow environment changes are included.
+- Known limitation: the GEX journal query is capped at 200 rows per notifier run. This cap is intentionally unchanged pending an explicit operational decision; backlog/pagination changes are out of scope.
 
 
 ### Added
