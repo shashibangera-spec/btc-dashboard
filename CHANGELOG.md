@@ -12,6 +12,17 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ## 2026-11-16
 
+### Changed — Research Dashboard canonical OI map and raw chain views (Stage C)
+
+- Removed zero-filling from the OI Concentration Map. Missing Call/Put OI remains null and is visually labelled Missing; observed zero OI remains an actual zero-valued observation.
+- Centralized nearest-strike selection in the research adapter and use the canonical options snapshot spot for both the OI map and raw options table. No Binance live price is used to choose the ten strikes.
+- Reworked raw-chain pivot aggregation to preserve all-null OI, OI USD, volume and taker groups as missing (`sum(min_count=1)`), while preserving actual zero values. Premium and IV remain means with missing values retained.
+- The OI map and raw options table render only when the canonical options result is `OK`. Their raw rows, expiry, spot and derived annotations are sourced from the same Stage A pinned snapshot/expiry and matching derived metrics.
+- Existing chart/table layout, styling, CSS, HTML, labels and presentation structure are retained.
+- Added regression tests for missing-versus-zero OI, missing taker sides, snapshot-spot nearest-ten selection and pinned raw-table provenance.
+
+## 2026-11-16
+
 ### Changed — Research Dashboard canonical filter calculations (Stage B)
 
 - Removed the five dashboard-local legacy options filter calculators. The Research Dashboard now consumes `calculate_all_filters()` outputs from `options_filters.py` via the Stage A compatibility adapter.
