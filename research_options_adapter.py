@@ -2,7 +2,7 @@
 from datetime import date
 from typing import Any
 import pandas as pd
-from options_filters import _execute, _missing_record_keys, select_canonical_snapshot
+from options_filters import _execute, _missing_record_keys, select_canonical_snapshot, calculate_all_filters
 
 
 def parse_optional_float(value):
@@ -54,4 +54,4 @@ def load_canonical_research_options(client: Any, *, as_of: date | None = None) -
     row = dict(row)
     row["status"] = "OK"
     row["run_completed_at"] = snapshot.completed_at
-    return {"status": "OK", "snapshot": snapshot, "derived": row, "selection": selection}
+    return {"status": "OK", "snapshot": snapshot, "derived": row, "filters": calculate_all_filters(snapshot), "selection": selection}
