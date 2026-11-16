@@ -124,3 +124,38 @@ def test_confirmation_price_and_breached_level_are_from_event_details():
     assert "$64,600.00" in alert["msg"]
     assert "$99,999.00" not in alert["msg"]
     assert "$88,888.00" not in alert["msg"]
+
+
+def test_failed_delivery_is_retryable_on_next_run_and_sent_is_suppressed(monkeypatch):
+    class Query:
+        def __init__(self, rows):
+            self.rows = rows
+        def select(self, *_args, **_kwargs): return self
+        def eq(self, *_args, **_kwargs): return self
+        def gte(self, *_args, **_kwargs): return self
+        def order(self, *_args, **_kwargs): return self
+        def limit(self, *_args, **_kwargs): return self
+        def execute(self):
+            return types.SimpleNamespace(data=[journal_row()])
+
+    class FakeClient:
+        def table(self, name):
+            assert name == "system_signal_journal"
+            return Query([journal_row()])
+
+    monkeypatch.setattr(notifier, "supabase", FakeClient())
+    monkeypatch.setattr(notifier, "GEX_ALERT_CUTOVER_UTC", CUTOVER)
+    delivery_state = {"status": "FAILED"}
+    monkeypatch.setattr(
+        notifier, "check_event_exists",
+        lambda key: delivery_state["status"] == "SENT"
+    )
+
+    # FAILED does not suppress the same journal event: next workflow run retries it.
+    retry = notifier.evaluate_gex_breach()
+    assert len(retry) == 1
+    assert retry[0]["key"] == "SYSTEM_SIGNAL_GEX_WALL_BREACH_6"
+
+    # Once SENT, a valid successful delivery is suppressed on later workflow runs.
+    delivery_state["status"] = "SENT"
+    assert notifier.evaluate_gex_breach() == []
