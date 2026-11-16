@@ -304,7 +304,7 @@ The journal is designed for later event studies, including potential Market Reac
 - maximum favorable excursion (MFE)
 - maximum adverse excursion (MAE)
 
-Those outcome fields/analyses are future research additions. They should be added only with explicit as-of and no-lookahead rules.
+Those outcomes are stored in the separate `signal_reaction_analysis` table. They are deliberately not written back into this immutable event journal.
 
 ---
 
