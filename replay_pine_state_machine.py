@@ -168,7 +168,7 @@ def legacy_replay(history):
             elif poc<pval: poc_down+=1; poc_up=0
             else: poc_up=poc_down=0
             wide=(c.high-c.low)>atrs[idx]*1.5
-            timeout=max(3,min(20,int(6*(atrs[idx]/250)+.5)))
+            timeout=max(3,min(20,round(6*(atrs[idx]/250.0))))
             if below>=2:
                 if c.high>=pval and c.close<pval and wide:
                     down_retests+=1
