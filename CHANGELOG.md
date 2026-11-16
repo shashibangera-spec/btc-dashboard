@@ -10,6 +10,16 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ---
 
+## 2026-11-17
+
+### Changed — Context-only Futures OI_SHOCK updates
+
+- Added as-of AMT Price Location (`ABOVE_VAH`, `BELOW_VAL`, `INSIDE_VALUE`) and confirmed AMT State to the Signal Detector OI_SHOCK event payload, using the latest valid completed AMT candle at or before the OI observation and its Prior VAH/VAL.
+- AMT lookup or Prior Value validation failure is recorded as `LOCATION_UNAVAILABLE`; missing confirmed state is `AMT_STATE_UNAVAILABLE`. A valid OI_SHOCK event is not suppressed because AMT context is unavailable.
+- Added the same Price Location and AMT State fields to the independently evaluated Telegram OI_SHOCK message and outbox payload. Existing OI thresholds, timestamp handling, 25–35-minute interval checks and contributor matching are unchanged in both paths.
+- Added a compact System B Futures OI Context block alongside AMT structure, showing aggregate OI, comparable OI change, as-of AMT location/state, coverage and timestamp. No CSS or existing AMT card/layout changes.
+- Added offline regression tests for AMT location, unavailable-context behavior, both OI threshold conventions and interval/contributor safeguards. No database schema migration and no directional trading signal or rule is introduced; no directional OI edge has been validated.
+
 ## 2026-11-16
 
 ### Changed — Research Dashboard AI report provenance and parity verification (Stage D)
