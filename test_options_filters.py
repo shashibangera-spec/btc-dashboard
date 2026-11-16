@@ -245,3 +245,28 @@ def test_missing_required_keys_report_record_indexes():
         "missing_columns": ["status"],
         "row_indexes": {"status": [0]},
     }
+
+
+def test_production_backend_contains_no_legacy_directional_iv_or_taker_labels():
+    from pathlib import Path
+    source = Path("options_filters.py").read_text(encoding="utf-8")
+    for legacy in (
+        "BULLISH_URGENCY", "BEARISH_URGENCY",
+        "AGGRESSIVE_BUYING", "AGGRESSIVE_SELLING", "NEUTRAL_FLOW",
+    ):
+        assert legacy not in source
+    assert "CALL_IV_PREMIUM" in source
+    assert "call_iv_premium_pct" in source
+    assert "sampled_buy_volume" in source
+    assert "sampled_sell_volume" in source
+    assert "sampled_volume_balance" in source
+
+
+def test_zero_sampled_taker_total_has_null_percentage_balance():
+    raw = raw_rows()
+    raw["taker_buy_volume"] = 0
+    raw["taker_sell_volume"] = 0
+    result = f.calculate_taker_activity(snapshot(raw))
+    assert result["status"] == "OK"
+    assert result["sampled_volume_balance"] == 0
+    assert result["sampled_volume_balance_pct"] is None
