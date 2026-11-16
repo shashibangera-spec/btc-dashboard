@@ -11,10 +11,10 @@ def _source():
 
 
 def _style_block(source):
-    start = source.index('st.markdown("""\n<style>')
-    end = source.index('</style>\n""", unsafe_allow_html=True)', start)
-    return source[start:end + len('</style>\n""", unsafe_allow_html=True)')
-
+    marker = '</style>\\n""", unsafe_allow_html=True)'
+    start = source.index('st.markdown("""\\n<style>')
+    end = source.index(marker, start)
+    return source[start:end + len(marker)]
 
 def test_dashboard_python_compiles():
     ast.parse(_source())
