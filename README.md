@@ -402,12 +402,15 @@ One completed 30-minute candle can generate more than one journal event type (fo
 
 **Files:** `options_filters.py`, `test_options_filters.py`
 
-The backend-only options research module exposes a canonical, read-only snapshot selector and five independently evaluated filters. It is intentionally not wired into System B or either Streamlit UI.
+The options research module exposes a canonical, read-only snapshot selector and five independently evaluated filters, shared by System B and the Research Dashboard. Both dashboards render the same pinned-snapshot backend results; neither duplicates filter calculations.
 
 - The selector pins one latest `SUCCESS` collection run, one future expiry with derived chain status `OK`, and raw contracts carrying the same `snapshot_id` and expiry. If the selected run/expiry/chain fails validation, it fails closed rather than falling back to older data.
 - Nearest-five selection uses the selected raw options snapshot's own `spot_price`, not a Binance candle close.
 - Aggregation preserves all-null groups as missing values. Filter-specific completeness checks distinguish missing observations from observed zero.
-- The five calculators preserve the existing research thresholds and classifications: Nearby OI, IV Skew, 24h Volume / OI, OI Migration, and Sampled Taker Trade Activity.
+- Nearby OI, 24h Volume / OI and OI Migration retain their existing calculations and classifications. This correction changes only IV Skew and Sampled Taker Activity presentation/semantics:
+  - **IV Skew:** the five-nearest-strike average Call IV premium relative to average Put IV is exposed continuously as `metric = CALL_IV_PREMIUM` and `call_iv_premium_pct`. The former ±5% threshold and `BULLISH_URGENCY` / `BEARISH_URGENCY` / `NEUTRAL` classes are removed. This is a descriptive volatility comparison, not a directional prediction.
+  - **Sampled Taker Activity:** exposes `sampled_buy_volume`, `sampled_sell_volume`, `sampled_volume_balance` (buy minus sell), and `sampled_volume_balance_pct` when total sampled volume is nonzero. The former `AGGRESSIVE_BUYING`, `AGGRESSIVE_SELLING`, and `NEUTRAL_FLOW` classes are removed. This is sampled options-contract activity, not full-market order flow or a directional alert.
+  - Both dashboards show these two filters with neutral styling and descriptive labels; layout and CSS are unchanged.
 - OI Migration uses the immediately preceding eligible successful snapshot for the same expiry only when its contract identity set matches; elapsed time is included.
 - Each calculator has an independent exception boundary. The module performs no writes, adds no tables, and creates no collection or scheduling workflow.
 - The taker measurement remains a sampled subset of available trade activity, not complete order flow.
