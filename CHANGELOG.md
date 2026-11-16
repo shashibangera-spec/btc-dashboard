@@ -12,6 +12,15 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ## 2026-11-16
 
+### Changed — Research Dashboard AI report provenance and parity verification (Stage D)
+
+- Expanded the copy/paste AI report with the exact canonical options snapshot ID, expiry, snapshot-local spot, collection/run completion timestamp, and derived-metric calculation timestamp.
+- Explicitly distinguishes the live Binance price and its completed candle close timestamp from the options snapshot-local spot. All source timestamps are labelled UTC; the report generation timestamp is also explicit.
+- Added an offline same-fixture regression that runs the Fast Dashboard canonical loader and Research Dashboard adapter against the exact same SUCCESS snapshot and asserts identical output dictionaries for all five filters and identical snapshot ID, expiry, spot and run completion timestamp.
+- Added report-content regression checks for provenance fields. Existing AMT and Futures functions, formulas and UI/CSS/layout are outside the Stage D code changes; the PR diff is restricted to report output, regression tests, workflow and documentation.
+
+## 2026-11-16
+
 ### Changed — Research Dashboard canonical OI map and raw chain views (Stage C)
 
 - Removed zero-filling from the OI Concentration Map. Missing Call/Put OI remains null and is visually labelled Missing; observed zero OI remains an actual zero-valued observation.
