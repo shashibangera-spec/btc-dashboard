@@ -1,9 +1,9 @@
 """
 reaction_analyzer.py
-Version: reaction-v1.0
+Version: reaction-v1.1
 
 Daily, non-directional market-reaction analysis for system_signal_journal.
-Only Binance Spot BTCUSDT 30m candles strictly after the event timestamp
+Only Delta Exchange India BTCUSD 30m candles strictly after the event timestamp
 and fully closed by event_timestamp + 4 hours are eligible. Exactly eight
 contiguous completed candles are required. The event candle is excluded.
 Original signal journal rows are read-only.
@@ -20,11 +20,11 @@ from urllib.request import Request, urlopen
 
 from supabase import create_client
 
-VERSION = "reaction-v1.0"
+VERSION = "reaction-v1.1"
 SIGNAL_TABLE = "system_signal_journal"
 REACTION_TABLE = "signal_reaction_analysis"
-BINANCE_BASE_URL = os.getenv("BINANCE_BASE_URL", "https://api.binance.com")
-SYMBOL = "BTCUSDT"
+DELTA_BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
+DELTA_SYMBOL = os.getenv("DELTA_CANDLE_SYMBOL", "BTCUSD")
 INTERVAL = "30m"
 CANDLE_MS = 30 * 60 * 1000
 CANDLE_CLOSE_OFFSET_MS = CANDLE_MS - 1
@@ -79,7 +79,7 @@ def fetch_json(url):
             })
             with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
                 if response.status != 200:
-                    raise RuntimeError(f"Binance HTTP status {response.status}")
+                    raise RuntimeError(f"Delta Exchange HTTP status {response.status}")
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             last_error = f"HTTP {exc.code}: {exc.reason}"
@@ -89,50 +89,80 @@ def fetch_json(url):
             last_error = str(exc)
         if attempt < HTTP_RETRIES:
             time.sleep(min(2 ** attempt, 8))
-    raise RuntimeError(f"Binance request failed after {HTTP_RETRIES} attempts: {last_error}")
+    raise RuntimeError(f"Delta Exchange request failed after {HTTP_RETRIES} attempts: {last_error}")
 
 
-def fetch_post_event_candles(event_time):
-    """Fetch only bars wholly inside (event_time, event_time + 4h]."""
+def fetch_completed_ohlc(event_time):
+    """
+    Fetch Delta Exchange India 30m candles for the event-relative 4h window.
+
+    Delta's history endpoint accepts Unix timestamps in seconds and returns
+    up to 2,000 candles per response. This request spans only four hours
+    (eight 30m bars), so cursor pagination is not applicable or necessary.
+    """
     window_end = event_time + ANALYSIS_WINDOW
-    start_ms = to_epoch_ms(event_time) + 1
-    end_ms = to_epoch_ms(window_end)
-    params = urlencode({
-        "symbol": SYMBOL,
-        "interval": INTERVAL,
-        "startTime": start_ms,
-        "endTime": end_ms,
-        "limit": EXPECTED_CANDLES,
-    })
-    raw = fetch_json(f"{BINANCE_BASE_URL}/api/v3/klines?{params}")
 
-    candles = []
+    # Delta's start/end parameters are integer Unix seconds. Move the
+    # request start to the next second so a candle opening before the
+    # event timestamp is not requested as an eligible bar. We still apply
+    # millisecond-precision filtering below as the authoritative check.
+    start_seconds = int(event_time.timestamp()) + 1
+    end_seconds = int(window_end.timestamp())
+
+    params = urlencode({
+        "resolution": INTERVAL,
+        "symbol": DELTA_SYMBOL,
+        "start": start_seconds,
+        "end": end_seconds,
+    })
+    url = f"{DELTA_BASE_URL}/v2/history/candles?{params}"
+    payload = fetch_json(url)
+
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        detail = payload.get("error") if isinstance(payload, dict) else payload
+        raise RuntimeError(f"Delta candle API returned an unsuccessful response: {detail}")
+
+    raw = payload.get("result")
+    if not isinstance(raw, list):
+        raise RuntimeError("Delta candle API response did not contain a result list.")
+    if len(raw) > 2000:
+        raise RuntimeError(
+            f"Delta returned {len(raw)} candles, exceeding its documented 2,000-candle response limit."
+        )
+
     event_ms = to_epoch_ms(event_time)
+    deadline_ms = to_epoch_ms(window_end)
+    candles = []
+
     for item in raw:
-        if not isinstance(item, list) or len(item) < 7:
+        if not isinstance(item, dict):
             continue
+
         try:
+            # Delta returns candle 'time' as Unix seconds (candle open time).
+            open_time_ms = int(float(item["time"]) * 1000)
             candle = {
-                "open_time_ms": int(item[0]),
-                "open": safe_float(item[1]),
-                "high": safe_float(item[2]),
-                "low": safe_float(item[3]),
-                "close": safe_float(item[4]),
-                "close_time_ms": int(item[6]),
+                "open_time_ms": open_time_ms,
+                "open": safe_float(item.get("open")),
+                "high": safe_float(item.get("high")),
+                "low": safe_float(item.get("low")),
+                "close": safe_float(item.get("close")),
+                "close_time_ms": open_time_ms + CANDLE_CLOSE_OFFSET_MS,
             }
-        except (TypeError, ValueError, IndexError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
 
         if any(candle[key] is None for key in ("open", "high", "low", "close")):
             continue
-        if candle["open_time_ms"] <= event_ms or candle["close_time_ms"] > end_ms:
+        if candle["open_time_ms"] <= event_ms:
             continue
-        if candle["close_time_ms"] - candle["open_time_ms"] != CANDLE_CLOSE_OFFSET_MS:
+        if candle["close_time_ms"] > deadline_ms:
             continue
         if candle["high"] < max(candle["open"], candle["close"], candle["low"]):
             continue
         if candle["low"] > min(candle["open"], candle["close"], candle["high"]):
             continue
+
         candles.append(candle)
 
     candles.sort(key=lambda row: row["open_time_ms"])
@@ -189,7 +219,7 @@ def calculate_reaction(anchor_price, candles, window_end):
         "candles_expected": EXPECTED_CANDLES,
         "candles_received": len(candles),
         "analysis_status": "COMPLETE",
-        "data_source": "BINANCE_SPOT_API:BTCUSDT:30m",
+        "data_source": "DELTA_INDIA_API:BTCUSD:30m",
         "error_message": None,
         "analyzed_at": iso_utc(utc_now()),
     }
@@ -215,7 +245,7 @@ def build_incomplete_result(candles, window_end, reason):
         "candles_expected": EXPECTED_CANDLES,
         "candles_received": len(candles),
         "analysis_status": "INCOMPLETE",
-        "data_source": "BINANCE_SPOT_API:BTCUSDT:30m",
+        "data_source": "DELTA_INDIA_API:BTCUSD:30m",
         "error_message": reason[:1000],
         "analyzed_at": iso_utc(utc_now()),
     }
@@ -313,7 +343,7 @@ def main():
             continue
 
         try:
-            candles, window_end = fetch_post_event_candles(event_time)
+            candles, window_end = fetch_completed_ohlc(event_time)
             valid, reason = validate_eight_candles(candles, event_time, window_end)
             if valid:
                 result = calculate_reaction(anchor_price, candles, window_end)
