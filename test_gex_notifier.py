@@ -202,3 +202,38 @@ def test_failed_delivery_is_retryable_on_next_run_and_sent_is_suppressed(monkeyp
     # Once SENT, a valid successful delivery is suppressed on later workflow runs.
     delivery_state["status"] = "SENT"
     assert notifier.evaluate_gex_breach() == []
+
+
+
+def test_test_mode_logs_dedicated_type_and_bypasses_live_evaluation(monkeypatch, capsys):
+    sent = []
+    logged = []
+
+    monkeypatch.setenv("TEST_MODE", "true")
+    monkeypatch.setattr(
+        notifier, "send_telegram",
+        lambda message: (sent.append(message) or (True, 456))
+    )
+    monkeypatch.setattr(
+        notifier, "log_event",
+        lambda **kwargs: logged.append(kwargs)
+    )
+
+    def live_evaluation_must_not_run():
+        raise AssertionError("TEST_MODE must bypass live alert evaluation")
+
+    monkeypatch.setattr(notifier, "evaluate_amt_transition", live_evaluation_must_not_run)
+    monkeypatch.setattr(notifier, "evaluate_gex_breach", live_evaluation_must_not_run)
+    monkeypatch.setattr(notifier, "evaluate_oi_shock", live_evaluation_must_not_run)
+
+    notifier.main()
+
+    assert len(sent) == 1
+    assert "🧪 TEST ALERT" in sent[0]
+    assert "verification message" in sent[0]
+    assert len(logged) == 1
+    assert logged[0]["event_type"] == "TEST_ALERT"
+    assert logged[0]["payload"] == {"test": True}
+    assert logged[0]["status"] == "SENT"
+    assert logged[0]["message_id"] == 456
+    assert "TEST SUCCESS" in capsys.readouterr().out

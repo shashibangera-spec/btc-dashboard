@@ -12,6 +12,13 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ## 2026-11-16
 
+
+### Fixed — TEST_MODE event classification
+
+- Changed only the canned TEST_MODE outbox event label from `AMT_STATE_CHANGE` to `TEST_ALERT`; the test message, delivery handling and early return remain unchanged.
+- Added a focused offline regression test asserting the canned message is still sent, the outbox row is logged as `TEST_ALERT`, and AMT, GEX and OI live evaluators are not called.
+- Live AMT/OI evaluation and GEX notification logic are unchanged.
+
 ### Fixed — GEX Telegram production schema mismatch and alert isolation
 
 - Production incident: the merged notifier queried `system_signal_journal.created_at`, but the live table has no such column. The actual journal insertion/detection timestamp is `detected_at` (default `now()`); `event_timestamp` is the underlying market-event time.
@@ -29,7 +36,7 @@ Dates use the project change date in UTC unless a change explicitly documents an
 - New GEX outbox key: `SYSTEM_SIGNAL_GEX_WALL_BREACH_{journal_id}`. Historical keys `GEX_CALL_BREACH_*` and `GEX_PUT_BREACH_*` do not match the new identity and are not automatically reconciled; the cutover deliberately separates old and new delivery identities.
 - Incomplete or malformed GEX `event_details` fail closed for that row and do not block AMT/OI evaluation. Failed GEX delivery is retried on the next scheduled Telegram workflow run. Telegram's send-then-database-write boundary remains non-transactional; a process interruption after Telegram accepts a message but before the outbox records SENT can still produce a duplicate on retry.
 - AMT and OI remain locally recomputed from their existing source tables. Only GEX is journal-driven in this change; migrating AMT/OI is a future consideration and is out of scope.
-- `TEST_MODE` remains the existing canned connectivity test and bypasses all live alert evaluation. Its pre-existing behavior logs the test row as `event_type="AMT_STATE_CHANGE"`; this is a known labeling defect intentionally not changed in this branch and is queued for a separate micro-fix.
+- `TEST_MODE` remains the existing canned connectivity test and bypasses all live alert evaluation. Its test outbox row is now labeled `event_type="TEST_ALERT"`, keeping test deliveries out of AMT alert history.
 - Added offline pytest coverage in `test_gex_notifier.py` and CI workflow `.github/workflows/gex-notifier-tests.yml`, using the verified live journal row 6 `event_details` as a fixture. No live Telegram or Supabase connection is required for these unit tests.
 - No database schema, RLS policy, signal detector, or Telegram workflow environment changes are included.
 - Known limitation: the GEX journal query is capped at 200 rows per notifier run. This cap is intentionally unchanged pending an explicit operational decision; backlog/pagination changes are out of scope.

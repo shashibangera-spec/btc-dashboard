@@ -317,7 +317,7 @@ def main():
         )
         log_event(
             event_key=f"TEST_{event_time}",
-            event_type="AMT_STATE_CHANGE",
+            event_type="TEST_ALERT",
             event_time=event_time,
             payload={"test": True},
             status=delivery_status,
