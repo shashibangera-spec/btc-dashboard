@@ -181,3 +181,45 @@ def test_one_calculator_exception_does_not_suppress_other_filters(monkeypatch):
     assert results["iv_skew"]["status"] == "ERROR"
     assert results["nearby_oi"]["status"] == results["volume_oi"]["status"] == "OK"
     assert results["taker_activity"]["status"] == "OK"
+
+
+
+@pytest.mark.parametrize(
+    ("table", "missing_column", "expected_source"),
+    [
+        ("options_collection_runs", "expected_contracts", "options_collection_runs"),
+        ("options_derived_snapshots", "calculated_at", "options_derived_snapshots"),
+        ("options_oi_snapshots", "mark_iv", "options_oi_snapshots"),
+    ],
+)
+def test_database_boundary_missing_required_record_key_fails_closed(
+    table, missing_column, expected_source, caplog
+):
+    db = database()
+    if table == "options_oi_snapshots":
+        for row in db[table]:
+            row.pop(missing_column, None)
+    else:
+        db[table][0].pop(missing_column, None)
+
+    selected, meta = f.select_canonical_snapshot(
+        Client(db), as_of=date(2026, 11, 16)
+    )
+
+    assert selected is None
+    assert meta["status"] == "UNAVAILABLE"
+    assert meta["reason"] == "MISSING_REQUIRED_COLUMNS"
+    assert meta["source"] == expected_source
+    assert missing_column in meta["missing_columns"]
+    assert missing_column in caplog.text
+
+
+def test_missing_required_keys_report_record_indexes():
+    details = f._missing_record_keys(
+        [{"snapshot_id": "s1"}, {"snapshot_id": "s2", "status": "SUCCESS"}],
+        ("snapshot_id", "status"),
+    )
+    assert details == {
+        "missing_columns": ["status"],
+        "row_indexes": {"status": [0]},
+    }
