@@ -51,4 +51,7 @@ def load_canonical_research_options(client: Any, *, as_of: date | None = None) -
     spot = pd.to_numeric(pd.Series([row["underlying_spot_price"]]), errors="coerce").iloc[0]
     if pd.isna(spot) or float(spot) <= 0 or abs(float(spot)-snapshot.spot_price) > 1e-8:
         return {"status": "UNAVAILABLE", "reason": "DERIVED_SPOT_MISMATCH"}
-    row = dict(row)\n    row["status"] = "OK"\n    row["run_completed_at"] = snapshot.completed_at\n    return {"status": "OK", "snapshot": snapshot, "derived": row, "selection": selection}
+    row = dict(row)
+    row["status"] = "OK"
+    row["run_completed_at"] = snapshot.completed_at
+    return {"status": "OK", "snapshot": snapshot, "derived": row, "selection": selection}
