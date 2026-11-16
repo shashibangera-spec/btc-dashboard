@@ -1045,7 +1045,7 @@ def _render_dashboard():
             if delta_value == 0:
                 column.metric(label, "$" + format(current_value, ",.0f"), "UNCHANGED", delta_color="off")
             else:
-                delta_text = "$" + format(delta_value, ",+.0f")
+                delta_text = "$" + format(delta_value, "+,.0f")
                 column.metric(label, "$" + format(current_value, ",.0f"), delta_text)
 
         state_change = "UNCHANGED"
