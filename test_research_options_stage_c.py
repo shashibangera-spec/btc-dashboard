@@ -55,7 +55,7 @@ def test_dashboard_map_does_not_fill_missing_oi_and_uses_pinned_snapshot_spot():
     assert "nearest_strikes_by_reference(opt_df, options_reference_price, count=10)" in raw_code
     assert "options_metrics.get(\"max_pain_strike\")" in raw_code
     assert "options_metrics.get(\"atm_strike\")" in raw_code
-    assert "opt_forensics.get(\"expiry_date\")" in source
+    assert '"expiry_date": snapshot.expiry_date' in source
 
 def test_raw_chain_and_derived_annotations_share_one_canonical_selection():
     source = Path("btc_live_research_dashboard.py").read_text(encoding="utf-8")
