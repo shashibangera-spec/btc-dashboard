@@ -12,6 +12,20 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ## 2026-11-16
 
+### Changed — GEX Telegram notification source of truth
+
+- Replaced the Telegram notifier's independent GEX calculation from `options_derived_snapshots` and AMT candles with consumption of detector-confirmed `GEX_WALL_BREACH` rows from `system_signal_journal`.
+- Removed the notifier-side options freshness check (including the former `0 <= age <= 35 minutes` gate). The journal row represents a detector-confirmed two-consecutive-candle event; the notifier does not recalculate or re-age the options snapshot.
+- GEX confirmation price is sourced from `event_details.confirmation_close_price`; breached level is sourced from `event_details.breached_level`. Journal `event_timestamp` is used as event time and `created_at` controls deployment cutover.
+- Cutover eligibility is `created_at >= GEX_ALERT_CUTOVER_UTC`. The review branch carries `PLACEHOLDER_SET_AT_MERGE`; it must be replaced by the UTC timestamp of the merge-to-main commit in a visible final pre-merge diff.
+- New GEX outbox key: `SYSTEM_SIGNAL_GEX_WALL_BREACH_{journal_id}`. Historical keys `GEX_CALL_BREACH_*` and `GEX_PUT_BREACH_*` do not match the new identity and are not automatically reconciled; the cutover deliberately separates old and new delivery identities.
+- Incomplete or malformed GEX `event_details` fail closed for that row and do not block AMT/OI evaluation. Failed GEX delivery is retried on the next scheduled Telegram workflow run. Telegram's send-then-database-write boundary remains non-transactional; a process interruption after Telegram accepts a message but before the outbox records SENT can still produce a duplicate on retry.
+- AMT and OI remain locally recomputed from their existing source tables. Only GEX is journal-driven in this change; migrating AMT/OI is a future consideration and is out of scope.
+- `TEST_MODE` remains the existing canned connectivity test and bypasses all live alert evaluation. Its pre-existing behavior logs the test row as `event_type="AMT_STATE_CHANGE"`; this is a known labeling defect intentionally not changed in this branch and is queued for a separate micro-fix.
+- Added offline pytest coverage in `test_gex_notifier.py` and CI workflow `.github/workflows/gex-notifier-tests.yml`, using the verified live journal row 6 `event_details` as a fixture. No live Telegram or Supabase connection is required for these unit tests.
+- No database schema, RLS policy, signal detector, or Telegram workflow environment changes are included.
+
+
 ### Added
 
 - **Single production Coordinator workflow**
