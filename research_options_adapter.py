@@ -22,6 +22,25 @@ def validated_prior_values(shadow_state):
 
 
 
+def nearest_strikes_by_reference(df: pd.DataFrame, reference_price: float, count: int = 10) -> pd.DataFrame:
+    """Select nearest strike rows using the canonical snapshot's spot price."""
+    if df is None or df.empty or "strike_price" not in df.columns:
+        return pd.DataFrame()
+    try:
+        price = float(reference_price)
+    except (TypeError, ValueError, OverflowError):
+        return pd.DataFrame()
+    if not pd.notna(price):
+        return pd.DataFrame()
+    work = df.copy()
+    work["strike_price"] = pd.to_numeric(work["strike_price"], errors="coerce")
+    work = work[work["strike_price"].notna()]
+    if work.empty:
+        return pd.DataFrame()
+    work["distance"] = (work["strike_price"] - price).abs()
+    return work.nsmallest(count, "distance").sort_values("strike_price")
+
+
 def pivot_option_metric(df: pd.DataFrame, value_column: str, output_columns: dict,
                         *, aggregation: str = "sum") -> pd.DataFrame:
     """Pivot CALL/PUT values without converting all-null groups into observed zeroes."""
