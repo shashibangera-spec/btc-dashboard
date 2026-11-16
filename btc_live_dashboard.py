@@ -8,6 +8,8 @@ import math
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import timezone, timedelta
+from supabase import create_client
+from options_filters import load_and_calculate_options_filters
 
 st.set_page_config(page_title="BTC Data Terminal", page_icon="₿", layout="wide")
 
@@ -334,6 +336,107 @@ def fetch_futures_context():
         return None, None, None, None
     except Exception:
         return None, None, None, None
+
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_options_filter_results():
+    """Load validated, snapshot-pinned Options Filters results (cached for 3 minutes)."""
+    try:
+        client = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_ANON_KEY"])
+        return load_and_calculate_options_filters(client)
+    except Exception as exc:
+        return {
+            "status": "UNAVAILABLE",
+            "selection": {"status": "UNAVAILABLE", "reason": type(exc).__name__},
+            "filters": {},
+        }
+
+
+def _format_options_filter_result(key, result):
+    """Format only validated backend output; never recalculate filter logic in the UI."""
+    status = result.get("status", "UNAVAILABLE")
+    if status != "OK":
+        reason = result.get("reason") or status
+        return "N/A", f"{status} · {reason}"
+
+    if key == "nearby_oi":
+        walls = result.get("walls", [])
+        if not walls:
+            return "No local concentration detected", "OK"
+        summary = " · ".join(
+            f'{wall.get("type", "N/A")} ${float(wall.get("strike")):,.0f}'
+            for wall in walls
+        )
+        return summary, "OK"
+
+    if key == "iv_skew":
+        return (
+            f'{result.get("classification", "N/A")} · {float(result.get("skew_pct")):+.2f}%',
+            "OK",
+        )
+
+    if key == "volume_oi":
+        return (
+            f'{result.get("classification", "N/A")} · '
+            f'Call {float(result.get("call_ratio")):.3f} / '
+            f'Put {float(result.get("put_ratio")):.3f} · '
+            f'{result.get("direction", "N/A")}',
+            "OK",
+        )
+
+    if key == "oi_migration":
+        elapsed = result.get("elapsed_seconds")
+        elapsed_text = f' · {float(elapsed) / 60:.0f}m interval' if elapsed is not None else ""
+        return (
+            f'{result.get("classification", "N/A")} · '
+            f'Call {float(result.get("call_shift")):+,.0f} / '
+            f'Put {float(result.get("put_shift")):+,.0f}{elapsed_text}',
+            "OK",
+        )
+
+    if key == "taker_activity":
+        return (
+            f'{result.get("classification", "N/A")} · '
+            f'Buy {float(result.get("taker_buy")):,.2f} / '
+            f'Sell {float(result.get("taker_sell")):,.2f}',
+            "OK",
+        )
+
+    return "N/A", "UNAVAILABLE · UNKNOWN_FILTER"
+
+
+def render_options_filter_panel(payload):
+    """Render the backend's validated results without accessing raw database data."""
+    with st.expander("Options research filters · validated snapshot", expanded=False):
+        if not isinstance(payload, dict) or payload.get("status") != "OK":
+            selection = payload.get("selection", {}) if isinstance(payload, dict) else {}
+            reason = selection.get("reason", "OPTIONS_FILTERS_UNAVAILABLE")
+            st.caption(f"Research filters unavailable · {reason}")
+            return
+
+        selection = payload.get("selection", {})
+        st.caption(
+            f'Expiry {selection.get("expiry_date", "N/A")} · '
+            f'Snapshot spot ${float(selection.get("spot_price")):,.2f} · '
+            f'Snapshot {str(selection.get("snapshot_id", "N/A"))[:12]}'
+        )
+        filters = payload.get("filters", {})
+        labels = (
+            ("nearby_oi", "Nearby OI"),
+            ("iv_skew", "IV Skew"),
+            ("volume_oi", "24h Volume / OI"),
+            ("oi_migration", "OI Migration"),
+            ("taker_activity", "Sampled Taker Trade Activity"),
+        )
+        for key, label in labels:
+            result = filters.get(key, {"status": "UNAVAILABLE", "reason": "MISSING_FILTER_RESULT"})
+            summary, status_text = _format_options_filter_result(key, result)
+            value_col, status_col = st.columns([2, 1])
+            with value_col:
+                st.markdown(f"**{label}**")
+                st.write(summary)
+            with status_col:
+                st.caption(status_text)
+
 
 def calculate_tpo(session_df):
     if session_df.empty: return np.nan, np.nan, np.nan
@@ -705,6 +808,7 @@ def _render_dashboard():
             provisional_vah, provisional_val, provisional_poc = calculate_tpo(provisional_today)
     
     options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, is_chain_complete = fetch_delta_options()
+    options_filter_results = fetch_options_filter_results()
     
     true_max_pain, straddle_price, atm_strike, true_max_pain = np.nan, np.nan, 0.0, np.nan
     call_oi_wall, put_oi_wall, call_gamma_wall, put_gamma_wall = None, None, None, None
@@ -1151,6 +1255,8 @@ def _render_dashboard():
         else:
             st.info("Options context unavailable or ATM quote validation did not pass. Missing values are not treated as zero.")
     
+        render_options_filter_panel(options_filter_results)
+
         st.markdown('<div class="mini" style="margin-top:8px">FUTURES</div>', unsafe_allow_html=True)
         basis_status = "Discount" if sp_prem is not None and sp_prem < 0 else "Premium" if sp_prem is not None and sp_prem > 0 else "Unavailable"
         _basis_tone = {"Discount": "down", "Premium": "up"}.get(basis_status, "flat")
