@@ -301,33 +301,33 @@ def render_live_dashboard():
     df['is_live'] = df['close_time'] > int(now_utc.timestamp() * 1000)
     completed_df = df[~df['is_live']].copy()
 
-    today_str = completed_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    yesterday_df = completed_df[completed_df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
-
-    if not yesterday_df.empty:
-        last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-        prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
-        vah, val, poc = calculate_tpo(prev_day_df)
-    else:
-        vah, val, poc = np.nan, np.nan, np.nan
-
     current_price = completed_df.iloc[-1]['close']
 
-
     shadow_state = fetch_amt_shadow_state()
+    prior_values_valid = (
+        isinstance(shadow_state, dict)
+        and str(shadow_state.get("data_status", "")).upper() == "VALID"
+        and all(shadow_state.get(key) is not None for key in ("prior_vah", "prior_poc", "prior_val"))
+    )
+    if prior_values_valid:
+        vah, poc, val = (float(shadow_state[key]) for key in ("prior_vah", "prior_poc", "prior_val"))
+    else:
+        vah = poc = val = np.nan
+
     layer2_data = fetch_layer2_supabase_data()
     opt_forensics = fetch_options_forensics()
-    options_metrics = fetch_nearest_valid_options_metrics()
+    options_metrics = opt_forensics.get("metrics") if opt_forensics and opt_forensics.get("status") == "OK" else None
+    options_reference_price = opt_forensics.get("spot_price") if opt_forensics and opt_forensics.get("status") == "OK" else None
 
-    opt_df = opt_forensics["data"] if opt_forensics and "data" in opt_forensics else None
+    opt_df = opt_forensics.get("data") if opt_forensics and opt_forensics.get("status") == "OK" else None
     prev_opt_df = opt_forensics.get("previous_data") if opt_forensics else None
 
-    # Execute Analyzers
-    walls_res = analyze_neighboring_strikes(opt_df, current_price)
-    iv_analysis = analyze_iv_skew(opt_df, current_price)
-    vol_analysis = analyze_volume_vs_oi(opt_df, current_price)
+    # Stage A preserves legacy filter formulas; Stage B moves calculations to options_filters.py.
+    walls_res = analyze_neighboring_strikes(opt_df, options_reference_price)
+    iv_analysis = analyze_iv_skew(opt_df, options_reference_price)
+    vol_analysis = analyze_volume_vs_oi(opt_df, options_reference_price)
     migration_analysis = analyze_oi_migration(opt_df, prev_opt_df)
-    aggressor_analysis = analyze_aggressor_trades(opt_df, current_price)
+    aggressor_analysis = analyze_aggressor_trades(opt_df, options_reference_price)
 
     # --- COPY/PASTE LIVE REPORT FOR AI ANALYSIS ---
     report_options = options_metrics or {}
@@ -694,7 +694,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
         st.subheader("📊 OI Concentration Map")
         st.caption("Visual concentration across the same 10 nearest strikes shown in the evidence table. Call OI extends left; Put OI extends right.")
         if opt_forensics and "data" in opt_forensics:
-            chart_df = get_nearest_strikes(opt_df, current_price, count=10).copy()
+            chart_df = get_nearest_strikes(opt_df, options_reference_price, count=10).copy()
             if not chart_df.empty and "Call OI" in chart_df.columns and "Put OI" in chart_df.columns:
                 chart_df["Call OI"] = pd.to_numeric(chart_df["Call OI"], errors="coerce").fillna(0)
                 chart_df["Put OI"] = pd.to_numeric(chart_df["Put OI"], errors="coerce").fillna(0)
