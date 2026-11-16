@@ -608,7 +608,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
         st.markdown("---")
         st.subheader("📊 OI Concentration Map")
         st.caption("Visual concentration across the same 10 nearest strikes shown in the evidence table. Call OI extends left; Put OI extends right.")
-        if opt_forensics and "data" in opt_forensics:
+        if opt_forensics and opt_forensics.get("status") == "OK" and opt_df is not None:
             chart_df = get_nearest_strikes(opt_df, options_reference_price, count=10).copy()
             if not chart_df.empty and "Call OI" in chart_df.columns and "Put OI" in chart_df.columns:
                 chart_df["Call OI"] = pd.to_numeric(chart_df["Call OI"], errors="coerce")
@@ -666,14 +666,16 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 )
             else:
                 st.info("No usable Call/Put OI columns are available for the concentration map.")
-        elif opt_forensics and "error" in opt_forensics:
-            st.error(f"Error loading options data: {opt_forensics['error']}")
+        elif opt_forensics and opt_forensics.get("status") != "OK":
+            st.info(f"Options data unavailable: {opt_forensics.get('reason', opt_forensics.get('selection', {}).get('reason', 'CANONICAL_SNAPSHOT_UNAVAILABLE'))}")
         else:
             st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
 
     with raw_tab:
         st.subheader("Raw Options Chain — 10 Nearest Strikes")
-        if opt_forensics and "data" in opt_forensics:
+        if opt_forensics and opt_forensics.get("status") == "OK" and opt_df is not None:
+            # Raw chain and every annotation below share this one pinned
+            # snapshot/expiry and its matching derived metrics.
             closest_df = get_nearest_strikes(opt_df, options_reference_price, count=10).copy()
             evidence_df = closest_df.drop(columns=["distance"], errors="ignore").copy()
 
@@ -871,8 +873,8 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 )
             else:
                 st.info("Aggressor taker-volume fields are unavailable in this snapshot.")
-        elif opt_forensics and "error" in opt_forensics:
-            st.error(f"Error loading options data: {opt_forensics['error']}")
+        elif opt_forensics and opt_forensics.get("status") != "OK":
+            st.info(f"Options data unavailable: {opt_forensics.get('reason', opt_forensics.get('selection', {}).get('reason', 'CANONICAL_SNAPSHOT_UNAVAILABLE'))}")
         else:
             st.info("PENDING: Waiting for options_collector.py to populate Supabase.")
 
