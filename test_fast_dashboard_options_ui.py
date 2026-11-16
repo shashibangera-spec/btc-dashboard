@@ -33,7 +33,11 @@ def test_backend_is_the_only_options_filter_data_source():
     source = _source()
     assert "from options_filters import load_and_calculate_options_filters" in source
     assert "return load_and_calculate_options_filters(client)" in source
-    assert "create_client(st.secrets[\"SUPABASE_URL\"], st.secrets[\"SUPABASE_ANON_KEY\"])" in source
+    assert 'os.environ.get("SUPABASE_URL")' in source
+    assert 'os.environ.get("SUPABASE_ANON_KEY")' in source
+    assert 'os.environ.get("SUPABASE_SERVICE_ROLE_KEY")' in source
+    assert "create_client(supabase_url, supabase_key)" in source
+    assert 'st.secrets["SUPABASE_URL"]' not in source
 
 
 def test_options_filter_fetch_uses_existing_streamlit_cache():
@@ -64,3 +68,19 @@ def test_dashboard_ui_does_not_reimplement_filter_calculations():
     assert "calculate_volume_oi(" not in source
     assert "calculate_oi_migration(" not in source
     assert "calculate_taker_activity(" not in source
+
+
+
+def test_supabase_environment_credentials_fail_closed_when_missing():
+    source = _source()
+    assert 'reason = "MISSING_SUPABASE_ENV:" + ", ".join(missing)' in source
+    assert '"status": "UNAVAILABLE"' in source
+    assert '"filters": {}' in source
+
+
+def test_supabase_service_role_key_is_fallback_only():
+    source = _source()
+    assert (
+        'os.environ.get("SUPABASE_ANON_KEY")\n'
+        '            or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")'
+    ) in source
