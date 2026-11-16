@@ -74,7 +74,7 @@ def fetch_json(url):
     for attempt in range(1, HTTP_RETRIES + 1):
         try:
             request = Request(url, headers={
-                "User-Agent": "BTC-Market-Reaction-Analyzer/1.0",
+                "User-Agent": "BTC-Market-Reaction-Analyzer/1.1",
                 "Accept": "application/json",
             })
             with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
@@ -183,6 +183,8 @@ def validate_eight_candles(candles, event_time, window_end):
             return False, f"Candle {index + 1} closed after the four-hour deadline."
         if index and candle["open_time_ms"] - candles[index - 1]["open_time_ms"] != CANDLE_MS:
             return False, f"Missing/non-contiguous candle before candle {index + 1}."
+        if candle["open_time_ms"] % CANDLE_MS != 0:
+            return False, f"Candle {index + 1} is not aligned to a standard UTC 30m boundary."
         if candle["close_time_ms"] != candle["open_time_ms"] + CANDLE_CLOSE_OFFSET_MS:
             return False, "A candle is not a complete standard 30m bar."
     return True, None
@@ -219,7 +221,7 @@ def calculate_reaction(anchor_price, candles, window_end):
         "candles_expected": EXPECTED_CANDLES,
         "candles_received": len(candles),
         "analysis_status": "COMPLETE",
-        "data_source": "DELTA_INDIA_API:BTCUSD:30m",
+        "data_source": "DELTA_INDIA_API:BTCUSD_PERPETUAL:30m",
         "error_message": None,
         "analyzed_at": iso_utc(utc_now()),
     }
