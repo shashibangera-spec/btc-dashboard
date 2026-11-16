@@ -12,6 +12,17 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ## 2026-11-16
 
+### Changed — Research Dashboard canonical options data integration (Stage A)
+
+- Replaced the legacy Research Dashboard's independent options run/expiry selectors with the shared `options_filters.py` canonical selector.
+- The dashboard now pins one latest eligible SUCCESS snapshot, expiry, raw spot price and the derived metrics for that exact snapshot/expiry. Previous raw-chain data is accepted only from the canonical selector's eligible prior snapshot.
+- Legacy filter formulas remain unchanged for Stage B; the existing UI layout and card presentation are retained. Nearest-strike views now use the pinned options spot rather than Binance live price.
+- Preserved valid zero Futures funding and basis values by checking explicitly for `None`.
+- Prior VAH/POC/VAL now come from the latest validated `amt_snapshots` record with `data_status=VALID`, rather than an independent Binance candle TPO recalculation.
+- Added offline tests for snapshot/expiry/spot pinning, derived-row consistency, zero-valued Futures metrics and validated AMT prior levels.
+- No database schema, collector, workflow schedule, AMT engine, Futures calculation, CSS or UI layout changes.
+
+
 ### Fixed — Fast Dashboard Supabase environment configuration
 
 - Changed the Options Filters fetch integration to read `SUPABASE_URL` and its key from process environment variables rather than app-specific Streamlit secrets.

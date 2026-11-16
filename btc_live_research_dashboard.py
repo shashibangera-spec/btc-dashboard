@@ -6,7 +6,8 @@ import datetime
 import json
 from datetime import timezone
 from supabase import create_client
-from amt_core import fetch_binance_data, calculate_tpo
+from amt_core import fetch_binance_data
+from research_options_adapter import load_canonical_research_options, parse_optional_float, validated_prior_values
 
 st.set_page_config(page_title="BTC Combined Research", layout="wide")
 st.title("🔬 BTC Combined Research Terminal")
@@ -41,8 +42,8 @@ def fetch_layer2_supabase_data():
             parsed_rows.append({
                 "time": timestamp, 
                 "oi": float(row.get("oi_usd")) if row.get("oi_usd") else None,
-                "funding": float(row.get("funding_rate")) if row.get("funding_rate") else None,
-                "basis": float(row.get("basis_pct")) if row.get("basis_pct") else None,
+                "funding": parse_optional_float(row.get("funding_rate")),
+                "basis": parse_optional_float(row.get("basis_pct")),
                 "contributors": set(status_json.get("oi_contributors", [])),
                 "coverage": status_json.get("coverage", {}).get("label", "UNKNOWN")
             })
@@ -85,13 +86,26 @@ def fetch_layer2_supabase_data():
     except Exception as exc:
         return {**empty_result, "status": f"ERROR: {exc}"}
 
-def process_options_snapshot(client, snapshot_id, expiry_date):
+def process_options_snapshot(client, snapshot_id, expiry_date, raw=None):
     # Keep the raw chain on one expiry. A collector snapshot contains many expiries;
     # grouping only by strike would incorrectly add OI and blend premiums across expiries.
-    chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_price, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).eq("expiry_date", expiry_date).execute()
-    if not chain.data: return None
-    
-    df = pd.DataFrame(chain.data)
+    if raw is None:
+        chain = client.table("options_oi_snapshots").select("strike_price, option_type, oi_contracts, oi_value_usd, mark_price, mark_iv, volume_24h, taker_buy_volume, taker_sell_volume").eq("snapshot_id", snapshot_id).eq("expiry_date", expiry_date).execute()
+        if not chain.data: return None
+        df = pd.DataFrame(chain.data)
+    else:
+        df = raw.copy()
+        # Premium is a presentation-only field not consumed by the canonical filters.
+        # Fetch it separately, but constrain it to the already-pinned snapshot + expiry.
+        premium = client.table("options_oi_snapshots").select(
+            "product_id, symbol, option_type, strike_price, mark_price"
+        ).eq("snapshot_id", snapshot_id).eq("expiry_date", expiry_date).execute()
+        if premium.data:
+            premium_df = pd.DataFrame(premium.data)
+            identity = ["product_id", "symbol", "option_type", "strike_price"]
+            df = df.merge(premium_df, on=identity, how="left", validate="one_to_one")
+        else:
+            df["mark_price"] = np.nan
     if df.empty: return None
     
     pivot_oi = df.pivot_table(index='strike_price', columns='option_type', values='oi_contracts', aggfunc='sum').reset_index()
@@ -122,97 +136,27 @@ def process_options_snapshot(client, snapshot_id, expiry_date):
 
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_options_forensics():
+    """Load one canonical raw options snapshot and its matching derived expiry."""
     try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_ANON_KEY"]
-        client = create_client(url, key)
-        
-        runs = client.table("options_collection_runs").select("snapshot_id, completed_at").eq("status", "SUCCESS").order("completed_at", desc=True).limit(2).execute()
-        
-        if not runs.data or len(runs.data) < 2:
-            latest_run = client.table("options_collection_runs").select("snapshot_id, completed_at").eq("status", "SUCCESS").order("completed_at", desc=True).limit(1).execute()
-            snapshots = latest_run.data if latest_run.data else []
-        else:
-            snapshots = runs.data
-            
-        if not snapshots: return None
-        
-        latest_snapshot = snapshots[0]
-        previous_snapshot = snapshots[1] if len(snapshots) > 1 else None
-
-        # Use the same nearest valid expiry selected by the existing options metrics panel.
-        # Never combine multiple expiry chains into one strike-level OI/premium row.
-        selected_metrics = fetch_nearest_valid_options_metrics()
-        selected_expiry = selected_metrics.get("expiry_date") if selected_metrics else None
-        if not selected_expiry:
-            return {
-                "snapshot_id": latest_snapshot["snapshot_id"],
-                "timestamp": latest_snapshot["completed_at"],
-                "previous_timestamp": previous_snapshot["completed_at"] if previous_snapshot else None,
-                "expiry_date": None,
-                "data": None,
-                "previous_data": None,
-                "status": "NO_SELECTED_EXPIRY"
-            }
-
-        current_df = process_options_snapshot(client, latest_snapshot["snapshot_id"], selected_expiry)
-        previous_df = process_options_snapshot(client, previous_snapshot["snapshot_id"], selected_expiry) if previous_snapshot else None
-
+        client = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_ANON_KEY"])
+        canonical = load_canonical_research_options(client)
+        if canonical.get("status") != "OK":
+            return canonical
+        snapshot = canonical["snapshot"]
+        current_df = process_options_snapshot(client, snapshot.snapshot_id, snapshot.expiry_date, raw=snapshot.raw)
+        previous_df = (
+            process_options_snapshot(client, snapshot.previous_snapshot_id, snapshot.expiry_date, raw=snapshot.previous_raw)
+            if snapshot.previous_raw is not None else None
+        )
         return {
-            "snapshot_id": latest_snapshot["snapshot_id"],
-            "timestamp": latest_snapshot["completed_at"],
-            "previous_timestamp": previous_snapshot["completed_at"] if previous_snapshot else None,
-            "expiry_date": selected_expiry,
-            "data": current_df,
-            "previous_data": previous_df
+            "status": "OK", "snapshot_id": snapshot.snapshot_id,
+            "timestamp": snapshot.completed_at, "previous_snapshot_id": snapshot.previous_snapshot_id,
+            "previous_timestamp": snapshot.previous_completed_at, "expiry_date": snapshot.expiry_date,
+            "spot_price": snapshot.spot_price, "metrics": canonical["derived"],
+            "data": current_df, "previous_data": previous_df,
         }
-    except Exception as e:
-        return {"error": str(e)}
-
-@st.cache_data(ttl=120, show_spinner=False)
-def fetch_nearest_valid_options_metrics():
-    """Latest collector run, then nearest future expiry with a complete source chain."""
-    empty = {"status": "NO_DERIVED_METRICS", "expiry_date": None, "metric_status": {}}
-    try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_ANON_KEY"]
-        client = create_client(url, key)
-        runs = client.table("options_collection_runs").select(
-            "snapshot_id, completed_at, status"
-        ).in_("status", ["SUCCESS", "PARTIAL"]).order("completed_at", desc=True).limit(1).execute()
-        if not runs.data:
-            return empty
-        run = runs.data[0]
-        derived = client.table("options_derived_snapshots").select(
-            "snapshot_id,expiry_date,calculated_at,source_collected_at,underlying_spot_price,"
-            "max_pain_strike,atm_strike,atm_straddle_price,atm_straddle_pct_spot,"
-            "call_gex_wall_strike,call_gex_wall_value,put_gex_wall_strike,put_gex_wall_value,"
-            "gex_contract_multiplier,local_oi_pcr,local_put_oi_contracts,local_call_oi_contracts,"
-            "local_oi_band_pct,metric_version,metric_status"
-        ).eq("snapshot_id", run["snapshot_id"]).order("expiry_date", desc=False).execute()
-        rows = derived.data or []
-        if not rows:
-            return {**empty, "status": "NO_DERIVED_ROWS", "source_collected_at": run.get("completed_at")}
-        today = datetime.datetime.now(timezone.utc).date()
-        future_rows = []
-        for row in rows:
-            expiry_value = pd.to_datetime(row.get("expiry_date"), errors="coerce")
-            if pd.notna(expiry_value) and expiry_value.date() >= today:
-                future_rows.append(row)
-        valid_rows = [
-            row for row in future_rows
-            if isinstance(row.get("metric_status"), dict)
-            and row["metric_status"].get("chain") == "OK"
-        ]
-        selected = valid_rows[0] if valid_rows else (future_rows[0] if future_rows else rows[0])
-        selected = dict(selected)
-        selected["run_completed_at"] = run.get("completed_at")
-        selected["run_status"] = run.get("status")
-        selected["status"] = "OK" if selected.get("metric_status", {}).get("chain") == "OK" else "INCOMPLETE_CHAIN"
-        return selected
     except Exception as exc:
-        return {**empty, "status": f"ERROR: {exc}"}
-
+        return {"status": "UNAVAILABLE", "reason": type(exc).__name__, "error": str(exc)}
 
 @st.cache_data(ttl=120)
 def get_cached_binance_data():
@@ -368,33 +312,29 @@ def render_live_dashboard():
     df['is_live'] = df['close_time'] > int(now_utc.timestamp() * 1000)
     completed_df = df[~df['is_live']].copy()
 
-    today_str = completed_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-    yesterday_df = completed_df[completed_df['ShiftedDate'].dt.strftime('%Y-%m-%d') < today_str]
-
-    if not yesterday_df.empty:
-        last_prev_day = yesterday_df['ShiftedDate'].iloc[-1].strftime('%Y-%m-%d')
-        prev_day_df = yesterday_df[yesterday_df['ShiftedDate'].dt.strftime('%Y-%m-%d') == last_prev_day]
-        vah, val, poc = calculate_tpo(prev_day_df)
-    else:
-        vah, val, poc = np.nan, np.nan, np.nan
-
     current_price = completed_df.iloc[-1]['close']
 
-
     shadow_state = fetch_amt_shadow_state()
+    prior_values = validated_prior_values(shadow_state)
+    if prior_values is not None:
+        vah, poc, val = prior_values
+    else:
+        vah = poc = val = np.nan
+
     layer2_data = fetch_layer2_supabase_data()
     opt_forensics = fetch_options_forensics()
-    options_metrics = fetch_nearest_valid_options_metrics()
+    options_metrics = opt_forensics.get("metrics") if opt_forensics and opt_forensics.get("status") == "OK" else None
+    options_reference_price = opt_forensics.get("spot_price") if opt_forensics and opt_forensics.get("status") == "OK" else None
 
-    opt_df = opt_forensics["data"] if opt_forensics and "data" in opt_forensics else None
+    opt_df = opt_forensics.get("data") if opt_forensics and opt_forensics.get("status") == "OK" else None
     prev_opt_df = opt_forensics.get("previous_data") if opt_forensics else None
 
-    # Execute Analyzers
-    walls_res = analyze_neighboring_strikes(opt_df, current_price)
-    iv_analysis = analyze_iv_skew(opt_df, current_price)
-    vol_analysis = analyze_volume_vs_oi(opt_df, current_price)
+    # Stage A preserves legacy filter formulas; Stage B moves calculations to options_filters.py.
+    walls_res = analyze_neighboring_strikes(opt_df, options_reference_price)
+    iv_analysis = analyze_iv_skew(opt_df, options_reference_price)
+    vol_analysis = analyze_volume_vs_oi(opt_df, options_reference_price)
     migration_analysis = analyze_oi_migration(opt_df, prev_opt_df)
-    aggressor_analysis = analyze_aggressor_trades(opt_df, current_price)
+    aggressor_analysis = analyze_aggressor_trades(opt_df, options_reference_price)
 
     # --- COPY/PASTE LIVE REPORT FOR AI ANALYSIS ---
     report_options = options_metrics or {}
@@ -761,7 +701,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
         st.subheader("📊 OI Concentration Map")
         st.caption("Visual concentration across the same 10 nearest strikes shown in the evidence table. Call OI extends left; Put OI extends right.")
         if opt_forensics and "data" in opt_forensics:
-            chart_df = get_nearest_strikes(opt_df, current_price, count=10).copy()
+            chart_df = get_nearest_strikes(opt_df, options_reference_price, count=10).copy()
             if not chart_df.empty and "Call OI" in chart_df.columns and "Put OI" in chart_df.columns:
                 chart_df["Call OI"] = pd.to_numeric(chart_df["Call OI"], errors="coerce").fillna(0)
                 chart_df["Put OI"] = pd.to_numeric(chart_df["Put OI"], errors="coerce").fillna(0)
@@ -805,7 +745,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
     with raw_tab:
         st.subheader("Raw Options Chain — 10 Nearest Strikes")
         if opt_forensics and "data" in opt_forensics:
-            closest_df = get_nearest_strikes(opt_df, current_price, count=10).copy()
+            closest_df = get_nearest_strikes(opt_df, options_reference_price, count=10).copy()
             evidence_df = closest_df.drop(columns=["distance"], errors="ignore").copy()
 
             # Presentation-only evidence markers: reuse existing analyzer/derived outputs.
