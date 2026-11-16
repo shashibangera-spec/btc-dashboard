@@ -12,6 +12,14 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ## 2026-11-16
 
+### Fixed — Options Filters database-boundary diagnostics
+
+- Added explicit required-key validation for collection-run, derived-snapshot and raw option-contract records before processing; missing fields now return a structured `UNAVAILABLE / MISSING_REQUIRED_COLUMNS` selection result with source table, exact missing columns and record indexes.
+- Added warning-level console diagnostics for missing database record keys and full exception traceback logging in the Fast Dashboard Options Filters fetch boundary, including the exception type and exact exception message.
+- Added offline regression coverage for missing required keys in all three database record sources and for record-index reporting.
+- No filter formulas, Supabase schema, AMT/Futures logic, dashboard layout, CSS or Options Filters panel rendering changes.
+
+
 
 ### Fixed — TEST_MODE event classification
 
