@@ -611,7 +611,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                     "Put OI": "Put OI",
                 })
                 oi_chart_data["OI State"] = np.where(oi_chart_data["OI"].isna(), "Missing", "Observed")
-                oi_chart_data["Missing Label"] = np.where(oi_chart_data["OI"].isna(), "Missing", "")
+                oi_chart_data["Missing Label"] = np.where(oi_chart_data["OI"].isna(), oi_chart_data["Side"] + " Missing", np.where(oi_chart_data["OI"] == 0, oi_chart_data["Side"] + " 0", ""))
                 st.vega_lite_chart(
                     oi_chart_data,
                     {
@@ -631,7 +631,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                                 },
                             },
                             {
-                                "transform": [{"filter": "datum['OI State'] === 'Missing'"}],
+                                "transform": [{"filter": "datum['OI State'] === 'Missing' || datum['OI'] === 0"}],
                                 "mark": {"type": "text", "align": "left", "dx": 4, "color": "#888888"},
                                 "encoding": {
                                     "y": {"field": "Strike", "type": "ordinal", "sort": None},
