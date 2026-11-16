@@ -355,3 +355,54 @@ Later observations are subsequent information and must not be backfilled into th
 # Scope exclusions
 
 This document covers the automated Supabase-backed backend and its event infrastructure. System B's visual presentation layer is documented at the architecture level in `README.md`; CSS/HTML implementation details are not a database contract.
+
+
+---
+
+# 8. `signal_reaction_analysis`
+
+Stores versioned, non-directional market reaction measurements linked to the immutable `system_signal_journal`.
+
+**Foreign key:** `signal_id BIGINT REFERENCES system_signal_journal(id) ON DELETE RESTRICT`  
+**Idempotency key:** `signal_id, analysis_version`
+
+| Column | Meaning |
+|---|---|
+| `id` | UUID primary key |
+| `signal_id` | BIGINT foreign key to the original signal |
+| `analysis_version` | Calculation version, initially `reaction-v1.0` |
+| `anchor_price` | Original signal journal price |
+| `window_start`, `window_end` | First eligible candle open and event-relative four-hour deadline |
+| `price_after_30m`, `price_after_1h`, `price_after_2h`, `price_after_4h` | Completed candle close at each horizon |
+| `window_high`, `window_low` | Highest high and lowest low across the eight-candle observation |
+| `max_up_excursion_usd`, `max_down_excursion_usd` | Neutral upside and downside movement from anchor in USD |
+| `max_up_excursion_pct`, `max_down_excursion_pct` | Same movements as percentages of anchor |
+| `candles_expected` | Required candle count (8) |
+| `candles_received` | Valid contiguous candle count returned |
+| `analysis_status` | `COMPLETE`, `INCOMPLETE` or `ERROR` |
+| `data_source` | Market data source identifier |
+| `error_message` | Data-quality or processing explanation |
+| `analyzed_at`, `created_at` | Analysis and row creation timestamps |
+
+## Calculation and eligibility contract
+
+- Anchor price is `system_signal_journal.price`; the journal itself is never updated.
+- Source is Binance Spot `BTCUSDT`, interval `30m`.
+- Eligible candles must open strictly after `event_timestamp`, be fully closed, and close no later than `event_timestamp + 4 hours`.
+- Exactly eight contiguous candles are required. The event candle is excluded.
+- Horizon prices use the closes of candles 1, 2, 4 and 8; a complete eight-candle window therefore requires the event to align with the 30-minute close boundary.
+- Upside excursion is `max(0, window_high - anchor_price)`.
+- Downside excursion is `min(0, window_low - anchor_price)`.
+- Percent excursions divide those signed USD movements by anchor price and multiply by 100.
+- These are neutral movements, not directional MFE/MAE, realized P&L or executable trade returns.
+- Incomplete windows are recorded as `INCOMPLETE` and retried on later runs. Only `COMPLETE` rows belong in completed observation samples.
+- Transient API/database failures are not persisted as terminal rows; the signal remains eligible for retry.
+- A new calculation methodology must use a new `analysis_version`.
+
+## Access model
+
+- RLS is enabled.
+- `anon` has SELECT access for read-only research display.
+- `service_role` has backend management access; no browser/client write access is granted.
+- The analyzer uses `SUPABASE_SERVICE_ROLE_KEY` only in GitHub Actions.
+- The original signal journal remains the immutable event record; this table stores subsequent outcomes separately.
