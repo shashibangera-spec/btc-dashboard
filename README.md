@@ -331,3 +331,28 @@ Configure credentials in the appropriate secret store:
 - **Telegram workflow:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
 
 Never commit secrets or expose service-role credentials to client-side code.
+
+
+## Market Reaction Analysis
+
+**Files:** `reaction_analyzer.py`, `.github/workflows/reaction-analyzer.yml`
+
+Market Reaction Analysis is a downstream research process. It does not modify the Signal Detector, the original `system_signal_journal`, AMT logic, Telegram alerts or order execution.
+
+- Runs daily at **07:00 UTC / 12:30 PM IST**, and can also be started manually through GitHub Actions.
+- Reads journal events whose event timestamp is at least four hours old.
+- Uses Binance Spot `BTCUSDT` 30-minute OHLC candles strictly after the event timestamp.
+- Excludes the event candle and requires eight contiguous, completed 30-minute candles fully contained in the event-relative four-hour window.
+- Stores results in `signal_reaction_analysis`, linked to the original journal row.
+- Records close prices at 30m, 1h, 2h and 4h, window high/low and neutral upside/downside excursions in USD and percent.
+- Does not infer long/short direction from event type and does not generate orders.
+
+### Data-integrity rule
+
+An event timestamp must align with the 30-minute candle boundary closely enough for eight complete post-event candles to fit inside the next four hours. If Binance does not return exactly eight contiguous complete candles inside that strict window, the row is marked `INCOMPLETE`; it is not counted as a completed research observation. Incomplete rows are retried on later daily runs. Transient API/database errors are logged and remain retryable.
+
+Excursions are measured relative to the event's journal price. The upside excursion is non-negative; the downside excursion is zero or negative. They are neutral price movements, not a simulated trade return or evidence of a tradable edge.
+
+The analysis version is `reaction-v1.0`. A future methodology change must use a new version rather than silently overwrite the meaning of historical observations.
+
+Required GitHub Actions secrets: `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. The service-role key is never exposed to System B.
