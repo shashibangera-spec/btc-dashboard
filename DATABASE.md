@@ -298,7 +298,16 @@ Logged after two consecutive completed 30-minute closes beyond the same wall ide
 
 ### `OI_SHOCK`
 
-Logged when aggregate OI changes by more than 3.0% across a valid 25–35-minute interval with identical exchange coverage.
+Logged when aggregate OI changes by more than 3.0% across a valid 25–35-minute interval with identical exchange coverage. The detector event-specific `event_details` payload additionally records:
+
+| JSON key | Meaning |
+|---|---|
+| `price_location` | `ABOVE_VAH`, `BELOW_VAL`, `INSIDE_VALUE`, or `LOCATION_UNAVAILABLE`; calculated from the latest valid completed AMT candle at or before the OI observation, using that candle close and its Prior VAH/VAL |
+| `amt_state` | The same candle's `confirmed_state`, or `AMT_STATE_UNAVAILABLE` when no valid state is available |
+| `amt_candle_close_time` | Close timestamp of the AMT candle used, or `NULL` when no candle was available |
+| `prior_vah`, `prior_val` | Prior Value boundaries used for location classification, or `NULL` when unavailable |
+
+An unavailable AMT lookup or invalid/missing Prior Value boundary does not suppress an otherwise valid OI shock. `LOCATION_UNAVAILABLE` is explicit; the system does not infer a location from developing values or a later candle. These fields are descriptive context, not directional signals. No directional OI trading rule has been validated. The Telegram OI evaluator independently adds the same two display fields to its outbox payload and message; its existing threshold, timestamp, interval and contributor rules remain unchanged.
 
 ### `VALUE_MIGRATION`
 
