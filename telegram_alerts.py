@@ -154,17 +154,17 @@ def validate_gex_event_details(details):
 
 
 def gex_row_is_eligible(row, cutover_utc):
-    """Pure eligibility gate; created_at controls cutover, event_timestamp is display time."""
+    """Pure eligibility gate; detected_at controls cutover, event_timestamp is market-event time."""
     if not isinstance(row, dict) or row.get("event_type") != "GEX_WALL_BREACH" or row.get("id") is None:
         return False
     try:
-        created_at = parse_utc_timestamp(row.get("created_at"))
+        detected_at = parse_utc_timestamp(row.get("detected_at"))
         cutover = parse_utc_timestamp(cutover_utc)
         parse_utc_timestamp(row.get("event_timestamp"))
         validate_gex_event_details(row.get("event_details"))
     except (TypeError, ValueError):
         return False
-    return created_at >= cutover
+    return detected_at >= cutover
 
 
 def build_gex_alert(row):
@@ -190,7 +190,7 @@ def build_gex_alert(row):
             "journal_id": row["id"],
             "event_key": row.get("event_key"),
             "event_timestamp": row["event_timestamp"],
-            "created_at": row["created_at"],
+            "detected_at": row["detected_at"],
             "event_details": details,
         },
     }
@@ -246,10 +246,10 @@ def evaluate_gex_breach():
         return []
     response = (
         supabase.table("system_signal_journal")
-        .select("id,event_timestamp,event_type,event_key,event_details,created_at")
+        .select("id,event_timestamp,event_type,event_key,event_details,detected_at")
         .eq("event_type", "GEX_WALL_BREACH")
-        .gte("created_at", cutover.isoformat())
-        .order("created_at", desc=False)
+        .gte("detected_at", cutover.isoformat())
+        .order("detected_at", desc=False)
         .limit(200)
         .execute()
     )
@@ -335,8 +335,14 @@ def main():
     amt = evaluate_amt_transition()
     if amt: alerts.append(amt)
     
-    gex_alerts = evaluate_gex_breach()
-    
+    try:
+        gex_alerts = evaluate_gex_breach()
+    except Exception as exc:
+        # GEX journal failures must not stop independent AMT/OI alert evaluation.
+        # No GEX alert is created or marked SENT on this path; journal events remain retryable.
+        print(f"GEX evaluation failed; continuing with AMT/OI alerts: {exc}")
+        gex_alerts = []
+
     oi = evaluate_oi_shock()
     alerts = collect_alerts(amt, gex_alerts, oi)
     
