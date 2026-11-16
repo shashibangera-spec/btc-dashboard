@@ -12,6 +12,17 @@ Dates use the project change date in UTC unless a change explicitly documents an
 
 ## 2026-11-16
 
+### Changed — Research Dashboard canonical filter calculations (Stage B)
+
+- Removed the five dashboard-local legacy options filter calculators. The Research Dashboard now consumes `calculate_all_filters()` outputs from `options_filters.py` via the Stage A compatibility adapter.
+- Nearby OI, IV Skew, 24h Volume / OI, OI Migration and Sampled Taker Activity cards now read the canonical result fields, preserving the backend's established formulas, thresholds, classifications and snapshot provenance.
+- UI card layout and presentation structure remain unchanged. Existing card labels are retained for visual compatibility; the underlying volume/OI metric is the backend's 24h Volume / OI calculation.
+- Structured UNAVAILABLE, INSUFFICIENT_DATA, PARTIAL and ERROR states are surfaced with their reasons. Migration is shown as Stable only when the backend explicitly returns a valid STABLE classification; mixed migration is labelled Mixed rather than Stable.
+- The copy/paste AI report now includes each canonical filter's status, reason where applicable, classification and valid measurements. Raw-chain Nearby OI evidence markers are sourced from the canonical Nearby OI result.
+- Added regression tests for all-five-filter wiring, snapshot provenance, missing prior-snapshot handling, partial taker coverage and removal of legacy analyzer definitions.
+
+## 2026-11-16
+
 ### Changed — Research Dashboard canonical options data integration (Stage A)
 
 - Replaced the legacy Research Dashboard's independent options run/expiry selectors with the shared `options_filters.py` canonical selector.

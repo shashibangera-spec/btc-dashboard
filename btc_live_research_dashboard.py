@@ -153,7 +153,7 @@ def fetch_options_forensics():
             "timestamp": snapshot.completed_at, "previous_snapshot_id": snapshot.previous_snapshot_id,
             "previous_timestamp": snapshot.previous_completed_at, "expiry_date": snapshot.expiry_date,
             "spot_price": snapshot.spot_price, "metrics": canonical["derived"],
-            "data": current_df, "previous_data": previous_df,
+            "data": current_df, "previous_data": previous_df, "filters": canonical["filters"],
         }
     except Exception as exc:
         return {"status": "UNAVAILABLE", "reason": type(exc).__name__, "error": str(exc)}
@@ -179,115 +179,6 @@ def get_nearest_strikes(df, current_price, count=5):
         return pd.DataFrame()
     df_copy['distance'] = abs(df_copy['strike_price'] - price)
     return df_copy.nsmallest(count, 'distance').sort_values('strike_price')
-
-def analyze_neighboring_strikes(df, current_price):
-    closest = get_nearest_strikes(df, current_price, count=5)
-    if closest.empty: return {"status": "UNAVAILABLE", "reason": "NO_DATA"}
-    if 'Call OI' not in closest.columns or 'Put OI' not in closest.columns:
-        return {"status": "UNAVAILABLE", "reason": "MISSING_COLUMNS"}
-    if closest['Call OI'].dropna().empty or closest['Put OI'].dropna().empty:
-        return {"status": "INSUFFICIENT_DATA", "reason": "NULL_OI_SIDE"}
-    
-    usable = closest.dropna(subset=['strike_price', 'Call OI', 'Put OI'])
-    if len(usable) < 3:
-        return {"status": "INSUFFICIENT_DATA", "reason": "FEWER_THAN_3_USABLE_STRIKES"}
-    
-    closest = usable.sort_values('strike_price')
-    walls = []
-    if 'Call OI' in closest.columns:
-        call_ois = closest['Call OI'].tolist()
-        for i in range(1, len(call_ois) - 1):
-            neighbor_avg = (call_ois[i-1] + call_ois[i+1]) / 2
-            if call_ois[i] > (neighbor_avg * 1.5) and call_ois[i] > 500:
-                walls.append({"strike": closest.iloc[i]['strike_price'], "type": "CALL", "oi": call_ois[i]})
-    if 'Put OI' in closest.columns:
-        put_ois = closest['Put OI'].tolist()
-        for i in range(1, len(put_ois) - 1):
-            neighbor_avg = (put_ois[i-1] + put_ois[i+1]) / 2
-            if put_ois[i] > (neighbor_avg * 1.5) and put_ois[i] > 500:
-                walls.append({"strike": closest.iloc[i]['strike_price'], "type": "PUT", "oi": put_ois[i]})
-    return {"status": "OK", "walls": walls}
-
-def analyze_iv_skew(df, current_price):
-    closest = get_nearest_strikes(df, current_price, count=5)
-    if closest.empty: return {"status": "UNAVAILABLE", "reason": "NO_DATA"}
-    if 'Call IV' not in closest.columns or 'Put IV' not in closest.columns:
-        return {"status": "UNAVAILABLE", "reason": "MISSING_COLUMNS"}
-    if closest['Call IV'].dropna().empty or closest['Put IV'].dropna().empty:
-        return {"status": "INSUFFICIENT_DATA", "reason": "NULL_VALUES"}
-        
-    avg_call_iv = closest['Call IV'].mean()
-    avg_put_iv = closest['Put IV'].mean()
-    if pd.isna(avg_call_iv) or pd.isna(avg_put_iv): return {"status": "INSUFFICIENT_DATA", "reason": "CALCULATION_FAILED"}
-    if avg_put_iv == 0: return {"status": "INSUFFICIENT_DATA", "reason": "ZERO_PUT_IV"}
-    
-    skew = avg_call_iv - avg_put_iv
-    skew_pct = (skew / avg_put_iv) * 100
-    status = "NEUTRAL"
-    if skew_pct > 5.0: status = "BULLISH_URGENCY"
-    elif skew_pct < -5.0: status = "BEARISH_URGENCY"
-    return {"status": status, "skew_pct": skew_pct, "avg_call_iv": avg_call_iv, "avg_put_iv": avg_put_iv}
-
-def analyze_volume_vs_oi(df, current_price):
-    closest = get_nearest_strikes(df, current_price, count=5)
-    if closest.empty: return {"status": "UNAVAILABLE", "reason": "NO_DATA"}
-    req_cols = ['Call Vol', 'Call OI', 'Put Vol', 'Put OI']
-    if not all(col in closest.columns for col in req_cols):
-        return {"status": "UNAVAILABLE", "reason": "MISSING_COLUMNS"}
-        
-    if closest['Call Vol'].dropna().empty or closest['Put Vol'].dropna().empty:
-        return {"status": "INSUFFICIENT_DATA", "reason": "NULL_VOLUME"}
-    
-    total_call_vol = closest['Call Vol'].sum()
-    total_call_oi = closest['Call OI'].sum()
-    total_put_vol = closest['Put Vol'].sum()
-    total_put_oi = closest['Put OI'].sum()
-    
-    if total_call_oi == 0 or total_put_oi == 0: return {"status": "INSUFFICIENT_DATA", "reason": "ZERO_OI"}
-    
-    call_ratio = total_call_vol / total_call_oi
-    put_ratio = total_put_vol / total_put_oi
-    status = "STALE_POSITIONING"
-    direction = "NEUTRAL"
-    if call_ratio > 0.5 or put_ratio > 0.5: status = "FRESH_MONEY_ENTERING"
-    if call_ratio > (put_ratio * 1.5): direction = "BULLISH_ACTIVITY"
-    elif put_ratio > (call_ratio * 1.5): direction = "BEARISH_ACTIVITY"
-    return {"status": status, "call_ratio": call_ratio, "put_ratio": put_ratio, "direction": direction}
-
-def analyze_oi_migration(current_df, previous_df):
-    if current_df is None or previous_df is None or current_df.empty or previous_df.empty:
-        return {"status": "UNAVAILABLE", "reason": "MISSING_DATA"}
-    if 'Call OI' not in current_df.columns or 'Put OI' not in current_df.columns or 'Call OI' not in previous_df.columns or 'Put OI' not in previous_df.columns or 'strike_price' not in current_df.columns or 'strike_price' not in previous_df.columns:
-        return {"status": "UNAVAILABLE", "reason": "MISSING_COLUMNS"}
-    if current_df['Call OI'].dropna().empty or current_df['Put OI'].dropna().empty or previous_df['Call OI'].dropna().empty or previous_df['Put OI'].dropna().empty:
-        return {"status": "INSUFFICIENT_DATA", "reason": "NULL_VALUES"}
-        
-    call_shift = current_df.loc[current_df['Call OI'].idxmax()]['strike_price'] - previous_df.loc[previous_df['Call OI'].idxmax()]['strike_price']
-    put_shift = current_df.loc[current_df['Put OI'].idxmax()]['strike_price'] - previous_df.loc[previous_df['Put OI'].idxmax()]['strike_price']
-    
-    status = "STABLE"
-    if call_shift > 0 and put_shift > 0: status = "BULLISH_MIGRATION"
-    elif call_shift < 0 and put_shift < 0: status = "BEARISH_MIGRATION"
-    elif call_shift > 0 and put_shift <= 0: status = "MILD_BULLISH"
-    return {"status": status, "call_shift": call_shift, "put_shift": put_shift}
-
-def analyze_aggressor_trades(df, current_price):
-    closest = get_nearest_strikes(df, current_price, count=5)
-    if closest.empty: return {"status": "UNAVAILABLE", "reason": "NO_DATA"}
-    if 'taker_buy_volume' not in closest.columns or 'taker_sell_volume' not in closest.columns:
-        return {"status": "UNAVAILABLE", "reason": "MISSING_COLUMNS"}
-        
-    total_taker_buy = closest['taker_buy_volume'].sum(min_count=1)
-    total_taker_sell = closest['taker_sell_volume'].sum(min_count=1)
-    
-    if pd.isna(total_taker_buy) or pd.isna(total_taker_sell):
-        return {"status": "INSUFFICIENT_DATA", "reason": "NULL_TAKER_VOLUME"}
-    
-    status = "NEUTRAL_FLOW"
-    if total_taker_buy > (total_taker_sell * 1.3) and total_taker_buy > 10: status = "AGGRESSIVE_BUYING"
-    elif total_taker_sell > (total_taker_buy * 1.3) and total_taker_sell > 10: status = "AGGRESSIVE_SELLING"
-    return {"status": status, "buy_vol": total_taker_buy, "sell_vol": total_taker_sell}
-
 
 # --- AMT ENGINE ---
 @st.cache_data(ttl=120, show_spinner=False)
@@ -329,12 +220,15 @@ def render_live_dashboard():
     opt_df = opt_forensics.get("data") if opt_forensics and opt_forensics.get("status") == "OK" else None
     prev_opt_df = opt_forensics.get("previous_data") if opt_forensics else None
 
-    # Stage A preserves legacy filter formulas; Stage B moves calculations to options_filters.py.
-    walls_res = analyze_neighboring_strikes(opt_df, options_reference_price)
-    iv_analysis = analyze_iv_skew(opt_df, options_reference_price)
-    vol_analysis = analyze_volume_vs_oi(opt_df, options_reference_price)
-    migration_analysis = analyze_oi_migration(opt_df, prev_opt_df)
-    aggressor_analysis = analyze_aggressor_trades(opt_df, options_reference_price)
+    # All five filter results are calculated by options_filters.py against the
+    # exact pinned snapshot selected by Stage A. No dashboard-side recalculation.
+    filter_results = opt_forensics.get("filters", {}) if opt_forensics and opt_forensics.get("status") == "OK" else {}
+    unavailable_filter = {"status": "UNAVAILABLE", "reason": "CANONICAL_OPTIONS_SNAPSHOT_UNAVAILABLE"}
+    walls_res = filter_results.get("nearby_oi", unavailable_filter)
+    iv_analysis = filter_results.get("iv_skew", unavailable_filter)
+    vol_analysis = filter_results.get("volume_oi", unavailable_filter)
+    migration_analysis = filter_results.get("oi_migration", unavailable_filter)
+    aggressor_analysis = filter_results.get("taker_activity", unavailable_filter)
 
     # --- COPY/PASTE LIVE REPORT FOR AI ANALYSIS ---
     report_options = options_metrics or {}
@@ -345,6 +239,12 @@ def render_live_dashboard():
             for wall in (walls_res.get("walls", []) if walls_res and walls_res.get("status") == "OK" else [])
         ) or "N/A"
     )
+    def filter_report_status(result):
+        if not result:
+            return "UNAVAILABLE"
+        status = result.get("status", "UNAVAILABLE")
+        reason = result.get("reason")
+        return f"{status} ({reason})" if reason else status
     report_text = f"""--- BTC TERMINAL LIVE REPORT ---
 Time (UTC): {datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}
 
@@ -380,6 +280,11 @@ Call GEX (model-derived, unsigned): {f'{float(report_options["call_gex_wall_valu
 Gross Put GEX Concentration Wall: {f'USD {float(report_options["put_gex_wall_strike"]):,.0f}' if report_options.get('put_gex_wall_strike') is not None else 'N/A'}
 Put GEX (model-derived, unsigned): {f'{float(report_options["put_gex_wall_value"]):,.2f}' if report_options.get('put_gex_wall_value') is not None else 'N/A'}
 Nearby OI Concentrations: {report_walls}
+Nearby OI Filter: {filter_report_status(walls_res)}
+IV Skew Filter: {filter_report_status(iv_analysis)} | Classification: {iv_analysis.get('classification', 'N/A')} | Skew: {f"{float(iv_analysis['skew_pct']):+.2f}%" if iv_analysis.get('status') == 'OK' and iv_analysis.get('skew_pct') is not None else 'N/A'}
+24h Volume / OI Filter: {filter_report_status(vol_analysis)} | Classification: {vol_analysis.get('classification', 'N/A')} | Direction: {vol_analysis.get('direction', 'N/A')} | Call/Put: {f"{float(vol_analysis['call_ratio']):.3f}x / {float(vol_analysis['put_ratio']):.3f}x" if vol_analysis.get('status') == 'OK' else 'N/A'}
+OI Migration Filter: {filter_report_status(migration_analysis)} | Classification: {migration_analysis.get('classification', 'N/A')} | Call/Put shift: {f"{float(migration_analysis['call_shift']):+,.0f} / {float(migration_analysis['put_shift']):+,.0f}" if migration_analysis.get('status') == 'OK' else 'N/A'}
+Sampled Taker Activity Filter: {filter_report_status(aggressor_analysis)} | Classification: {aggressor_analysis.get('classification', 'N/A')} | Buy/Sell: {f"{float(aggressor_analysis['taker_buy']):,.0f} / {float(aggressor_analysis['taker_sell']):,.0f}" if aggressor_analysis.get('status') == 'OK' else 'N/A'} (sampled contracts only)
 Metric Quality: {report_options.get('metric_status', 'N/A')}
 
 Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX is unsigned and does not identify dealer positioning or net gamma. AMT/price action remains primary; derivatives are context only."""
@@ -628,13 +533,13 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                             st.caption("No local OI peak detected.")
                     else:
                         st.metric("Detected strike", "N/A")
-                        st.caption("Insufficient OI data.")
+                        st.caption(f"{walls_res.get('status', 'UNAVAILABLE')}: {walls_res.get('reason', 'No valid OI result').replace('_', ' ').lower()}.")
 
             # 2. IV skew: positive means call IV exceeds put IV.
             with filter_cols[1]:
                 with st.container(border=True):
                     st.markdown("**2. IV Skew**")
-                    if iv_analysis and iv_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+                    if iv_analysis and iv_analysis.get("status") == "OK":
                         skew_value = float(iv_analysis["skew_pct"])
                         skew_color = "green" if skew_value > 0 else "red" if skew_value < 0 else "gray"
                         skew_label = "Call > Put" if skew_value > 0 else "Put > Call" if skew_value < 0 else "Equal"
@@ -642,20 +547,20 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                         st.caption(f"{skew_label} IV (relative to put IV); five-strike average.")
                     else:
                         st.metric("Relative skew", "N/A")
-                        st.caption("Insufficient IV data.")
+                        st.caption(f"{iv_analysis.get('status', 'UNAVAILABLE')}: {iv_analysis.get('reason', 'Insufficient IV data').replace('_', ' ').lower()}.")
 
             # 3. Options turnover relative to OI.
             with filter_cols[2]:
                 with st.container(border=True):
                     st.markdown("**3. Turnover / OI**")
-                    if vol_analysis and vol_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
+                    if vol_analysis and vol_analysis.get("status") == "OK":
                         whale_flag = max(float(vol_analysis["call_ratio"]), float(vol_analysis["put_ratio"])) > 0.5
                         st.metric("Call / Put", f"{vol_analysis['call_ratio']:.2f}x / {vol_analysis['put_ratio']:.2f}x")
                         st.markdown("🐋 **Elevated turnover**" if whale_flag else "**No high-turnover flag**")
                         st.caption("Volume/OI; does not identify opening versus closing.")
                     else:
                         st.metric("Call / Put", "N/A")
-                        st.caption("Insufficient volume/OI data.")
+                        st.caption(f"{vol_analysis.get('status', 'UNAVAILABLE')}: {vol_analysis.get('reason', 'Insufficient volume/OI data').replace('_', ' ').lower()}.")
 
             # Second row: two wider cards for migration and taker activity.
             filter_cols_row2 = st.columns(2)
@@ -664,30 +569,34 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
             with filter_cols_row2[0]:
                 with st.container(border=True):
                     st.markdown("**4. OI Migration**")
-                    if migration_analysis and migration_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-                        migration_status = migration_analysis.get("status")
+                    if migration_analysis and migration_analysis.get("status") == "OK":
+                        migration_status = migration_analysis.get("classification")
                         if migration_status == "BULLISH_MIGRATION":
                             migration_label, migration_arrow = "Up", "⬆️"
                         elif migration_status == "BEARISH_MIGRATION":
                             migration_label, migration_arrow = "Down", "⬇️"
-                        else:
+                        elif migration_status == "STABLE":
                             migration_label, migration_arrow = "Stable", "➡️"
+                        elif migration_status == "MILD_BULLISH":
+                            migration_label, migration_arrow = "Mixed", "↗️"
+                        else:
+                            migration_label, migration_arrow = "N/A", "—"
                         st.metric("Peak-strike shift", f"{migration_arrow} {migration_label}")
                         st.caption(f"Call {migration_analysis['call_shift']:+,.0f} | Put {migration_analysis['put_shift']:+,.0f}")
                     else:
                         st.metric("Peak-strike shift", "N/A")
-                        st.caption("Requires two usable snapshots.")
+                        st.caption(f"{migration_analysis.get('status', 'UNAVAILABLE')}: {migration_analysis.get('reason', 'Requires two usable snapshots').replace('_', ' ').lower()}.")
 
             # 5. Combined nearby taker activity.
             with filter_cols_row2[1]:
                 with st.container(border=True):
                     st.markdown("**5. Taker Activity**")
-                    if aggressor_analysis and aggressor_analysis.get("status") not in ["UNAVAILABLE", "INSUFFICIENT_DATA"]:
-                        buy_volume = float(aggressor_analysis["buy_vol"])
-                        sell_volume = float(aggressor_analysis["sell_vol"])
-                        if aggressor_analysis["status"] == "AGGRESSIVE_BUYING":
+                    if aggressor_analysis and aggressor_analysis.get("status") == "OK":
+                        buy_volume = float(aggressor_analysis["taker_buy"])
+                        sell_volume = float(aggressor_analysis["taker_sell"])
+                        if aggressor_analysis["classification"] == "AGGRESSIVE_BUYING":
                             taker_color, taker_label = "green", "Buy dominant"
-                        elif aggressor_analysis["status"] == "AGGRESSIVE_SELLING":
+                        elif aggressor_analysis["classification"] == "AGGRESSIVE_SELLING":
                             taker_color, taker_label = "red", "Sell dominant"
                         else:
                             taker_color, taker_label = "gray", "No clear dominance"
@@ -695,7 +604,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                         st.caption(taker_label + "; calls and puts combined.")
                     else:
                         st.metric("Buy / Sell", "N/A")
-                        st.caption("Insufficient taker-volume data.")
+                        st.caption(f"{aggressor_analysis.get('status', 'UNAVAILABLE')}: {aggressor_analysis.get('reason', 'Insufficient taker-volume data').replace('_', ' ').lower()}.")
         # --- LAYER 2: OI CONCENTRATION MAP ---
         st.markdown("---")
         st.subheader("📊 OI Concentration Map")

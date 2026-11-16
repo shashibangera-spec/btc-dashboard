@@ -88,6 +88,11 @@ The five Options Filters research outputs are now integrated into System B throu
 
 The Research Dashboard's Prior VAH/POC/VAL display reads the latest `amt_snapshots` row only when `data_status=VALID`; it no longer independently recomputes prior TPO values from Binance candles. Futures funding and basis preserve valid zero values.
 
+
+### Research Dashboard — Stage B canonical filter calculations
+
+The five Options Research cards now consume the validated filter results produced by `options_filters.py`: Nearby OI, IV Skew, 24h Volume / OI, OI Migration and Sampled Taker Activity. Their legacy dashboard-local calculators have been removed. The cards retain their existing layout, while UNAVAILABLE, INSUFFICIENT_DATA, PARTIAL and ERROR states are displayed with the backend reason where available. The AI copy report and Nearby OI evidence markers use the same canonical filter outputs. No Stage B formula or threshold changes are introduced; this stage changes the calculation source and UI data mapping only.
+
 ### Division of labor for future System B changes
 
 - **ChatGPT:** backend logic, APIs, GEX/AMT calculations, database infrastructure, Telegram alerts and minor Python/dataframe changes.
