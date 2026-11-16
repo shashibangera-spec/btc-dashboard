@@ -228,6 +228,7 @@ The current documented inventory includes:
 - `options_derived_snapshots`
 - `telegram_alert_events`
 - `system_signal_journal`
+- `signal_reaction_analysis`
 
 See [DATABASE.md](DATABASE.md) for the data dictionary, RLS model, timestamp provenance, constraints and event schemas.
 
