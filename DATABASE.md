@@ -259,6 +259,31 @@ This table is intentionally separate from `telegram_alert_events`. A research ev
 | `detection_version` | Signal-detector version |
 | `created_at` | Journal record creation timestamp |
 
+## GEX_WALL_BREACH event_details contract
+
+For `event_type = 'GEX_WALL_BREACH'`, `event_details` is the detector-produced evidence payload consumed by the Telegram notifier. All twelve keys below are required; the notifier fails closed for a missing, null or malformed value and skips that row without suppressing unrelated AMT/OI notifications.
+
+| JSON key | Required meaning and validation |
+|---|---|
+| `wall_side` | Non-empty enum: `CALL` or `PUT` |
+| `wall_identity` | Non-empty stable wall identity (side, expiry and level) |
+| `expiry_date` | Valid date in `YYYY-MM-DD` format |
+| `breached_level` | Finite numeric breached wall price; authoritative message wall value |
+| `first_close_timestamp` | Parseable timestamp for the first completed close |
+| `first_close_price` | Finite numeric first-close price |
+| `confirmation_close_timestamp` | Parseable timestamp for the second consecutive completed close |
+| `confirmation_close_price` | Finite numeric confirmation close; authoritative message confirmation price |
+| `wall_source_snapshot_id` | Non-empty identifier of the options snapshot used by the detector |
+| `wall_source_collected_at` | Parseable timestamp of that wall-source observation |
+| `consecutive_confirmation` | Must be boolean `true` |
+| `rearm_rule` | Non-empty description of the inside-walls re-arm requirement |
+
+**Source of truth:** the Telegram confirmation price is `event_details.confirmation_close_price`, not the journal's top-level `price`. The displayed breached wall is `event_details.breached_level`, not the top-level `call_wall` or `put_wall`. The journal row `id` supplies the GEX outbox identity suffix; `event_timestamp` supplies the event time shown in the alert; `created_at` controls deployment cutover eligibility.
+
+**GEX notifier cutover:** only journal rows with `created_at >= GEX_ALERT_CUTOVER_UTC` are eligible. This means events inserted into the journal after deployment are eligible even if their underlying `event_timestamp` is slightly earlier. The placeholder in the review branch must be replaced with the UTC timestamp of the merge-to-main commit before merge. The notifier does not apply the old options-snapshot age/freshness window: the signal detector has already validated and recorded the two-candle confirmation.
+
+**Outbox identity:** `SYSTEM_SIGNAL_GEX_WALL_BREACH_{journal_id}`. A confirmed `SENT` row with a valid positive Telegram message ID suppresses subsequent delivery attempts. `FAILED` remains retryable on the next scheduled Telegram workflow run. AMT/OI keep their existing locally generated keys and evaluation paths.
+
 ## Event taxonomy
 
 ### `AMT_STATE_CHANGE`
