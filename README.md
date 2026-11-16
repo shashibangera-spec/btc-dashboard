@@ -145,7 +145,7 @@ It evaluates alerts only after a successful Coordinator run, meaning the collect
 
 The research journal and Telegram outbox have distinct responsibilities, but the delivery paths are not identical across event types:
 
-- **GEX:** `GEX_WALL_BREACH` alerts now read confirmed events from `system_signal_journal`; the notifier does not independently recompute GEX walls from options snapshots.
+- **GEX:** `GEX_WALL_BREACH` alerts read confirmed events from `system_signal_journal`; the notifier does not independently recompute GEX walls from options snapshots. Cutover eligibility uses `detected_at` (journal insertion/detection time), while `event_timestamp` remains the underlying market-event time.
 - **AMT:** `AMT_STATE_CHANGE` alerts still recompute locally from `amt_snapshots`.
 - **OI:** `OI_SHOCK` alerts still recompute locally from `futures_oi_snapshots`.
 - **`telegram_alert_events`:** remains the operational notification outbox for delivery status, deduplication and retry/audit state.
