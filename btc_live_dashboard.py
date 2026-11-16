@@ -6,6 +6,7 @@ import requests
 import datetime
 import math
 import logging
+import os
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import timezone, timedelta
@@ -342,7 +343,28 @@ def fetch_futures_context():
 def fetch_options_filter_results():
     """Load validated, snapshot-pinned Options Filters results (cached for 3 minutes)."""
     try:
-        client = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_ANON_KEY"])
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = (
+            os.environ.get("SUPABASE_ANON_KEY")
+            or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        )
+        if not supabase_url or not supabase_key:
+            missing = []
+            if not supabase_url:
+                missing.append("SUPABASE_URL")
+            if not supabase_key:
+                missing.append("SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY")
+            reason = "MISSING_SUPABASE_ENV:" + ", ".join(missing)
+            logging.getLogger(__name__).error(
+                "Options Research Filters unavailable: required environment configuration missing: %s",
+                ", ".join(missing),
+            )
+            return {
+                "status": "UNAVAILABLE",
+                "selection": {"status": "UNAVAILABLE", "reason": reason},
+                "filters": {},
+            }
+        client = create_client(supabase_url, supabase_key)
         return load_and_calculate_options_filters(client)
     except Exception as exc:
         logging.getLogger(__name__).exception(
