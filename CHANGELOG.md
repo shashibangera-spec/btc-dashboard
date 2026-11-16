@@ -175,3 +175,13 @@ Minor formatting-only changes generally do not require a changelog entry unless 
 - The four-hour request needs only eight candles, below the endpoint's 2,000-candle response limit; no pagination is needed for this analysis window.
 - Bumped the analysis version to `reaction-v1.1` so Delta-based observations are distinct from the prior `reaction-v1.0` Binance Spot methodology.
 - Documented the cross-market limitation: journal anchor from the BTCUSDT AMT feed, reaction OHLC from Delta BTCUSD perpetual. Do not pool versions or treat the result as executable P&L without explicit basis/methodology validation.
+
+### Production verification — `reaction-v1.1`
+
+- **Verified:** 2026-11-16 (UTC).
+- Manually dispatched the **BTC Market Reaction Analyzer** GitHub Actions workflow; the run completed successfully at `2026-11-16T12:38:16.465Z` with `version=reaction-v1.1`.
+- The run applied the event-relative four-hour eligibility cutoff, found 6 eligible journal events, recognized 5 as already analyzed, and processed the single pending event (signal ID 6).
+- Signal ID 6 completed with neutral reaction measurements of `+0.8933%` upside and `-0.5856%` downside; the run summary reported 1 complete, 0 incomplete, 0 skipped, and 0 failed-retryable.
+- A production Supabase query confirmed five persisted `reaction-v1.1` rows (signal IDs 2–6), all with `analysis_status = COMPLETE` and `error_message = NULL`. The five pre-existing rows were not reprocessed during this run.
+- This verifies the live analyzer workflow, idempotent handling of already-analyzed signals, successful processing of the pending signal, and persistence to `signal_reaction_analysis`. No implementation or schema change was made as part of this verification record.
+
