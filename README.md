@@ -93,6 +93,11 @@ The Research Dashboard's Prior VAH/POC/VAL display reads the latest `amt_snapsho
 
 The five Options Research cards now consume the validated filter results produced by `options_filters.py`: Nearby OI, IV Skew, 24h Volume / OI, OI Migration and Sampled Taker Activity. Their legacy dashboard-local calculators have been removed. The cards retain their existing layout, while UNAVAILABLE, INSUFFICIENT_DATA, PARTIAL and ERROR states are displayed with the backend reason where available. The AI copy report and Nearby OI evidence markers use the same canonical filter outputs. No Stage B formula or threshold changes are introduced; this stage changes the calculation source and UI data mapping only.
 
+
+### Research Dashboard — Stage C OI map and raw options views
+
+The OI Concentration Map and Raw Options Chain now share the Stage A canonical snapshot's pinned expiry and spot. Both views select the ten nearest strikes through the shared adapter selector. The OI map retains null OI values, distinguishes missing values from observed zero, and does not fill missing OI with zero. Raw table aggregation also preserves all-null OI, USD OI, volume and taker groups as missing. Derived annotations are sourced from the matching canonical derived record. Existing chart/table presentation and dashboard layout remain unchanged.
+
 ### Division of labor for future System B changes
 
 - **ChatGPT:** backend logic, APIs, GEX/AMT calculations, database infrastructure, Telegram alerts and minor Python/dataframe changes.
