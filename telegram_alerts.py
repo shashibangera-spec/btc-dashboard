@@ -268,6 +268,63 @@ def evaluate_gex_breach():
         alerts.append(alert)
     return alerts
 
+def classify_amt_price_location(row):
+    """Classify the completed AMT candle close against its Prior Value area."""
+    if not isinstance(row, dict):
+        return "LOCATION_UNAVAILABLE"
+    try:
+        price = float(row.get("close_price"))
+        vah = float(row.get("prior_vah"))
+        val = float(row.get("prior_val"))
+    except (TypeError, ValueError):
+        return "LOCATION_UNAVAILABLE"
+    if not all(math.isfinite(value) for value in (price, vah, val)) or vah < val:
+        return "LOCATION_UNAVAILABLE"
+    if price > vah:
+        return "ABOVE_VAH"
+    if price < val:
+        return "BELOW_VAL"
+    return "INSIDE_VALUE"
+
+
+def load_amt_context_asof(event_time):
+    """Fetch the latest valid completed AMT candle available at the OI event time."""
+    unavailable = {
+        "price_location": "LOCATION_UNAVAILABLE",
+        "amt_state": "AMT_STATE_UNAVAILABLE",
+        "amt_candle_close_time": None,
+        "prior_vah": None,
+        "prior_val": None,
+    }
+    try:
+        response = (
+            supabase.table("amt_snapshots")
+            .select("candle_close_time,close_price,prior_vah,prior_val,confirmed_state")
+            .eq("exchange", "BINANCE")
+            .eq("symbol", "BTCUSDT")
+            .eq("timeframe", "30")
+            .eq("data_status", "VALID")
+            .lte("candle_close_time", event_time)
+            .order("candle_close_time", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows:
+            return unavailable
+        row = rows[0]
+        return {
+            "price_location": classify_amt_price_location(row),
+            "amt_state": row.get("confirmed_state") or "AMT_STATE_UNAVAILABLE",
+            "amt_candle_close_time": row.get("candle_close_time"),
+            "prior_vah": row.get("prior_vah"),
+            "prior_val": row.get("prior_val"),
+        }
+    except Exception as exc:
+        print(f"OI AMT context lookup failed; context marked unavailable: {exc}")
+        return unavailable
+
+
 def evaluate_oi_shock():
     # Fetch last 2 aggregate OI records
     res = supabase.table("futures_oi_snapshots").select("*").eq("exchange", "AGGREGATE").order("created_at", desc=True).limit(2).execute()
@@ -298,8 +355,18 @@ def evaluate_oi_shock():
         direction = "EXPANDED" if pct_change > 0 else "CONTRACTED"
         event_key = f"OI_SHOCK_{curr['created_at']}"
         if check_event_exists(event_key): return None
-        msg = f"🌊 OI SHOCK: {direction}\n\nChange: {pct_change:+.2f}%\nPrevious OI: ${oi_p/1e6:.1f}M\nCurrent OI: ${oi_c/1e6:.1f}M\nCoverage: {len(contrib_c)}/4 ({', '.join(contrib_c)})"
-        return {"key": event_key, "type": "OI_SHOCK", "time": curr["created_at"], "msg": msg, "payload": curr}
+        amt_context = load_amt_context_asof(curr["created_at"])
+        msg = (
+            f"🌊 OI SHOCK: {direction}\n\n"
+            f"Change: {pct_change:+.2f}%\n"
+            f"Previous OI: ${oi_p/1e6:.1f}M\n"
+            f"Current OI: ${oi_c/1e6:.1f}M\n"
+            f"Coverage: {len(contrib_c)}/4 ({', '.join(contrib_c)})\n"
+            f"Price Location: {amt_context['price_location']}\n"
+            f"AMT State: {amt_context['amt_state']}"
+        )
+        payload = {**curr, **amt_context}
+        return {"key": event_key, "type": "OI_SHOCK", "time": curr["created_at"], "msg": msg, "payload": payload}
     return None
 
 def main():
