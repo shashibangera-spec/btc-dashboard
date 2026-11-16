@@ -103,3 +103,18 @@ def test_ai_report_includes_full_options_and_live_price_provenance_without_layou
     assert "report_options.get('calculated_at')" in source
     assert 'st.expander("📋 Copy/Paste Text Report for AI"' in source
     assert 'st.code(report_text, language="text")' in source
+
+
+def test_research_cards_use_neutral_descriptive_iv_and_taker_labels():
+    source = Path("btc_live_research_dashboard.py").read_text(encoding="utf-8")
+    for legacy in (
+        "BULLISH_URGENCY", "BEARISH_URGENCY",
+        "AGGRESSIVE_BUYING", "AGGRESSIVE_SELLING", "NEUTRAL_FLOW",
+        "Buy dominant", "Sell dominant",
+    ):
+        assert legacy not in source
+    assert 'st.markdown("**2. Call IV Premium**")' in source
+    assert 'st.markdown("**5. Sampled Taker Volumes**")' in source
+    assert 'st.metric("Sampled Buy Volume"' in source
+    assert 'st.metric("Sampled Sell Volume"' in source
+    assert "skew_color" not in source and "taker_color" not in source
