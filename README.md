@@ -350,7 +350,7 @@ Market Reaction Analysis is a downstream research process. It does not modify th
 
 ### Data-integrity rule
 
-An event timestamp must align with the 30-minute candle boundary closely enough for eight complete post-event candles to fit inside the next four hours. If Binance does not return exactly eight contiguous complete candles inside that strict window, the row is marked `INCOMPLETE`; it is not counted as a completed research observation. An INCOMPLETE row is terminal for this immutable historical window and analysis version; it is excluded from complete samples. Transient API/database failures are not persisted and remain retryable. Transient API/database errors are logged and remain retryable.
+An event timestamp must align with the 30-minute candle boundary closely enough for eight complete post-event candles to fit inside the next four hours. If Delta Exchange does not return exactly eight contiguous complete candles inside that strict window, the row is marked `INCOMPLETE`; it is not counted as a completed research observation. An INCOMPLETE row is terminal for this immutable historical window and analysis version; it is excluded from complete samples. Transient Delta API/database failures are logged, are not persisted as terminal rows, and remain retryable.
 
 Excursions are measured relative to the event's journal price. The upside excursion is non-negative; the downside excursion is zero or negative. They are neutral price movements, not a simulated trade return or evidence of a tradable edge. Note that the journal anchor is sourced from the BTCUSDT AMT feed while reaction OHLC is Delta BTCUSD perpetual: contract basis/venue differences are a known measurement limitation and must be disclosed in any statistical review.
 
