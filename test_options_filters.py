@@ -194,7 +194,7 @@ def test_taker_is_sampled_descriptive_and_fails_closed_on_partial_coverage():
     assert result["sampled_volume_balance"] == pytest.approx(190)
     assert result["sampled_volume_balance_pct"] == pytest.approx(90.4761904762)
     assert "classification" not in result
-    assert not {"AGGRESSIVE_BUYING", "AGGRESSIVE_SELLING", "NEUTRAL_FLOW"} & set(result.values())
+    assert result.get("metric") is None
 
 
 def test_one_calculator_exception_does_not_suppress_other_filters(monkeypatch):
