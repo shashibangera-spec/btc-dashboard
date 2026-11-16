@@ -94,3 +94,13 @@ def test_fast_dashboard_uses_descriptive_options_metrics_without_directional_lab
     assert 'result.get("sampled_volume_balance")' in source
     assert 'result.get("classification", "N/A")' not in source[source.index('if key == "iv_skew":'):source.index('if key == "volume_oi":')]
     assert 'result.get("classification", "N/A")' not in source[source.index('if key == "taker_activity":'):source.index('return "N/A", "UNAVAILABLE · UNKNOWN_FILTER"')]
+
+
+def test_fast_dashboard_does_not_render_legacy_iv_or_taker_classifications():
+    source = _source()
+    iv_block = source[source.index('if key == "iv_skew":'):source.index('if key == "volume_oi":')]
+    taker_block = source[source.index('if key == "taker_activity":'):source.index('return "N/A", "UNAVAILABLE · UNKNOWN_FILTER"')]
+    assert "BULLISH_URGENCY" not in iv_block and "BEARISH_URGENCY" not in iv_block
+    assert "AGGRESSIVE_BUYING" not in taker_block
+    assert "AGGRESSIVE_SELLING" not in taker_block
+    assert "CALL_IV_PREMIUM" not in iv_block or "call_iv_premium_pct" in iv_block
