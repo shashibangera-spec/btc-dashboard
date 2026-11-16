@@ -1,0 +1,38 @@
+name: Fast Dashboard Options UI tests
+
+on:
+  pull_request:
+    paths:
+      - "btc_live_dashboard.py"
+      - "test_fast_dashboard_options_ui.py"
+      - ".github/workflows/fast-dashboard-options-ui.yml"
+  push:
+    branches:
+      - main
+      - "feature/options-filters-fast-dashboard-ui"
+    paths:
+      - "btc_live_dashboard.py"
+      - "test_fast_dashboard_options_ui.py"
+      - ".github/workflows/fast-dashboard-options-ui.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  fast-dashboard-options-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dashboard dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pandas>=2.1.0" "streamlit>=1.40.0" "plotly>=5.18.0" "numpy>=1.26.0" "requests>=2.31.0" "supabase>=2.0.0" pytest
+      - name: Compile dashboard
+        run: python -m py_compile btc_live_dashboard.py options_filters.py
+      - name: Run UI integration regression tests
+        run: pytest -q test_fast_dashboard_options_ui.py
