@@ -469,8 +469,8 @@ def _format_options_filter_result(key, result):
 
     if key == "iv_skew":
         return (
-            f'{result.get("classification", "N/A")} · {float(result.get("skew_pct")):+.2f}%',
-            "OK",
+            f'Call IV Premium {float(result.get("call_iv_premium_pct")):+.2f}%',
+            "OK · descriptive only",
         )
 
     if key == "volume_oi":
@@ -494,10 +494,10 @@ def _format_options_filter_result(key, result):
 
     if key == "taker_activity":
         return (
-            f'{result.get("classification", "N/A")} · '
-            f'Buy {float(result.get("taker_buy")):,.2f} / '
-            f'Sell {float(result.get("taker_sell")):,.2f}',
-            "OK",
+            f'Sampled Buy {float(result.get("sampled_buy_volume")):,.2f} / '
+            f'Sell {float(result.get("sampled_sell_volume")):,.2f} · '
+            f'Balance {float(result.get("sampled_volume_balance")):+,.2f}',
+            "OK · sampled, descriptive only",
         )
 
     return "N/A", "UNAVAILABLE · UNKNOWN_FILTER"

@@ -126,14 +126,27 @@ def test_nearby_oi_uses_local_peak_and_strict_threshold():
     assert {"strike": 1000.0, "type": "CALL", "oi": 1000.0} in result["walls"]
 
 
-@pytest.mark.parametrize(("call_iv", "expected"), [
-    (.60, "BULLISH_URGENCY"), (.50, "NEUTRAL"), (.40, "BEARISH_URGENCY"),
-])
-def test_iv_skew_classifications(call_iv, expected):
+@pytest.mark.parametrize("call_iv", [.60, .525, .50, .475, .40])
+def test_iv_skew_exposes_continuous_call_iv_premium_without_directional_classes(call_iv):
     raw = raw_rows()
     raw.loc[raw.option_type == "CALL", "mark_iv"] = call_iv
     raw.loc[raw.option_type == "PUT", "mark_iv"] = .50
-    assert f.calculate_iv_skew(snapshot(raw))["classification"] == expected
+    result = f.calculate_iv_skew(snapshot(raw))
+    assert result["status"] == "OK"
+    assert result["metric"] == "CALL_IV_PREMIUM"
+    assert result["call_iv_premium_pct"] == pytest.approx((call_iv - .50) / .50 * 100)
+    assert "classification" not in result
+    assert "BULLISH_URGENCY" not in str(result)
+    assert "BEARISH_URGENCY" not in str(result)
+
+
+def test_iv_skew_has_no_five_percent_boundary():
+    raw = raw_rows()
+    raw.loc[raw.option_type == "CALL", "mark_iv"] = .5255
+    raw.loc[raw.option_type == "PUT", "mark_iv"] = .50
+    result = f.calculate_iv_skew(snapshot(raw))
+    assert result["call_iv_premium_pct"] == pytest.approx(5.1)
+    assert result["metric"] == "CALL_IV_PREMIUM"
 
 
 def test_iv_skew_requires_both_iv_sides():
@@ -166,13 +179,23 @@ def test_migration_requires_same_contract_universe_and_complete_oi():
     assert f.calculate_oi_migration(snapshot(current, previous, "s0"))["status"] == "INSUFFICIENT_DATA"
 
 
-def test_taker_is_sampled_and_fails_closed_on_partial_coverage():
+def test_taker_is_sampled_descriptive_and_fails_closed_on_partial_coverage():
     raw = raw_rows()
     raw.loc[(raw.strike_price == 1000) & (raw.option_type == "CALL"), "taker_buy_volume"] = None
-    assert f.calculate_taker_activity(snapshot(raw))["status"] == "PARTIAL"
+    partial = f.calculate_taker_activity(snapshot(raw))
+    assert partial["status"] == "PARTIAL"
+    assert "sampled_buy_volume" not in partial
+
     raw = raw_rows()
     raw["taker_buy_volume"], raw["taker_sell_volume"] = 20, 1
-    assert f.calculate_taker_activity(snapshot(raw))["classification"] == "AGGRESSIVE_BUYING"
+    result = f.calculate_taker_activity(snapshot(raw))
+    assert result["status"] == "OK"
+    assert result["sampled_buy_volume"] == pytest.approx(200)
+    assert result["sampled_sell_volume"] == pytest.approx(10)
+    assert result["sampled_volume_balance"] == pytest.approx(190)
+    assert result["sampled_volume_balance_pct"] == pytest.approx(90.4761904762)
+    assert "classification" not in result
+    assert result.get("metric") is None
 
 
 def test_one_calculator_exception_does_not_suppress_other_filters(monkeypatch):
@@ -223,3 +246,28 @@ def test_missing_required_keys_report_record_indexes():
         "missing_columns": ["status"],
         "row_indexes": {"status": [0]},
     }
+
+
+def test_production_backend_contains_no_legacy_directional_iv_or_taker_labels():
+    from pathlib import Path
+    source = Path("options_filters.py").read_text(encoding="utf-8")
+    for legacy in (
+        "BULLISH_URGENCY", "BEARISH_URGENCY",
+        "AGGRESSIVE_BUYING", "AGGRESSIVE_SELLING", "NEUTRAL_FLOW",
+    ):
+        assert legacy not in source
+    assert "CALL_IV_PREMIUM" in source
+    assert "call_iv_premium_pct" in source
+    assert "sampled_buy_volume" in source
+    assert "sampled_sell_volume" in source
+    assert "sampled_volume_balance" in source
+
+
+def test_zero_sampled_taker_total_has_null_percentage_balance():
+    raw = raw_rows()
+    raw["taker_buy_volume"] = 0
+    raw["taker_sell_volume"] = 0
+    result = f.calculate_taker_activity(snapshot(raw))
+    assert result["status"] == "OK"
+    assert result["sampled_volume_balance"] == 0
+    assert result["sampled_volume_balance_pct"] is None

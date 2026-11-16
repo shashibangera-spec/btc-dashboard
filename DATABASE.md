@@ -480,3 +480,12 @@ A single completed AMT candle can create multiple journal records with the same 
 - Require a valid raw chain and exactly matching contract identity set; missing OI coverage is not classified as stable.
 - Results expose the previous snapshot ID, previous completion time and elapsed seconds.
 - No new persistence, collector, scheduled workflow, or schema object is introduced.
+
+## IV Skew and Sampled Taker Activity result contract
+
+These are calculated from the same pinned snapshot and nearest-five strike sample used by the existing backend. No database schema change or new persistence is introduced.
+
+- **IV Skew:** `metric = CALL_IV_PREMIUM`; `call_iv_premium_pct = ((average_call_iv - average_put_iv) / average_put_iv) * 100`. It remains continuous; there is no ±5% cutoff and no bullish/bearish/neutral classification. Both option sides must have usable IV observations and average Put IV must be nonzero.
+- **Sampled Taker Activity:** `sampled_buy_volume` and `sampled_sell_volume` are the sums of the raw sampled contract fields over the selected nearest-five strikes. `sampled_volume_balance = sampled_buy_volume - sampled_sell_volume`. `sampled_volume_balance_pct` is balance divided by total sampled volume, expressed as a percentage, and is `NULL` when total volume is zero.
+- Missing buy/sell observations continue to produce `PARTIAL`; missingness is not replaced with zero and no directional class is emitted.
+- These fields describe the sampled options contracts only. They are not a measure of complete BTC spot/perpetual order flow and do not generate directional alerts.

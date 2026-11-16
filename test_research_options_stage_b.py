@@ -49,10 +49,11 @@ def test_dashboard_removes_legacy_filter_calculators_and_maps_canonical_fields()
         assert legacy not in source
     assert 'filter_results = opt_forensics.get("filters", {})' in source
     assert 'migration_analysis.get("classification")' in source
-    assert 'aggressor_analysis["taker_buy"]' in source
-    assert 'aggressor_analysis["taker_sell"]' in source
+    assert 'aggressor_analysis["sampled_buy_volume"]' in source
+    assert 'aggressor_analysis["sampled_sell_volume"]' in source
+    assert 'aggressor_analysis["sampled_volume_balance"]' in source
     assert 'vol_analysis["call_ratio"]' in source
-    assert 'iv_analysis["skew_pct"]' in source
+    assert 'iv_analysis["call_iv_premium_pct"]' in source
     assert 'walls_res.get("walls", [])' in source
     assert 'else "Stable"' not in source
     assert "filter_report_status" in source
@@ -102,3 +103,18 @@ def test_ai_report_includes_full_options_and_live_price_provenance_without_layou
     assert "report_options.get('calculated_at')" in source
     assert 'st.expander("📋 Copy/Paste Text Report for AI"' in source
     assert 'st.code(report_text, language="text")' in source
+
+
+def test_research_cards_use_neutral_descriptive_iv_and_taker_labels():
+    source = Path("btc_live_research_dashboard.py").read_text(encoding="utf-8")
+    for legacy in (
+        "BULLISH_URGENCY", "BEARISH_URGENCY",
+        "AGGRESSIVE_BUYING", "AGGRESSIVE_SELLING", "NEUTRAL_FLOW",
+        "Buy dominant", "Sell dominant",
+    ):
+        assert legacy not in source
+    assert 'st.markdown("**2. Call IV Premium**")' in source
+    assert 'st.markdown("**5. Sampled Taker Volumes**")' in source
+    assert 'st.metric("Sampled Buy Volume"' in source
+    assert 'st.metric("Sampled Sell Volume"' in source
+    assert "skew_color" not in source and "taker_color" not in source

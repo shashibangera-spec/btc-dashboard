@@ -340,11 +340,14 @@ def calculate_iv_skew(snapshot: CanonicalSnapshot) -> dict:
     avg_call, avg_put = float(calls.mean()), float(puts.mean())
     if avg_put == 0:
         return _result("IV Skew", "INSUFFICIENT_DATA", snapshot, reason="ZERO_PUT_IV")
-    skew = ((avg_call - avg_put) / avg_put) * 100
-    status = "BULLISH_URGENCY" if skew > 5.0 else "BEARISH_URGENCY" if skew < -5.0 else "NEUTRAL"
-    return _result("IV Skew", "OK", snapshot, classification=status, skew_pct=skew,
-                   avg_call_iv=avg_call, avg_put_iv=avg_put,
-                   call_observations=len(calls), put_observations=len(puts))
+    call_iv_premium = ((avg_call - avg_put) / avg_put) * 100
+    return _result(
+        "IV Skew", "OK", snapshot,
+        metric="CALL_IV_PREMIUM",
+        call_iv_premium_pct=call_iv_premium,
+        avg_call_iv=avg_call, avg_put_iv=avg_put,
+        call_observations=len(calls), put_observations=len(puts),
+    )
 
 
 def calculate_volume_oi(snapshot: CanonicalSnapshot) -> dict:
@@ -425,12 +428,18 @@ def calculate_taker_activity(snapshot: CanonicalSnapshot) -> dict:
                        sell_observations=int(sample[fields[1]].count()),
                        sample_strikes=sorted(selected_strikes))
     buy, sell = float(sample[fields[0]].sum()), float(sample[fields[1]].sum())
-    status = "NEUTRAL_FLOW"
-    if buy > sell * 1.3 and buy > 10: status = "AGGRESSIVE_BUYING"
-    elif sell > buy * 1.3 and sell > 10: status = "AGGRESSIVE_SELLING"
-    return _result("Sampled Taker Trade Activity", "OK", snapshot,
-                   classification=status, taker_buy=buy, taker_sell=sell,
-                   sample_strikes=sorted(selected_strikes))
+    total = buy + sell
+    balance = buy - sell
+    balance_pct = (balance / total) * 100 if total > 0 else None
+    return _result(
+        "Sampled Taker Trade Activity", "OK", snapshot,
+        sampled_buy_volume=buy,
+        sampled_sell_volume=sell,
+        sampled_volume_balance=balance,
+        sampled_volume_balance_pct=balance_pct,
+        sample_strikes=sorted(selected_strikes),
+        sample_contract_count=int(len(sample)),
+    )
 
 def calculate_all_filters(snapshot: CanonicalSnapshot) -> dict:
     """Isolate each calculator so one failure cannot suppress the other four."""
