@@ -15,6 +15,17 @@ The hierarchy is deliberate:
 
 The project preserves completed-candle confirmation discipline, avoids lookahead, and keeps developing information separate from confirmed information.
 
+## Theoretical Framework
+
+The system adopts an evidence-first Auction Market Theory framework:
+
+1. **AMT establishes market structure.** Completed price action, auction location, acceptance/rejection and the development or migration of value describe the auction. Confirmed AMT state is the structural reference; developing state remains provisional until its confirmation conditions are met.
+2. **Futures OI is a descriptive positioning metric.** Expansion or contraction describes a change in reported aggregate open-interest notional, subject to source coverage and timestamp quality. It does not identify whether new positions were initiated by buyers or sellers, nor whether positions are opening, closing or offsetting.
+3. **Options OI is a descriptive positioning metric.** Strike concentrations, OI migration, IV premium, GEX and related expiry measurements describe the observed options book. They do not independently establish support/resistance, dealer intent, hedging direction or a price target.
+4. **Neither Futures OI nor Options OI is a standalone directional signal.** Derivatives measurements may be studied alongside AMT and price action, but they cannot override the auction structure or be promoted to a trading rule without separate, robust empirical validation.
+
+The empirical corrections to IV Skew and Sampled Taker Activity follow this framework: Call IV Premium is continuous and descriptive; sampled options taker volumes are not full-market spot/perpetual order flow. Likewise, OI_SHOCK is a context alert, not a prediction.
+
 ---
 
 # Production architecture
@@ -246,6 +257,32 @@ Derived metrics include Max Pain, ATM straddle, gross Call/Put GEX concentration
 - Max Pain is a theoretical OI-based calculation, not a forecast.
 - ATM straddle is an expiry-specific priced-movement measure, not a guaranteed range.
 - Missing or incomplete chain data remains incomplete; missing data is not zero.
+
+---
+
+## 30-day Data Collection — Research Targets
+
+Active feature development is paused during this collection window. The objective is to build a clean, timestamp-aligned sample before considering any directional automation.
+
+### Research vector: price compression while Futures OI expands (absorption candidate)
+
+Research question: **Are there completed 30-minute windows in which BTC trades within a relatively tight price range while comparable aggregate Futures OI increases?**
+
+This is an *absorption candidate screen*, not proof of passive absorption, buyer/seller intent, trapped positions or a future reversal. Increasing OI does not reveal which side initiated the positions.
+
+At the end of the collection period, query the futures_oi_snapshots and amt_snapshots tables as follows:
+
+1. **Build valid OI observations.** Use only non-null AGGREGATE OI observations. Prefer a trustworthy source/collection timestamp from the status payload; use created_at only where its meaning is understood. Extract the contributor set from the status metadata and retain it with each observation.
+2. **Require comparable OI endpoints.** Compare start/end observations over fixed windows (initially 2h and 4h; 8h may be a sensitivity check). Require the same non-empty contributor set at both endpoints and a continuous chain of valid intermediate observations using the existing 25–35-minute interval rule. Do not treat a coverage change as OI expansion.
+3. **Align to completed AMT candles as-of each OI observation.** Use the latest valid completed 30-minute AMT candle whose candle_close_time is at or before the OI observation time. Never attach a later candle. The earlier Futures audit found a systematic timestamp offset of roughly nine minutes in many observations; preserve and report the offset distribution rather than assuming nearest timestamps are interchangeable.
+4. **Measure price compression over the same window.** From the corresponding completed AMT candles, calculate window_high = MAX(high_price), window_low = MIN(low_price) and price_range_pct = (window_high - window_low) / midpoint_price × 100, where midpoint_price is the midpoint of the window high and low. Also retain net close-to-close change and the number of valid candles.
+5. **Measure OI expansion.** Calculate oi_change_pct = (end_oi_usd - start_oi_usd) / start_oi_usd × 100. Because the stored field is USD-notional OI, run a sensitivity comparison using oi_usd / aligned_btc_price as a BTC-equivalent notional proxy where appropriate; do not mistake a price-driven USD valuation change for a pure change in contract count.
+6. **Screen empirically, not with a hand-picked magic cutoff.** Report the joint distribution of price_range_pct and oi_change_pct. Identify candidate compression windows using the lower quartile of price range and candidate OI expansion using the upper quartile of OI change, then repeat with alternative quantiles and transparent fixed-threshold sensitivity bands. Publish the actual thresholds and sample counts.
+7. **Review each candidate in context.** Retain AMT confirmed/developing state, Prior Value location, contributor coverage, data gaps and the underlying candle sequence. Manually inspect candidate episodes before assigning an absorption interpretation.
+
+A useful end-of-period query is therefore a **windowed join**, not a single-row correlation: create rolling 2h/4h OI endpoint pairs with stable contributor coverage; create matching 30-minute AMT high/low windows; join them using the strict as-of rule; calculate price-range and OI-change percentages; then rank or filter the joint distribution. Deduplicate overlapping windows into episodes before statistical testing, and report both the raw window count and independent episode count.
+
+**Do not** classify every tight-range/OI-rise window as absorption. The screen only finds observations worth examining. Any claim of absorption or directional edge requires further validation, including non-overlapping episodes, regime conditioning, out-of-sample replication and alternative OI normalization.
 
 ---
 
