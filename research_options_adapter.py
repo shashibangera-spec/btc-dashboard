@@ -2,12 +2,23 @@
 from datetime import date
 from typing import Any
 import pandas as pd
-from options_filters import DERIVED_COLUMNS, CanonicalSnapshot, _execute, _missing_record_keys, select_canonical_snapshot
+from options_filters import _execute, _missing_record_keys, select_canonical_snapshot
 
 
 def parse_optional_float(value):
     """Convert optional numeric database values without treating zero as missing."""
     return None if value is None else float(value)
+
+
+def validated_prior_values(shadow_state):
+    """Return validated database prior levels, or None when unusable."""
+    if not isinstance(shadow_state, dict) or str(shadow_state.get("data_status", "")).upper() != "VALID":
+        return None
+    keys = ("prior_vah", "prior_poc", "prior_val")
+    if any(shadow_state.get(key) is None for key in keys):
+        return None
+    vah, poc, val = (float(shadow_state[key]) for key in keys)
+    return (vah, poc, val) if vah >= poc >= val else None
 
 
 def load_canonical_research_options(client: Any, *, as_of: date | None = None) -> dict:
@@ -40,4 +51,4 @@ def load_canonical_research_options(client: Any, *, as_of: date | None = None) -
     spot = pd.to_numeric(pd.Series([row["underlying_spot_price"]]), errors="coerce").iloc[0]
     if pd.isna(spot) or float(spot) <= 0 or abs(float(spot)-snapshot.spot_price) > 1e-8:
         return {"status": "UNAVAILABLE", "reason": "DERIVED_SPOT_MISMATCH"}
-    return {"status": "OK", "snapshot": snapshot, "derived": row, "selection": selection}
+    row = dict(row)\n    row["status"] = "OK"\n    row["run_completed_at"] = snapshot.completed_at\n    return {"status": "OK", "snapshot": snapshot, "derived": row, "selection": selection}
