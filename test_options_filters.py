@@ -356,30 +356,22 @@ def test_migration_uses_identity_intersection_and_excludes_unmatched_strikes():
 
 
 def test_migration_accepts_changed_contract_universe_when_five_pairs_survive():
-    current, previous = raw_rows(), raw_rows(snapshot="s0")
-    for frame, snapshot_id in ((current, "s1"), (previous, "s0")):
-        extra = raw_rows(snapshot=snapshot_id)
-        extra["strike_price"] = 1300
-        extra["symbol"] = extra["option_type"].map(lambda side: f"{side}-1300")
-        extra["product_id"] = extra["symbol"]
-        extra["oi_contracts"] = 200
-        frame.drop(frame.index, inplace=True)
-        frame.drop(frame.index, inplace=True) if False else None
-    # Rebuild both chains with a sixth paired strike, then remove one strike
-    # from only the current chain to create a contract-universe mismatch.
-    current = pd.concat([raw_rows(), raw_rows().assign(
-        strike_price=1300,
-        symbol=raw_rows()["option_type"].map(lambda side: f"{side}-1300"),
-        product_id=raw_rows()["option_type"].map(lambda side: f"{side}-1300"),
-        oi_contracts=200,
-    )], ignore_index=True)
-    previous_base = raw_rows(snapshot="s0")
-    previous = pd.concat([previous_base, raw_rows(snapshot="s0").assign(
-        strike_price=1300,
-        symbol=raw_rows(snapshot="s0")["option_type"].map(lambda side: f"{side}-1300"),
-        product_id=raw_rows(snapshot="s0")["option_type"].map(lambda side: f"{side}-1300"),
-        oi_contracts=200,
-    )], ignore_index=True)
+    current = raw_rows()
+    current_extra = raw_rows()
+    current_extra["strike_price"] = 1300
+    current_extra["symbol"] = current_extra["option_type"].map(lambda side: f"{side}-1300")
+    current_extra["product_id"] = current_extra["symbol"]
+    current_extra["oi_contracts"] = 200
+    current = pd.concat([current, current_extra], ignore_index=True)
+
+    previous = raw_rows(snapshot="s0")
+    previous_extra = raw_rows(snapshot="s0")
+    previous_extra["strike_price"] = 1300
+    previous_extra["symbol"] = previous_extra["option_type"].map(lambda side: f"{side}-1300")
+    previous_extra["product_id"] = previous_extra["symbol"]
+    previous_extra["oi_contracts"] = 200
+    previous = pd.concat([previous, previous_extra], ignore_index=True)
+
     current = current[current.strike_price != 800]
     result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
     assert result["status"] == "OK"
