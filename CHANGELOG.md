@@ -2,6 +2,16 @@
 
 ## 2026-11-17
 
+### Fixed — System B options missing-versus-zero handling
+
+- Removed zero-filling from the Fast Dashboard's local options calculations. Missing OI, volume and GEX inputs remain missing; observed zero values remain valid zero observations.
+- Local OI/volume aggregates and PCR values are unavailable when any required observation is missing or invalid, rather than silently treating missing rows as zero.
+- Max Pain now requires an explicitly complete chain with unique positive strikes and finite, non-negative Call and Put OI at every strike. Any missing, malformed or incomplete input fails closed to unavailable; genuine zero OI is retained.
+- Added offline regression tests for genuine zero observations, missing/invalid inputs, wall selection and Max Pain fail-closed behavior.
+- No terminal skin, CSS, HTML, layout, labels, AMT/Futures logic, database, collectors, alerts or trading rules changed.
+
+## 2026-11-17
+
 ### Fixed — Telegram outbox event-type constraint synchronization (PR #24)
 
 - Updated the `telegram_alert_events_event_type_check` constraint to accept the five event types emitted or used by the notifier: `AMT_STATE_CHANGE`, `AMT_PROFILE_INITIALIZATION`, `GEX_WALL_BREACH`, `OI_SHOCK` and `TEST_ALERT`.
