@@ -200,7 +200,7 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
     runs = _execute(
         client.table("options_collection_runs")
         .select(",".join(RUN_COLUMNS)).eq("status", "SUCCESS")
-        .order("completed_at", desc=True).limit(500)
+        .order("completed_at", desc=True).limit(1)
     )
     if not runs:
         return None, {"status": "UNAVAILABLE", "reason": "NO_SUCCESS_RUN"}
@@ -215,6 +215,19 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
     underlying = str(current.get("underlying") or "")
     if not snapshot_id or not completed_at or not underlying:
         return None, {"status": "UNAVAILABLE", "reason": "INVALID_RUN_IDENTITY"}
+    history = _execute(
+        client.table("options_collection_runs")
+        .select(",".join(RUN_COLUMNS)).eq("status", "SUCCESS")
+        .eq("underlying", underlying)
+        .order("completed_at", desc=True).limit(500)
+    )
+    missing = _missing_record_keys(history, RUN_COLUMNS)
+    if missing["missing_columns"]:
+        return None, _missing_record_selection("options_collection_runs", missing)
+    runs = [current] + [
+        row for row in history
+        if str(row.get("snapshot_id") or "") != snapshot_id
+    ]
 
     derived = _execute(
         client.table("options_derived_snapshots")
