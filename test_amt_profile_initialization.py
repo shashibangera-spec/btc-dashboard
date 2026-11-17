@@ -94,3 +94,31 @@ def test_existing_initialization_delivery_suppresses_duplicate(monkeypatch):
     monkeypatch.setattr(notifier, "supabase", Client())
     monkeypatch.setattr(notifier, "check_event_exists", lambda key: key.startswith("AMT_PROFILE_INITIALIZATION_"))
     assert notifier.evaluate_amt_transition() is None
+
+
+def test_delayed_run_finds_first_candle_of_latest_profile(monkeypatch):
+    current = candle("P_2026-11-16", "IN_VALUE", "2026-11-16T01:29:59.999Z")
+    first = candle("P_2026-11-16", "IN_VALUE", "2026-11-16T00:29:59.999Z")
+    previous = candle("P_2026-11-15", "REENTRY_CONFIRMED", "2026-11-15T23:59:59.999Z")
+    alert = run_with_rows(monkeypatch, [current, first, previous])
+    assert alert["type"] == "AMT_PROFILE_INITIALIZATION"
+    assert alert["time"] == first["candle_close_time"]
+
+
+def test_intraday_transition_still_alerts_after_profile_init_was_sent(monkeypatch):
+    current = candle("P_2026-11-16", "DISCOVERY_CONFIRMED_BELOW", "2026-11-16T02:29:59.999Z")
+    previous = candle("P_2026-11-16", "IN_VALUE", "2026-11-16T01:59:59.999Z")
+    older = candle("P_2026-11-16", "IN_VALUE", "2026-11-16T01:29:59.999Z")
+    older_profile = candle("P_2026-11-15", "REENTRY_CONFIRMED", "2026-11-15T23:59:59.999Z")
+    class Client:
+        def table(self, name):
+            assert name == "amt_snapshots"
+            return Query([current, previous, older, older_profile])
+    monkeypatch.setattr(notifier, "supabase", Client())
+    monkeypatch.setattr(
+        notifier, "check_event_exists",
+        lambda key: key.startswith("AMT_PROFILE_INITIALIZATION_"),
+    )
+    alert = notifier.evaluate_amt_transition()
+    assert alert["type"] == "AMT_STATE_CHANGE"
+    assert "IN_VALUE → DISCOVERY_CONFIRMED_BELOW" in alert["msg"]
