@@ -1,15 +1,3 @@
-## 2026-11-17
-
-### Changed — System B major visual-first observation cockpit redesign
-
-- Replaced the prior text/card-heavy System B presentation with the approved Claude visual layout: compact top bar, explicit hero metrics, auction-story banner, prior-value ladder, AMT structure, nearest-strike options profile and side-by-side Options/Futures context.
-- Replaced trading-oriented branding with **BTC AMT & Derivatives Observation Cockpit**. Restored the exact baseline labels **AUCTION (LAST CLOSE)** and **LIVE PRICE LOCATION** so the completed-candle state and live-price position remain distinct.
-- Moved the collapsible Options Filters panel to immediately follow the Futures context section and precede **DIAGNOSTICS AND RAW DATA**.
-- Added `fast_dashboard_data_helpers.py` to preserve NULL versus observed zero: optional numeric parsing, complete-series aggregation, safe ratios, fail-closed wall selection and Max Pain calculation from a fully received, non-null raw chain. Structural absence of a call/put side is treated as zero only when the upstream complete-chain check succeeds.
-- Removed blanket `fillna(0)` behavior from the options calculation and OI chart paths. Missing volume, IV, OI, PCR-volume and Max Pain inputs remain unavailable; valid zero observations remain zero.
-- Updated `test_fast_dashboard_options_ui.py` with the approved CSS fingerprint, branding/label and panel-order assertions, plus regression tests for missing-versus-zero parsing, aggregates, ratios, wall selection and Max Pain.
-- Updated the System B architecture and Options Filters placement description in `README.md`. No database schema, collectors, System A workflows, Pine state machine, alert logic or execution behavior changed.
-
 # Changelog
 
 ## 2026-11-17
