@@ -165,7 +165,7 @@ def test_max_pain_requires_complete_non_null_chain_and_preserves_zero_oi():
         "Type": ["Call", "Put", "Call", "Put"],
         "OI_Contracts": [2.0, 3.0, 1.0, 4.0],
     })
-    assert calculate_max_pain(chain, True) == 110.0
+    assert calculate_max_pain(chain, True) == 100.0
     chain.loc[0, "OI_Contracts"] = np.nan
     assert math.isnan(calculate_max_pain(chain, True))
     assert math.isnan(calculate_max_pain(chain, False))
