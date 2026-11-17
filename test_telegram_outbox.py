@@ -162,7 +162,7 @@ def test_python_event_types_match_database_migration():
         / "20261117_allow_amt_profile_initialization_and_test_alert_event_types.sql"
     )
     migration_sql = migration_path.read_text(encoding="utf-8")
-    match = re.search(r"ARRAY\\[(.*?)\\]::text\\[\\]", migration_sql, re.DOTALL)
+    match = re.search(r"ARRAY\[(.*?)\]::text\[\]", migration_sql, re.DOTALL)
 
     assert match is not None, "database event-type CHECK allowlist not found"
     database_event_types = set(re.findall(r"'([^']+)'", match.group(1)))
