@@ -118,37 +118,35 @@ def evaluate_amt_transition():
             f"AMT_PROFILE_INITIALIZATION_{curr_profile}_"
             f"{first_profile_candle['candle_close_time']}"
         )
-        if check_event_exists(event_key):
-            return None
-
-        initial_state = first_profile_candle.get("confirmed_state") or "STATE_UNAVAILABLE"
-        close_price = first_profile_candle.get("close_price")
-        try:
-            close_text = f"USD {float(close_price):,.0f}" if close_price is not None else "Unavailable"
-        except (TypeError, ValueError):
-            close_text = "Unavailable"
-        msg = (
-            "🆕 AMT NEW PROFILE / STATE INITIALIZATION\\n\\n"
-            f"Profile: {curr_profile}\\n"
-            f"Initial confirmed state: {initial_state}\\n"
-            f"Candle: {first_profile_candle.get('candle_open_time', 'Unavailable')}\\n"
-            f"Close: {close_text}"
-        )
-        payload = {
-            "profile_id": curr_profile,
-            "previous_profile_id": previous_profile,
-            "initial_state": initial_state,
-            "candle_open_time": first_profile_candle.get("candle_open_time"),
-            "candle_close_time": first_profile_candle.get("candle_close_time"),
-            "close_price": close_price,
-        }
-        return {
-            "key": event_key,
-            "type": "AMT_PROFILE_INITIALIZATION",
-            "time": first_profile_candle["candle_close_time"],
-            "msg": msg,
-            "payload": payload,
-        }
+        if not check_event_exists(event_key):
+            initial_state = first_profile_candle.get("confirmed_state") or "STATE_UNAVAILABLE"
+            close_price = first_profile_candle.get("close_price")
+            try:
+                close_text = f"USD {float(close_price):,.0f}" if close_price is not None else "Unavailable"
+            except (TypeError, ValueError):
+                close_text = "Unavailable"
+            msg = (
+                "🆕 AMT NEW PROFILE / STATE INITIALIZATION\\n\\n"
+                f"Profile: {curr_profile}\\n"
+                f"Initial confirmed state: {initial_state}\\n"
+                f"Candle: {first_profile_candle.get('candle_open_time', 'Unavailable')}\\n"
+                f"Close: {close_text}"
+            )
+            payload = {
+                "profile_id": curr_profile,
+                "previous_profile_id": previous_profile,
+                "initial_state": initial_state,
+                "candle_open_time": first_profile_candle.get("candle_open_time"),
+                "candle_close_time": first_profile_candle.get("candle_close_time"),
+                "close_price": close_price,
+            }
+            return {
+                "key": event_key,
+                "type": "AMT_PROFILE_INITIALIZATION",
+                "time": first_profile_candle["candle_close_time"],
+                "msg": msg,
+                "payload": payload,
+            }
 
     # No profile boundary in the recent window: preserve the existing same-profile
     # intraday transition behavior using the latest two completed candles.
