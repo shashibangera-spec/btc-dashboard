@@ -233,6 +233,64 @@ hr { border-color: var(--border) !important; margin: 0.6rem 0 !important; }
 # ==========================================
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
+def _sum_if_complete(series):
+    """Return a sum only when every expected observation is present and valid."""
+    values = pd.to_numeric(series, errors="coerce")
+    if values.empty or values.isna().any():
+        return np.nan
+    numeric = values.to_numpy(dtype=float)
+    if not np.isfinite(numeric).all() or (numeric < 0).any():
+        return np.nan
+    return float(numeric.sum())
+
+
+def _select_positive_wall(frame, column):
+    """Select a wall only from observed, finite, strictly positive measurements."""
+    if column not in frame.columns:
+        return None
+    values = pd.to_numeric(frame[column], errors="coerce")
+    valid = values.notna() & np.isfinite(values) & (values > 0)
+    if not valid.any():
+        return None
+    return frame.loc[values[valid].idxmax()]
+
+
+def _calculate_max_pain(chain, is_chain_complete):
+    """Calculate Max Pain only from a complete, non-null, non-negative option chain."""
+    required = {"Strike", "OI_Contracts_Call", "OI_Contracts_Put"}
+    if not is_chain_complete or chain.empty or not required.issubset(chain.columns):
+        return np.nan
+
+    strikes = pd.to_numeric(chain["Strike"], errors="coerce")
+    call_oi = pd.to_numeric(chain["OI_Contracts_Call"], errors="coerce")
+    put_oi = pd.to_numeric(chain["OI_Contracts_Put"], errors="coerce")
+    if strikes.isna().any() or call_oi.isna().any() or put_oi.isna().any():
+        return np.nan
+
+    strike_values = strikes.to_numpy(dtype=float)
+    call_values = call_oi.to_numpy(dtype=float)
+    put_values = put_oi.to_numpy(dtype=float)
+    if (
+        not np.isfinite(strike_values).all()
+        or not np.isfinite(call_values).all()
+        or not np.isfinite(put_values).all()
+        or (strike_values <= 0).any()
+        or (call_values < 0).any()
+        or (put_values < 0).any()
+        or len(np.unique(strike_values)) != len(strike_values)
+    ):
+        return np.nan
+
+    payouts = []
+    for settlement in strike_values:
+        call_payout = np.maximum(settlement - strike_values, 0) * call_values
+        put_payout = np.maximum(strike_values - settlement, 0) * put_values
+        payouts.append(float(np.sum(call_payout + put_payout)))
+    if not payouts or not np.isfinite(payouts).all():
+        return np.nan
+    return float(strike_values[int(np.argmin(payouts))])
+
+
 # Canonical TradingView v7.2.2 auction phase labels.
 state_names = STATE_NAMES
 
@@ -862,27 +920,29 @@ def _render_dashboard():
         filtered_options = options_df[(options_df['Strike'] >= lower_bound) & (options_df['Strike'] <= upper_bound)].copy()
         
         if not filtered_options.empty:
-            temp_filt = filtered_options.fillna(0)
-            if temp_filt['OI_USD_Call'].max() > 0: call_oi_wall = temp_filt.loc[temp_filt['OI_USD_Call'].idxmax()]
-            if temp_filt['OI_USD_Put'].max() > 0: put_oi_wall = temp_filt.loc[temp_filt['OI_USD_Put'].idxmax()]
-            if temp_filt['GEX_Call'].max() > 0: call_gamma_wall = temp_filt.loc[temp_filt['GEX_Call'].idxmax()]
-            if temp_filt['GEX_Put'].max() > 0: put_gamma_wall = temp_filt.loc[temp_filt['GEX_Put'].idxmax()]
-            
-            total_calls_contracts = temp_filt['OI_Contracts_Call'].sum()
-            total_puts_contracts = temp_filt['OI_Contracts_Put'].sum()
-            pcr = total_puts_contracts / total_calls_contracts if total_calls_contracts > 0 else np.nan
-            total_calls_vol = temp_filt['Volume_Call'].sum(); total_puts_vol = temp_filt['Volume_Put'].sum()
-            pcr_volume = total_puts_vol / total_calls_vol if total_calls_vol > 0 else 0
-    
-            if is_chain_complete and not options_df.empty:
-                all_strikes = options_df['Strike'].tolist()
-                all_call_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Call'].fillna(0)))
-                all_put_oi = dict(zip(options_df['Strike'], options_df['OI_Contracts_Put'].fillna(0)))
-                pain_dict = {}
-                for settle in all_strikes:
-                    pain_dict[settle] = sum((all_call_oi.get(k, 0) * (settle - k) if settle > k else 0) + (all_put_oi.get(k, 0) * (k - settle) if settle < k else 0) for k in all_strikes)
-                true_max_pain = min(pain_dict, key=pain_dict.get) if pain_dict else np.nan
-    
+            temp_filt = filtered_options.copy()
+            call_oi_wall = _select_positive_wall(temp_filt, "OI_USD_Call")
+            put_oi_wall = _select_positive_wall(temp_filt, "OI_USD_Put")
+            call_gamma_wall = _select_positive_wall(temp_filt, "GEX_Call")
+            put_gamma_wall = _select_positive_wall(temp_filt, "GEX_Put")
+
+            total_calls_contracts = _sum_if_complete(temp_filt["OI_Contracts_Call"])
+            total_puts_contracts = _sum_if_complete(temp_filt["OI_Contracts_Put"])
+            pcr = (
+                total_puts_contracts / total_calls_contracts
+                if pd.notna(total_calls_contracts) and pd.notna(total_puts_contracts) and total_calls_contracts > 0
+                else np.nan
+            )
+            total_calls_vol = _sum_if_complete(temp_filt["Volume_Call"])
+            total_puts_vol = _sum_if_complete(temp_filt["Volume_Put"])
+            pcr_volume = (
+                total_puts_vol / total_calls_vol
+                if pd.notna(total_calls_vol) and pd.notna(total_puts_vol) and total_calls_vol > 0
+                else np.nan
+            )
+
+            true_max_pain = _calculate_max_pain(options_df, is_chain_complete)
+
         call_strike_text = "$" + format(call_gamma_wall["Strike"], ",.0f") if call_gamma_wall is not None else "N/A"
         put_strike_text = "$" + format(put_gamma_wall["Strike"], ",.0f") if put_gamma_wall is not None else "N/A"
     
