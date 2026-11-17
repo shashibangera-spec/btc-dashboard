@@ -1055,12 +1055,14 @@ def _render_dashboard():
     h3.markdown(_ui_hero("LIVE PRICE LOCATION", loc, loc_sub, loc_tone, "state"), unsafe_allow_html=True)
     
     # ---------- AUCTION STORY CALLOUT ----------
-    _story_parts = auction_story.split(" → ")
-    if len(_story_parts) == 2:
-        story_html = ('<span class="prev">' + _story_parts[0] + '</span><span class="arr">→</span>'
-                      '<span class="cur">' + _story_parts[1] + '</span>')
-    else:
-        story_html = '<span class="cur">' + auction_story + '</span>'
+    _has_auction_transition = (
+        previous_ui_state is not None and previous_ui_state != current_amt_state
+    )
+    story_html = ""
+    if _has_auction_transition:
+        _story_parts = auction_story.split(" → ")
+        story_html = ('<div class="t"><span class="prev">' + _story_parts[0] + '</span><span class="arr">→</span>'
+                      '<span class="cur">' + _story_parts[1] + '</span></div>')
     
     def _ui_chip(label, value):
         cls = "up" if value.startswith("+") else "down" if value.startswith("-") else ""
@@ -1069,8 +1071,8 @@ def _render_dashboard():
     
     st.markdown(
         '<div class="story t-' + state_tone + '"><div class="k">AUCTION STORY</div>'
-        '<div class="t">' + story_html + '</div>'
-        '<div class="chips">'
+        + story_html
+        + '<div class="chips">'
         + _ui_chip("Price vs Prior VAL", prior_val_distance)
         + _ui_chip("Price vs Developing VAH", dev_vah_distance)
         + _ui_chip("Nearest GEX Wall", nearest_wall)
@@ -1079,25 +1081,18 @@ def _render_dashboard():
     )
     
     # ---------- WHAT CHANGED — UI ONLY ----------
-    _ui_section("WHAT CHANGED", "vs previous rendered snapshot in this browser session")
     current_ui_snapshot = {
-        "state": current_amt_state,
         "dev_vah": float(dev_vah_ui) if not pd.isna(dev_vah_ui) else None,
         "dev_poc": float(dev_poc_ui) if not pd.isna(dev_poc_ui) else None,
         "dev_val": float(dev_val_ui) if not pd.isna(dev_val_ui) else None,
     }
     previous_ui_snapshot = st.session_state.get("fast_previous_snapshot")
+    changed_levels = []
     
-    if previous_ui_snapshot is None:
-        st.info("Baseline captured. Changes will appear after the next dashboard refresh.")
-    else:
-        c1, c2, c3, c4 = st.columns(4)
-    
-        def show_level_change(column, label, key):
+    if previous_ui_snapshot is not None:
+        for label, key in (("DEV VAH", "dev_vah"), ("DEV POC", "dev_poc"), ("DEV VAL", "dev_val")):
             current_value = current_ui_snapshot.get(key)
             previous_value = previous_ui_snapshot.get(key)
-
-            # Safely convert to float, or set to None if invalid
             try:
                 current_value = float(current_value) if current_value is not None and not pd.isna(current_value) else None
                 previous_value = float(previous_value) if previous_value is not None and not pd.isna(previous_value) else None
@@ -1105,26 +1100,18 @@ def _render_dashboard():
                 current_value = None
                 previous_value = None
 
-            if current_value is None or previous_value is None:
-                column.metric(label, "N/A")
-                return
+            if current_value is not None and previous_value is not None and current_value != previous_value:
+                changed_levels.append((label, current_value, current_value - previous_value))
 
-            delta_value = current_value - previous_value
-
-            if delta_value == 0:
-                column.metric(label, "$" + format(current_value, ",.0f"), "UNCHANGED", delta_color="off")
-            else:
-                delta_text = "$" + format(delta_value, "+,.0f")
-                column.metric(label, "$" + format(current_value, ",.0f"), delta_text)
-
-        state_change = "UNCHANGED"
-        if previous_ui_snapshot.get("state") != current_amt_state:
-            state_change = "FROM " + state_names.get(previous_ui_snapshot.get("state"), "UNKNOWN")
-    
-        c1.metric("AUCTION STATE", current_amt_name, state_change, delta_color="off")
-        show_level_change(c2, "DEV VAH", "dev_vah")
-        show_level_change(c3, "DEV POC", "dev_poc")
-        show_level_change(c4, "DEV VAL", "dev_val")
+    if changed_levels:
+        _ui_section("WHAT CHANGED", "Developing value levels changed vs previous rendered snapshot")
+        change_columns = st.columns(len(changed_levels))
+        for column, (label, current_value, delta_value) in zip(change_columns, changed_levels):
+            column.metric(
+                label,
+                "$" + format(current_value, ",.0f"),
+                "$" + format(delta_value, "+,.0f"),
+            )
     
     st.session_state["fast_previous_snapshot"] = current_ui_snapshot
     st.session_state["fast_prev_amt_state"] = current_amt_state
@@ -1206,12 +1193,11 @@ def _render_dashboard():
     
     st.markdown(
         _ui_grid([
-            _ui_card("Fast Auction Classification", current_amt_name, "Independent code " + str(current_amt_state), state_tone, tint=True, small=True),
             _ui_card("Developing VAH", _ui_num(dev_vah_ui), tone="up"),
             _ui_card("Developing POC", _ui_num(dev_poc_ui), tone="warn"),
             _ui_card("Developing VAL", _ui_num(dev_val_ui), tone="down"),
             _ui_card("VA Expansion", va_expansion_value, _va_sub, _va_tone),
-        ], "g5"),
+        ], "g4"),
         unsafe_allow_html=True,
     )
     st.markdown('<div class="foot">Independent dashboard classification; not a prediction or a replacement for the locked Pine AMT reference.</div>', unsafe_allow_html=True)

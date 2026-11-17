@@ -195,3 +195,40 @@ def test_dashboard_uses_null_preserving_options_helpers_for_oi_and_max_pain():
     assert "_sum_if_complete(" in options_block
     assert "_calculate_max_pain(options_df, is_chain_complete)" in options_block
     assert ".fillna(0)" not in options_block
+
+
+def test_auction_story_only_renders_state_text_on_a_state_transition():
+    source = _source()
+    story = source[source.index("# ---------- AUCTION STORY CALLOUT ----------"):source.index("# ---------- WHAT CHANGED — UI ONLY ----------")]
+    assert "_has_auction_transition = (" in story
+    assert "previous_ui_state is not None and previous_ui_state != current_amt_state" in story
+    assert "if _has_auction_transition:" in story
+    assert '+ story_html' in story
+    assert '_ui_chip("Price vs Prior VAL", prior_val_distance)' in story
+    assert '_ui_chip("Price vs Developing VAH", dev_vah_distance)' in story
+    assert '_ui_chip("Nearest GEX Wall", nearest_wall)' in story
+
+
+def test_what_changed_renders_only_valid_changed_developing_levels():
+    source = _source()
+    start = source.index("# ---------- WHAT CHANGED — UI ONLY ----------")
+    end = source.index("# ---------- 1 · PRICE ACTION", start)
+    block = source[start:end]
+    assert 'if previous_ui_snapshot is not None:' in block
+    assert 'current_value is not None and previous_value is not None and current_value != previous_value' in block
+    assert 'if changed_levels:' in block
+    assert '_ui_section("WHAT CHANGED"' in block
+    assert 'column.metric("AUCTION STATE"' not in block
+    assert 'column.metric("N/A")' not in block
+    assert '"UNCHANGED"' not in block
+
+
+def test_amt_structure_does_not_repeat_last_close_auction_classification():
+    source = _source()
+    start = source.index('_ui_section("2 · AMT STRUCTURE"')
+    end = source.index("# ---------- FUTURES OI CONTEXT", start)
+    block = source[start:end]
+    assert 'Fast Auction Classification' not in block
+    for label in ("Developing VAH", "Developing POC", "Developing VAL", "VA Expansion"):
+        assert f'_ui_card("{label}"' in block
+    assert '], "g4")' in block
