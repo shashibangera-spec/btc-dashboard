@@ -339,7 +339,7 @@ def test_selector_reports_no_previous_snapshot():
 def test_selector_skips_invalid_candidate_inside_window():
     db = database()
     invalid = raw_rows(snapshot="invalid")
-    invalid.loc[0, "spot_price"] = 0
+    invalid["spot_price"] = 0
     _add_previous_snapshot(db, "invalid", "2026-11-16T12:05:00Z", invalid)
     _add_previous_snapshot(db, "valid", "2026-11-16T12:00:00Z")
     selected, _ = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
