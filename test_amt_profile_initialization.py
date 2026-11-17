@@ -30,10 +30,13 @@ class Query:
 
 
 def candle(profile, state, close_time, close=65000):
+    from datetime import datetime, timedelta
+    parsed = datetime.fromisoformat(close_time.replace("Z", "+00:00"))
+    candle_open = (parsed - timedelta(minutes=30)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     return {
         "profile_id": profile,
         "confirmed_state": state,
-        "candle_open_time": close_time.replace(":59:59.999Z", ":30:00.000Z"),
+        "candle_open_time": candle_open,
         "candle_close_time": close_time,
         "close_price": close,
         "data_status": "VALID",
