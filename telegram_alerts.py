@@ -59,23 +59,71 @@ def check_event_exists(event_key):
         for row in res.data
     )
 
+def begin_event_delivery(alert):
+    """Durably create/update an outbox row as PENDING before attempting Telegram."""
+    key = alert["key"]
+    existing = (
+        supabase.table("telegram_alert_events")
+        .select("attempt_count,delivery_status,telegram_message_id")
+        .eq("event_key", key)
+        .limit(1)
+        .execute()
+    )
+    rows = existing.data or []
+    if rows and rows[0].get("delivery_status") == "SENT" and rows[0].get("telegram_message_id"):
+        return False
+    attempts = int(rows[0].get("attempt_count") or 0) if rows else 0
+    record = {
+        "event_key": key,
+        "event_type": alert["type"],
+        "event_time": alert["time"],
+        "payload": alert.get("payload", {}),
+        "delivery_status": "PENDING",
+        "telegram_message_id": None,
+        "sent_at": None,
+        "attempt_count": attempts + 1,
+        "last_error": None,
+    }
+    # This write must succeed before any network send is attempted.
+    supabase.table("telegram_alert_events").upsert(
+        record, on_conflict="event_key"
+    ).execute()
+    return True
+
+
+def finish_event_delivery(alert, status, message_id=None, error=None):
+    """Finalize the already-persisted outbox attempt."""
+    if status not in ("SENT", "FAILED"):
+        raise ValueError("delivery status must be SENT or FAILED")
+    record = {
+        "delivery_status": status,
+        "telegram_message_id": message_id if status == "SENT" else None,
+        "sent_at": datetime.now(timezone.utc).isoformat() if status == "SENT" else None,
+        "last_error": str(error)[:1000] if error else None,
+    }
+    response = (
+        supabase.table("telegram_alert_events")
+        .update(record)
+        .eq("event_key", alert["key"])
+        .execute()
+    )
+    if not getattr(response, "data", None):
+        raise RuntimeError("Outbox finalization updated no row for {}".format(alert["key"]))
+
+
 def log_event(event_key, event_type, event_time, payload, status, message_id=None):
+    """Compatibility helper for legacy callers; writes through the outbox lifecycle."""
+    alert = {"key": event_key, "type": event_type, "time": event_time, "payload": payload}
     try:
-        record = {
-            "event_key": event_key,
-            "event_type": event_type,
-            "event_time": event_time,
-            "payload": payload,
-            "delivery_status": status,
-            "telegram_message_id": message_id if status == "SENT" else None,
-            "sent_at": datetime.now(timezone.utc).isoformat() if status == "SENT" else None,
-        }
-        # Upsert lets a later successful retry replace an earlier FAILED attempt.
-        supabase.table("telegram_alert_events").upsert(
-            record, on_conflict="event_key"
-        ).execute()
-    except Exception as e:
-        print(f"Failed to log event ({status}): {e}")
+        if not begin_event_delivery(alert):
+            return
+        finish_event_delivery(
+            alert, status,
+            message_id=message_id if status == "SENT" else None,
+            error=None if status == "SENT" else "Delivery failed",
+        )
+    except Exception as exc:
+        print("Failed to persist event lifecycle ({}): {}".format(event_key, exc))
 
 def evaluate_amt_transition():
     # Read a bounded window so a delayed workflow can still detect the first candle
