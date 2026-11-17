@@ -434,16 +434,19 @@ def calculate_oi_migration(snapshot: CanonicalSnapshot) -> dict:
         )
 
     matched = []
+    invalid_strikes = set()
     for identity in shared_ids:
         now_row = current_by_id.loc[identity]
         old_row = previous_by_id.loc[identity]
-        now_oi, old_oi = _finite(now_row["oi_contracts"]), _finite(old_row["oi_contracts"])
         strike = _finite(now_row["strike_price"])
         side = str(now_row["option_type"]).upper()
-        if (strike is None or now_oi is None or old_oi is None
-                or now_oi < 0 or old_oi < 0
+        if strike is None:
+            continue
+        now_oi, old_oi = _finite(now_row["oi_contracts"]), _finite(old_row["oi_contracts"])
+        if (now_oi is None or old_oi is None or now_oi < 0 or old_oi < 0
                 or _finite(old_row["strike_price"]) != strike
                 or str(old_row["option_type"]).upper() != side):
+            invalid_strikes.add(strike)
             continue
         matched.append({
             "strike_price": strike, "option_type": side,
@@ -462,7 +465,7 @@ def calculate_oi_migration(snapshot: CanonicalSnapshot) -> dict:
     valid_strikes = []
     for strike, group in matched_frame.groupby("strike_price", sort=True):
         sides = set(group["option_type"])
-        if sides == {"CALL", "PUT"}:
+        if float(strike) not in invalid_strikes and sides == {"CALL", "PUT"}:
             valid_strikes.append(float(strike))
     valid = matched_frame[matched_frame["strike_price"].isin(valid_strikes)]
     if valid.empty or len(valid_strikes) < 5:
