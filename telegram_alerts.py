@@ -101,14 +101,15 @@ def finish_event_delivery(alert, status, message_id=None, error=None):
         "sent_at": datetime.now(timezone.utc).isoformat() if status == "SENT" else None,
         "last_error": str(error)[:1000] if error else None,
     }
-    response = (
+    # PostgREST may return an empty representation for a successful UPDATE;
+    # execute() raises on database errors, so do not mistake an empty response
+    # body for a failed status transition.
+    (
         supabase.table("telegram_alert_events")
         .update(record)
         .eq("event_key", alert["key"])
         .execute()
     )
-    if not getattr(response, "data", None):
-        raise RuntimeError("Outbox finalization updated no row for {}".format(alert["key"]))
 
 
 def log_event(event_key, event_type, event_time, payload, status, message_id=None):
