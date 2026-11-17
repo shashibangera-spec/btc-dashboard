@@ -151,3 +151,32 @@ def test_initial_outbox_write_failure_prevents_telegram_send(monkeypatch):
     except SystemExit as exc:
         assert exc.code == 1
     assert sent == []
+
+
+def test_all_database_allowed_event_types_can_be_enqueued(monkeypatch):
+    db = FakeSupabase()
+    monkeypatch.setattr(notifier, "supabase", db)
+
+    for event_type in sorted(notifier.ALLOWED_EVENT_TYPES):
+        item = alert()
+        item["key"] = f"{event_type}_test"
+        item["type"] = event_type
+
+        assert notifier.begin_event_delivery(item) is True
+        assert db.rows[item["key"]]["event_type"] == event_type
+        assert db.rows[item["key"]]["delivery_status"] == "PENDING"
+
+
+def test_unknown_event_type_is_rejected_before_database_write(monkeypatch):
+    db = FakeSupabase()
+    monkeypatch.setattr(notifier, "supabase", db)
+    item = alert()
+    item["type"] = "UNRECOGNIZED_EVENT"
+
+    try:
+        notifier.begin_event_delivery(item)
+        assert False, "unsupported event types must fail closed"
+    except ValueError as exc:
+        assert "UNRECOGNIZED_EVENT" in str(exc)
+
+    assert db.rows == {}
