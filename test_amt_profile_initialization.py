@@ -118,10 +118,9 @@ def test_intraday_transition_still_alerts_after_profile_init_was_sent(monkeypatc
             assert name == "amt_snapshots"
             return Query([current, previous, older, older_profile])
     monkeypatch.setattr(notifier, "supabase", Client())
-    monkeypatch.setattr(
-        notifier, "check_event_exists",
-        lambda key: key.startswith("AMT_PROFILE_INITIALIZATION_"),
-    )
+    def already_sent(key):
+        return key.startswith("AMT_PROFILE_INITIALIZATION_")
+    monkeypatch.setattr(notifier, "check_event_exists", already_sent)
     alert = notifier.evaluate_amt_transition()
     assert alert["type"] == "AMT_STATE_CHANGE"
     assert "IN_VALUE → DISCOVERY_CONFIRMED_BELOW" in alert["msg"]
