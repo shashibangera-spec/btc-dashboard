@@ -232,3 +232,17 @@ def test_amt_structure_does_not_repeat_last_close_auction_classification():
     for label in ("Developing VAH", "Developing POC", "Developing VAL", "VA Expansion"):
         assert f'_ui_card("{label}"' in block
     assert '], "g4")' in block
+
+
+def test_amt_structure_developing_value_cards_are_ordered_low_to_high():
+    source = _source()
+    start = source.index('_ui_section("2 · AMT STRUCTURE"')
+    end = source.index("# ---------- FUTURES OI CONTEXT", start)
+    block = source[start:end]
+
+    val = block.index('_ui_card("Developing VAL", _ui_num(dev_val_ui), tone="down")')
+    poc = block.index('_ui_card("Developing POC", _ui_num(dev_poc_ui), tone="warn")')
+    vah = block.index('_ui_card("Developing VAH", _ui_num(dev_vah_ui), tone="up")')
+    expansion = block.index('_ui_card("VA Expansion", va_expansion_value, _va_sub, _va_tone)')
+
+    assert val < poc < vah < expansion
