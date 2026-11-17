@@ -104,3 +104,94 @@ def test_fast_dashboard_does_not_render_legacy_iv_or_taker_classifications():
     assert "AGGRESSIVE_BUYING" not in taker_block
     assert "AGGRESSIVE_SELLING" not in taker_block
     assert "CALL_IV_PREMIUM" not in iv_block or "call_iv_premium_pct" in iv_block
+
+
+def _load_dashboard_math_helpers():
+    """Load only pure helpers without importing Streamlit's side-effectful app."""
+    import ast
+    import numpy as np
+    import pandas as pd
+    import types
+
+    tree = ast.parse(_source())
+    names = {"_sum_if_complete", "_select_positive_wall", "_calculate_max_pain"}
+    nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
+    assert {node.name for node in nodes} == names
+    module = types.ModuleType("dashboard_math_helpers")
+    module.__dict__.update({"np": np, "pd": pd})
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(DASHBOARD), "exec"), module.__dict__)
+    return module
+
+
+def test_options_aggregates_preserve_observed_zero_and_reject_missing_values():
+    import numpy as np
+    import pandas as pd
+
+    helpers = _load_dashboard_math_helpers()
+    assert helpers._sum_if_complete(pd.Series([0.0, 0.0])) == 0.0
+    assert helpers._sum_if_complete(pd.Series([2.0, 0.0])) == 2.0
+    assert np.isnan(helpers._sum_if_complete(pd.Series([2.0, np.nan])))
+    assert np.isnan(helpers._sum_if_complete(pd.Series([np.nan, np.nan])))
+    assert np.isnan(helpers._sum_if_complete(pd.Series([1.0, -1.0])))
+    assert np.isnan(helpers._sum_if_complete(pd.Series([1.0, np.inf])))
+
+
+def test_options_wall_selection_does_not_turn_missing_or_zero_into_a_wall():
+    import pandas as pd
+
+    helpers = _load_dashboard_math_helpers()
+    frame = pd.DataFrame({"Strike": [100, 110, 120], "OI_USD_Call": [None, 0.0, 0.0]})
+    assert helpers._select_positive_wall(frame, "OI_USD_Call") is None
+
+    frame.loc[2, "OI_USD_Call"] = 25.0
+    selected = helpers._select_positive_wall(frame, "OI_USD_Call")
+    assert selected["Strike"] == 120
+    assert helpers._select_positive_wall(frame, "MISSING_COLUMN") is None
+
+
+def test_max_pain_accepts_real_zero_oi_values():
+    import pandas as pd
+
+    helpers = _load_dashboard_math_helpers()
+    chain = pd.DataFrame({
+        "Strike": [100.0, 110.0],
+        "OI_Contracts_Call": [0.0, 0.0],
+        "OI_Contracts_Put": [0.0, 0.0],
+    })
+    assert helpers._calculate_max_pain(chain, True) == 100.0
+
+
+def test_max_pain_fails_closed_for_incomplete_or_missing_oi_inputs():
+    import numpy as np
+    import pandas as pd
+
+    helpers = _load_dashboard_math_helpers()
+    complete = pd.DataFrame({
+        "Strike": [100.0, 110.0],
+        "OI_Contracts_Call": [0.0, 2.0],
+        "OI_Contracts_Put": [3.0, 0.0],
+    })
+    assert helpers._calculate_max_pain(complete, True) == 100.0
+    assert np.isnan(helpers._calculate_max_pain(complete, False))
+
+    for column in ("OI_Contracts_Call", "OI_Contracts_Put"):
+        incomplete = complete.copy()
+        incomplete.loc[0, column] = np.nan
+        assert np.isnan(helpers._calculate_max_pain(incomplete, True))
+
+    malformed = complete.copy()
+    malformed.loc[1, "OI_Contracts_Call"] = -1.0
+    assert np.isnan(helpers._calculate_max_pain(malformed, True))
+
+    duplicate_strikes = pd.concat([complete, complete.iloc[[0]]], ignore_index=True)
+    assert np.isnan(helpers._calculate_max_pain(duplicate_strikes, True))
+
+
+def test_dashboard_uses_null_preserving_options_helpers_for_oi_and_max_pain():
+    source = _source()
+    options_block = source[source.index("lower_bound = latest_price"):source.index("# --- DEFINE UI VARIABLES ---")]
+    assert "filtered_options.copy()" in options_block
+    assert "filtered_options.fillna(0)" not in options_block
+    assert "_sum_if_complete(" in options_block
+    assert "_calculate_max_pain(options_df, is_chain_complete)" in options_block
+    assert ".fillna(0)" not in options_block
