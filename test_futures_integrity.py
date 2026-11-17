@@ -2,6 +2,13 @@
 import json
 import urllib.error
 
+import sys
+import types
+
+fake_supabase = types.ModuleType("supabase")
+fake_supabase.create_client = lambda *_args, **_kwargs: object()
+sys.modules.setdefault("supabase", fake_supabase)
+
 import collector
 import futures_positioning as fp
 
