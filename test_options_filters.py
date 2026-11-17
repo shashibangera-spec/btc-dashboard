@@ -355,6 +355,38 @@ def test_migration_uses_identity_intersection_and_excludes_unmatched_strikes():
     assert result["comparable_paired_strikes"] == 4
 
 
+def test_migration_accepts_changed_contract_universe_when_five_pairs_survive():
+    current, previous = raw_rows(), raw_rows(snapshot="s0")
+    for frame, snapshot_id in ((current, "s1"), (previous, "s0")):
+        extra = raw_rows(snapshot=snapshot_id)
+        extra["strike_price"] = 1300
+        extra["symbol"] = extra["option_type"].map(lambda side: f"{side}-1300")
+        extra["product_id"] = extra["symbol"]
+        extra["oi_contracts"] = 200
+        frame.drop(frame.index, inplace=True)
+        frame.drop(frame.index, inplace=True) if False else None
+    # Rebuild both chains with a sixth paired strike, then remove one strike
+    # from only the current chain to create a contract-universe mismatch.
+    current = pd.concat([raw_rows(), raw_rows().assign(
+        strike_price=1300,
+        symbol=raw_rows()["option_type"].map(lambda side: f"{side}-1300"),
+        product_id=raw_rows()["option_type"].map(lambda side: f"{side}-1300"),
+        oi_contracts=200,
+    )], ignore_index=True)
+    previous_base = raw_rows(snapshot="s0")
+    previous = pd.concat([previous_base, raw_rows(snapshot="s0").assign(
+        strike_price=1300,
+        symbol=raw_rows(snapshot="s0")["option_type"].map(lambda side: f"{side}-1300"),
+        product_id=raw_rows(snapshot="s0")["option_type"].map(lambda side: f"{side}-1300"),
+        oi_contracts=200,
+    )], ignore_index=True)
+    current = current[current.strike_price != 800]
+    result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
+    assert result["status"] == "OK"
+    assert result["comparable_paired_strikes"] == 5
+    assert "CONTRACT_UNIVERSE_MISMATCH" not in str(result)
+
+
 def test_migration_excludes_entire_strike_when_one_matched_side_has_null_oi():
     current, previous = raw_rows(), raw_rows(snapshot="s0")
     current.loc[(current.strike_price == 800) & (current.option_type == "CALL"), "oi_contracts"] = None
