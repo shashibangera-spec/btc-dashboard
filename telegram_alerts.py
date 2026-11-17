@@ -500,18 +500,22 @@ def main():
             "This is a verification message from the BTC alert system.\n"
             "If you see this, delivery works."
         )
-        success, msg_id = send_telegram(test_msg)
         event_time = datetime.now(timezone.utc).isoformat()
+        test_alert = {
+            "key": f"TEST_{event_time}",
+            "type": "TEST_ALERT",
+            "time": event_time,
+            "payload": {"test": True},
+        }
+        begin_event_delivery(test_alert)
+        success, msg_id = send_telegram(test_msg)
         delivery_status = (
             "SENT" if success and isinstance(msg_id, int) and msg_id > 0 else "FAILED"
         )
-        log_event(
-            event_key=f"TEST_{event_time}",
-            event_type="TEST_ALERT",
-            event_time=event_time,
-            payload={"test": True},
-            status=delivery_status,
+        finish_event_delivery(
+            test_alert, delivery_status,
             message_id=msg_id if delivery_status == "SENT" else None,
+            error=None if delivery_status == "SENT" else msg_id,
         )
         if delivery_status == "SENT":
             print(f"TEST SUCCESS: Message ID {msg_id}")
@@ -537,31 +541,50 @@ def main():
     alerts = collect_alerts(amt, gex_alerts, oi)
     
     if alerts:
-        combined_msg = "\n\n".join([a["msg"] for a in alerts])
+        # Persist every event before sending the combined Telegram message. If
+        # any PENDING write fails, abort delivery rather than send untracked alerts.
+        pending_alerts = []
+        try:
+            for alert in alerts:
+                if begin_event_delivery(alert):
+                    pending_alerts.append(alert)
+        except Exception as exc:
+            print(f"Outbox PENDING write failed; Telegram send aborted: {exc}")
+            raise SystemExit(1)
+
+        if not pending_alerts:
+            print("All qualifying alerts already have confirmed SENT outbox records.")
+            return
+
+        combined_msg = "\n\n".join([a["msg"] for a in pending_alerts])
         print(f"Sending alert:\n{combined_msg}")
         success, msg_id = send_telegram(combined_msg)
-        
+
         delivery_status = "SENT" if success and isinstance(msg_id, int) and msg_id > 0 else "FAILED"
         valid_message_id = msg_id if delivery_status == "SENT" else None
-
-        for a in alerts:
-            if a["type"] == "GEX_WALL_BREACH":
-                log_gex_event(
-                    a, delivery_status,
+        finalization_errors = []
+        for alert in pending_alerts:
+            try:
+                finish_event_delivery(
+                    alert, delivery_status,
                     message_id=valid_message_id,
                     error=None if delivery_status == "SENT" else msg_id,
                 )
-            else:
-                log_event(
-                    a["key"], a["type"], a["time"], a["payload"],
-                    status=delivery_status, message_id=valid_message_id
-                )
+            except Exception as exc:
+                finalization_errors.append("{}: {}".format(alert["key"], exc))
 
-        if delivery_status == "SENT":
-            print(f"Alert sent and logged successfully (message_id={valid_message_id}).")
+        if delivery_status == "SENT" and not finalization_errors:
+            print(f"Alert sent and outbox finalized successfully (message_id={valid_message_id}).")
+        elif delivery_status == "SENT":
+            # Telegram accepted the message; PENDING rows are intentionally left
+            # recoverable/auditable if their SENT update failed.
+            print("Telegram accepted message_id={}; outbox finalization failed: {}".format(
+                valid_message_id, "; ".join(finalization_errors)
+            ))
         else:
             print(f"Telegram delivery failed: {msg_id}")
-            print("Alert event logged with delivery_status=FAILED.")
+            if finalization_errors:
+                print("Outbox FAILED update errors: " + "; ".join(finalization_errors))
     else:
         print("No qualifying alerts.")
 
