@@ -8,6 +8,7 @@ import math
 import logging
 import os
 import json
+import html
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import timezone, timedelta
@@ -630,37 +631,54 @@ def _format_options_filter_result(key, result):
 
 
 def render_options_filter_panel(payload):
-    """Render the backend's validated results without accessing raw database data."""
-    with st.expander("Options research filters · validated snapshot", expanded=False):
-        if not isinstance(payload, dict) or payload.get("status") != "OK":
-            selection = payload.get("selection", {}) if isinstance(payload, dict) else {}
-            reason = selection.get("reason", "OPTIONS_FILTERS_UNAVAILABLE")
-            st.caption(f"Research filters unavailable · {reason}")
-            return
-
-        selection = payload.get("selection", {})
-        st.caption(
-            f'Expiry {selection.get("expiry_date", "N/A")} · '
-            f'Snapshot spot ${float(selection.get("spot_price")):,.2f} · '
-            f'Snapshot {str(selection.get("snapshot_id", "N/A"))[:12]}'
+    """Render the five validated, snapshot-pinned research filters in a full-width row."""
+    selection = payload.get("selection", {}) if isinstance(payload, dict) else {}
+    if isinstance(payload, dict) and payload.get("status") == "OK":
+        expiry = html.escape(str(selection.get("expiry_date", "N/A")))
+        try:
+            spot = f'${float(selection.get("spot_price")):,.2f}'
+        except (TypeError, ValueError):
+            spot = "N/A"
+        snapshot_id = html.escape(str(selection.get("snapshot_id", "N/A"))[:12])
+        metadata = (
+            f"Expiry {expiry} · Snapshot spot {html.escape(spot)} · "
+            f"Snapshot ID {snapshot_id}"
         )
         filters = payload.get("filters", {})
-        labels = (
-            ("nearby_oi", "Nearby OI"),
-            ("iv_skew", "IV Skew"),
-            ("volume_oi", "24h Volume / OI"),
-            ("oi_migration", "OI Migration"),
-            ("taker_activity", "Sampled Taker Trade Activity"),
+    else:
+        reason = selection.get("reason", "OPTIONS_FILTERS_UNAVAILABLE")
+        metadata = f"Snapshot unavailable · {html.escape(str(reason))}"
+        filters = {}
+
+    st.markdown(
+        '<div class="sec"><span class="bar"></span>'
+        '<span class="st">OPTIONS RESEARCH FILTERS · VALIDATED SNAPSHOT</span>'
+        f'<span class="hint">{metadata}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    labels = (
+        ("nearby_oi", "Nearby OI"),
+        ("iv_skew", "IV Skew"),
+        ("volume_oi", "24h Volume / OI"),
+        ("oi_migration", "OI Migration"),
+        ("taker_activity", "Sampled Taker Trade Activity"),
+    )
+    columns = st.columns(5)
+    for column, (key, label) in zip(columns, labels):
+        result = filters.get(key, {"status": "UNAVAILABLE", "reason": "MISSING_FILTER_RESULT"})
+        summary, status_text = _format_options_filter_result(key, result)
+        tone = "t-up" if str(status_text).startswith("OK") else "t-flat"
+        card_html = (
+            f'<div class="card {tone}" style="height:100%; min-height:116px;">'
+            f'<div class="k">{html.escape(label)}</div>'
+            f'<div class="v" style="font-size:0.92rem; line-height:1.35; overflow-wrap:anywhere;">'
+            f'{html.escape(str(summary))}</div>'
+            f'<div class="s">{html.escape(str(status_text))}</div>'
+            '</div>'
         )
-        for key, label in labels:
-            result = filters.get(key, {"status": "UNAVAILABLE", "reason": "MISSING_FILTER_RESULT"})
-            summary, status_text = _format_options_filter_result(key, result)
-            value_col, status_col = st.columns([2, 1])
-            with value_col:
-                st.markdown(f"**{label}**")
-                st.write(summary)
-            with status_col:
-                st.caption(status_text)
+        with column:
+            st.markdown(card_html, unsafe_allow_html=True)
 
 
 def calculate_tpo(session_df):
@@ -1424,9 +1442,10 @@ def _render_dashboard():
             unsafe_allow_html=True,
         )
 
-        render_options_filter_panel(options_filter_results)
     
     st.markdown('<div class="foot">Futures OI and basis are context, not directional signals. OI direction is unavailable without a comparable prior observation.</div>', unsafe_allow_html=True)
+    
+    render_options_filter_panel(options_filter_results)
     
     _ui_section("DIAGNOSTICS AND RAW DATA", "expand for full tables")
     with st.expander("Session OHLC history"):

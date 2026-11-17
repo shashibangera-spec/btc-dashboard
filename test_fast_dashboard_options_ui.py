@@ -45,12 +45,28 @@ def test_options_filter_fetch_uses_existing_streamlit_cache():
     assert "@st.cache_data(ttl=180, show_spinner=False)\ndef fetch_options_filter_results():" in source
 
 
-def test_panel_is_after_futures_and_before_diagnostics():
+def test_options_filters_render_full_width_after_context_and_before_diagnostics():
     source = _source()
-    futures = source.index('st.markdown(\'<div class="mini" style="margin-top:8px">FUTURES</div>\'')
+    context = source.index('_ui_section("3 · CONTEXT"')
     panel = source.index("render_options_filter_panel(options_filter_results)")
     diagnostics = source.index('_ui_section("DIAGNOSTICS AND RAW DATA"')
-    assert futures < panel < diagnostics
+    assert context < panel < diagnostics
+    context_block = source[context:panel]
+    assert 'st.markdown(\'<div class="mini" style="margin-top:8px">FUTURES</div>\'' in context_block
+    assert "render_options_filter_panel(options_filter_results)" not in context_block
+
+
+def test_options_filters_panel_is_open_and_uses_five_equal_columns():
+    source = _source()
+    start = source.index("def render_options_filter_panel(payload):")
+    end = source.index("\n\ndef calculate_tpo", start)
+    panel = source[start:end]
+    assert "st.expander(" not in panel
+    assert "columns = st.columns(5)" in panel
+    assert 'OPTIONS RESEARCH FILTERS · VALIDATED SNAPSHOT' in panel
+    assert "Snapshot spot" in panel
+    for label in ("Nearby OI", "IV Skew", "24h Volume / OI", "OI Migration", "Sampled Taker Trade Activity"):
+        assert label in panel
 
 
 def test_all_five_backend_outputs_are_rendered_independently():
