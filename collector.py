@@ -72,6 +72,13 @@ def make_aggregate_row(snapshot, created_at):
         "record_type": "AGGREGATE",
         "collected_at": snapshot.get("collected_at"),
         "coverage": coverage,
+        "coverage_status": (
+            "COMPLETE_COVERAGE ({}/{})".format(coverage.get("available", 0), coverage.get("expected", 4))
+            if coverage.get("status") == "COMPLETE"
+            else "PARTIAL_COVERAGE ({}/{})".format(coverage.get("available", 0), coverage.get("expected", 4))
+            if coverage.get("status") == "PARTIAL"
+            else "UNAVAILABLE_COVERAGE (0/{})".format(coverage.get("expected", 4))
+        ),
         "interpretation": snapshot.get("interpretation"),
         "oi_contributors": coverage.get("contributors", []),
         "missing_exchanges": coverage.get("missing_exchanges", []),

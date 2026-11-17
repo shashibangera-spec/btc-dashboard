@@ -1,0 +1,33 @@
+name: AMT Profile Initialization Alert Tests
+
+on:
+  push:
+    branches:
+      - main
+      - fix/amt-profile-initialization-alert
+    paths:
+      - "telegram_alerts.py"
+      - "test_amt_profile_initialization.py"
+      - ".github/workflows/amt-profile-initialization-tests.yml"
+  pull_request:
+    paths:
+      - "telegram_alerts.py"
+      - "test_amt_profile_initialization.py"
+      - ".github/workflows/amt-profile-initialization-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test-amt-profile-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install pytest requests
+      - name: Run AMT profile initialization tests
+        run: pytest -q test_amt_profile_initialization.py

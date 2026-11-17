@@ -132,12 +132,21 @@ def request_json(url, params=None):
             except Exception:
                 body_snippet = "Could not read body"
             
+            if exc.code in (403, 451):
+                # Deterministic access restrictions cannot be fixed by retrying.
+                raise DataFetchError(
+                    "REGIONAL_ACCESS_BLOCK",
+                    f"HTTP status {exc.code}: {exc.reason}",
+                    url,
+                    status_code=exc.code,
+                    response_body=body_snippet,
+                )
             last_error = DataFetchError(
-                "HTTP_ERROR", 
-                f"HTTP status {exc.code}: {exc.reason}", 
-                url, 
+                "HTTP_ERROR",
+                f"HTTP status {exc.code}: {exc.reason}",
+                url,
                 status_code=exc.code,
-                response_body=body_snippet
+                response_body=body_snippet,
             )
             
         except DataFetchError as exc:
@@ -159,6 +168,16 @@ def request_with_host_fallback(hosts, path, params=None):
             return result
         except DataFetchError as exc:
             failures.append({"host": host, "error": exc.as_dict()})
+            # Regional restrictions apply across fallback hosts in this runtime.
+            if exc.status_code in (403, 451):
+                raise DataFetchError(
+                    "REGIONAL_ACCESS_BLOCK",
+                    "Deterministic HTTP {} access block; host fallback suppressed: {}".format(
+                        exc.status_code, json.dumps(failures, separators=(",", ":"))
+                    ),
+                    url=url,
+                    status_code=exc.status_code,
+                )
 
     categories = [item["error"]["category"] for item in failures]
     priority = ("DNS_FAILURE", "CONNECTION_TIMEOUT", "CONNECTION_ERROR", "HTTP_ERROR", "API_ERROR", "INVALID_RESPONSE")

@@ -59,43 +59,167 @@ def check_event_exists(event_key):
         for row in res.data
     )
 
+def begin_event_delivery(alert):
+    """Durably create/update an outbox row as PENDING before attempting Telegram."""
+    key = alert["key"]
+    existing = (
+        supabase.table("telegram_alert_events")
+        .select("attempt_count,delivery_status,telegram_message_id")
+        .eq("event_key", key)
+        .limit(1)
+        .execute()
+    )
+    rows = existing.data or []
+    if rows and rows[0].get("delivery_status") == "SENT" and rows[0].get("telegram_message_id"):
+        return False
+    attempts = int(rows[0].get("attempt_count") or 0) if rows else 0
+    record = {
+        "event_key": key,
+        "event_type": alert["type"],
+        "event_time": alert["time"],
+        "payload": alert.get("payload", {}),
+        "delivery_status": "PENDING",
+        "telegram_message_id": None,
+        "sent_at": None,
+        "attempt_count": attempts + 1,
+        "last_error": None,
+    }
+    # This write must succeed before any network send is attempted.
+    supabase.table("telegram_alert_events").upsert(
+        record, on_conflict="event_key"
+    ).execute()
+    return True
+
+
+def finish_event_delivery(alert, status, message_id=None, error=None):
+    """Finalize the already-persisted outbox attempt."""
+    if status not in ("SENT", "FAILED"):
+        raise ValueError("delivery status must be SENT or FAILED")
+    record = {
+        "delivery_status": status,
+        "telegram_message_id": message_id if status == "SENT" else None,
+        "sent_at": datetime.now(timezone.utc).isoformat() if status == "SENT" else None,
+        "last_error": str(error)[:1000] if error else None,
+    }
+    # PostgREST may return an empty representation for a successful UPDATE;
+    # execute() raises on database errors, so do not mistake an empty response
+    # body for a failed status transition.
+    (
+        supabase.table("telegram_alert_events")
+        .update(record)
+        .eq("event_key", alert["key"])
+        .execute()
+    )
+
+
 def log_event(event_key, event_type, event_time, payload, status, message_id=None):
+    """Compatibility helper for legacy callers; writes through the outbox lifecycle."""
+    alert = {"key": event_key, "type": event_type, "time": event_time, "payload": payload}
     try:
-        record = {
-            "event_key": event_key,
-            "event_type": event_type,
-            "event_time": event_time,
-            "payload": payload,
-            "delivery_status": status,
-            "telegram_message_id": message_id if status == "SENT" else None,
-            "sent_at": datetime.now(timezone.utc).isoformat() if status == "SENT" else None,
-        }
-        # Upsert lets a later successful retry replace an earlier FAILED attempt.
-        supabase.table("telegram_alert_events").upsert(
-            record, on_conflict="event_key"
-        ).execute()
-    except Exception as e:
-        print(f"Failed to log event ({status}): {e}")
+        if not begin_event_delivery(alert):
+            return
+        finish_event_delivery(
+            alert, status,
+            message_id=message_id if status == "SENT" else None,
+            error=None if status == "SENT" else "Delivery failed",
+        )
+    except Exception as exc:
+        print("Failed to persist event lifecycle ({}): {}".format(event_key, exc))
 
 def evaluate_amt_transition():
-    # Fetch last 2 completed candles
-    res = supabase.table("amt_snapshots").select("*").eq("data_status", "VALID").order("candle_close_time", desc=True).limit(2).execute()
-    if len(res.data) < 2: return None
-    
-    curr, prev = res.data[0], res.data[1]
-    if curr["profile_id"] != prev["profile_id"]: return None
-    
+    # Read a bounded window so a delayed workflow can still detect the first candle
+    # of the current profile instead of missing the boundary after later candles arrive.
+    res = (
+        supabase.table("amt_snapshots")
+        .select("*")
+        .eq("data_status", "VALID")
+        .order("candle_close_time", desc=True)
+        .limit(200)
+        .execute()
+    )
+    rows = res.data or []
+    if len(rows) < 2:
+        return None
+
+    curr = rows[0]
+    curr_profile = curr.get("profile_id")
+    if not curr_profile:
+        print("AMT alert skipped: latest profile_id is missing; refusing to infer a profile boundary.")
+        return None
+
+    # Profile IDs are expected to be monotonic by candle time. Locate the first
+    # row of the latest profile, even when this workflow runs several candles late.
+    boundary_index = next(
+        (index for index in range(len(rows) - 1)
+         if rows[index].get("profile_id") == curr_profile
+         and rows[index + 1].get("profile_id") != curr_profile),
+        None,
+    )
+    if boundary_index is not None:
+        first_profile_candle = rows[boundary_index]
+        previous_profile = rows[boundary_index + 1].get("profile_id")
+        if not previous_profile:
+            print("AMT alert skipped: preceding profile_id is missing; refusing to infer a profile boundary.")
+            return None
+        event_key = (
+            f"AMT_PROFILE_INITIALIZATION_{curr_profile}_"
+            f"{first_profile_candle['candle_close_time']}"
+        )
+        # A delivered initialization is a one-off event. After it is recorded,
+        # continue evaluating the newest intraday transition on every run.
+        if not check_event_exists(event_key):
+            initial_state = first_profile_candle.get("confirmed_state") or "STATE_UNAVAILABLE"
+            close_price = first_profile_candle.get("close_price")
+            try:
+                close_text = f"USD {float(close_price):,.0f}" if close_price is not None else "Unavailable"
+            except (TypeError, ValueError):
+                close_text = "Unavailable"
+            msg = (
+                "🆕 AMT NEW PROFILE / STATE INITIALIZATION\n\n"
+                f"Profile: {curr_profile}\n"
+                f"Initial confirmed state: {initial_state}\n"
+                f"Candle: {first_profile_candle.get('candle_open_time', 'Unavailable')}\n"
+                f"Close: {close_text}"
+            )
+            payload = {
+                "profile_id": curr_profile,
+                "previous_profile_id": previous_profile,
+                "initial_state": initial_state,
+                "candle_open_time": first_profile_candle.get("candle_open_time"),
+                "candle_close_time": first_profile_candle.get("candle_close_time"),
+                "close_price": close_price,
+            }
+            return {
+                "key": event_key,
+                "type": "AMT_PROFILE_INITIALIZATION",
+                "time": first_profile_candle["candle_close_time"],
+                "msg": msg,
+                "payload": payload,
+            }
+
+    # Once initialization is already delivered (or no boundary is in the window),
+    # preserve the ordinary latest-candle same-profile transition behavior.
+    prev = rows[1]
+    if prev.get("profile_id") != curr_profile:
+        return None
     curr_state = curr["confirmed_state"]
     prev_state = prev["confirmed_state"]
-    
     if curr_state != prev_state:
         event_key = f"AMT_STATE_CHANGE_{curr['candle_close_time']}"
-        if check_event_exists(event_key): return None
-        
-        msg = f"🚨 AMT STRUCTURAL CHANGE\n\n{prev_state} → {curr_state}\nCandle: {curr['candle_open_time']}\nClose: ${curr['close_price']:,.0f}"
-        return {"key": event_key, "type": "AMT_STATE_CHANGE", "time": curr["candle_close_time"], "msg": msg, "payload": curr}
+        if check_event_exists(event_key):
+            return None
+        msg = (
+            f"🚨 AMT STRUCTURAL CHANGE\n\n{prev_state} → {curr_state}"
+            f"\nCandle: {curr['candle_open_time']}\nClose: USD {float(curr['close_price']):,.0f}"
+        )
+        return {
+            "key": event_key,
+            "type": "AMT_STATE_CHANGE",
+            "time": curr["candle_close_time"],
+            "msg": msg,
+            "payload": curr,
+        }
     return None
-
 def parse_utc_timestamp(value):
     if not isinstance(value, str) or not value.strip():
         raise ValueError("timestamp is missing")
@@ -377,18 +501,22 @@ def main():
             "This is a verification message from the BTC alert system.\n"
             "If you see this, delivery works."
         )
-        success, msg_id = send_telegram(test_msg)
         event_time = datetime.now(timezone.utc).isoformat()
+        test_alert = {
+            "key": f"TEST_{event_time}",
+            "type": "TEST_ALERT",
+            "time": event_time,
+            "payload": {"test": True},
+        }
+        begin_event_delivery(test_alert)
+        success, msg_id = send_telegram(test_msg)
         delivery_status = (
             "SENT" if success and isinstance(msg_id, int) and msg_id > 0 else "FAILED"
         )
-        log_event(
-            event_key=f"TEST_{event_time}",
-            event_type="TEST_ALERT",
-            event_time=event_time,
-            payload={"test": True},
-            status=delivery_status,
+        finish_event_delivery(
+            test_alert, delivery_status,
             message_id=msg_id if delivery_status == "SENT" else None,
+            error=None if delivery_status == "SENT" else msg_id,
         )
         if delivery_status == "SENT":
             print(f"TEST SUCCESS: Message ID {msg_id}")
@@ -414,31 +542,50 @@ def main():
     alerts = collect_alerts(amt, gex_alerts, oi)
     
     if alerts:
-        combined_msg = "\n\n".join([a["msg"] for a in alerts])
+        # Persist every event before sending the combined Telegram message. If
+        # any PENDING write fails, abort delivery rather than send untracked alerts.
+        pending_alerts = []
+        try:
+            for alert in alerts:
+                if begin_event_delivery(alert):
+                    pending_alerts.append(alert)
+        except Exception as exc:
+            print(f"Outbox PENDING write failed; Telegram send aborted: {exc}")
+            raise SystemExit(1)
+
+        if not pending_alerts:
+            print("All qualifying alerts already have confirmed SENT outbox records.")
+            return
+
+        combined_msg = "\n\n".join([a["msg"] for a in pending_alerts])
         print(f"Sending alert:\n{combined_msg}")
         success, msg_id = send_telegram(combined_msg)
-        
+
         delivery_status = "SENT" if success and isinstance(msg_id, int) and msg_id > 0 else "FAILED"
         valid_message_id = msg_id if delivery_status == "SENT" else None
-
-        for a in alerts:
-            if a["type"] == "GEX_WALL_BREACH":
-                log_gex_event(
-                    a, delivery_status,
+        finalization_errors = []
+        for alert in pending_alerts:
+            try:
+                finish_event_delivery(
+                    alert, delivery_status,
                     message_id=valid_message_id,
                     error=None if delivery_status == "SENT" else msg_id,
                 )
-            else:
-                log_event(
-                    a["key"], a["type"], a["time"], a["payload"],
-                    status=delivery_status, message_id=valid_message_id
-                )
+            except Exception as exc:
+                finalization_errors.append("{}: {}".format(alert["key"], exc))
 
-        if delivery_status == "SENT":
-            print(f"Alert sent and logged successfully (message_id={valid_message_id}).")
+        if delivery_status == "SENT" and not finalization_errors:
+            print(f"Alert sent and outbox finalized successfully (message_id={valid_message_id}).")
+        elif delivery_status == "SENT":
+            # Telegram accepted the message; PENDING rows are intentionally left
+            # recoverable/auditable if their SENT update failed.
+            print("Telegram accepted message_id={}; outbox finalization failed: {}".format(
+                valid_message_id, "; ".join(finalization_errors)
+            ))
         else:
             print(f"Telegram delivery failed: {msg_id}")
-            print("Alert event logged with delivery_status=FAILED.")
+            if finalization_errors:
+                print("Outbox FAILED update errors: " + "; ".join(finalization_errors))
     else:
         print("No qualifying alerts.")
 
