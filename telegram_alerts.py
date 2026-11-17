@@ -98,8 +98,8 @@ def evaluate_amt_transition():
         print("AMT alert skipped: latest profile_id is missing; refusing to infer a profile boundary.")
         return None
 
-    # Find the first candle in the latest profile by walking backward from the
-    # newest candle until the preceding profile is encountered.
+    # Profile IDs are expected to be monotonic by candle time. Locate the first
+    # row of the latest profile, even when this workflow runs several candles late.
     boundary_index = next(
         (index for index in range(len(rows) - 1)
          if rows[index].get("profile_id") == curr_profile
@@ -108,16 +108,16 @@ def evaluate_amt_transition():
     )
     if boundary_index is not None:
         first_profile_candle = rows[boundary_index]
-        previous_profile_candle = rows[boundary_index + 1]
-        previous_profile = previous_profile_candle.get("profile_id")
+        previous_profile = rows[boundary_index + 1].get("profile_id")
         if not previous_profile:
             print("AMT alert skipped: preceding profile_id is missing; refusing to infer a profile boundary.")
             return None
-
         event_key = (
             f"AMT_PROFILE_INITIALIZATION_{curr_profile}_"
             f"{first_profile_candle['candle_close_time']}"
         )
+        # A delivered initialization is a one-off event. After it is recorded,
+        # continue evaluating the newest intraday transition on every run.
         if not check_event_exists(event_key):
             initial_state = first_profile_candle.get("confirmed_state") or "STATE_UNAVAILABLE"
             close_price = first_profile_candle.get("close_price")
@@ -148,8 +148,8 @@ def evaluate_amt_transition():
                 "payload": payload,
             }
 
-    # No profile boundary in the recent window: preserve the existing same-profile
-    # intraday transition behavior using the latest two completed candles.
+    # Once initialization is already delivered (or no boundary is in the window),
+    # preserve the ordinary latest-candle same-profile transition behavior.
     prev = rows[1]
     if prev.get("profile_id") != curr_profile:
         return None
