@@ -174,10 +174,11 @@ def test_migration_tie_break_is_lower_strike_and_elapsed_time_is_reported():
 
 def test_migration_requires_same_contract_universe_and_complete_oi():
     current, previous = raw_rows(), raw_rows(snapshot="s0")
-    assert f.calculate_oi_migration(snapshot(current, previous.iloc[:-1], "s0"))["reason"] == "CONTRACT_UNIVERSE_MISMATCH"
+    assert f.calculate_oi_migration(snapshot(current, previous.iloc[:-1], "s0"))["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
     previous.loc[0, "oi_contracts"] = None
     result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
-    assert result["status"] == "OK"
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
     assert result["comparable_paired_strikes"] == 4
 
 
@@ -349,7 +350,8 @@ def test_migration_uses_identity_intersection_and_excludes_unmatched_strikes():
     current, previous = raw_rows(), raw_rows(snapshot="s0")
     current = current[current.strike_price != 800]
     result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
-    assert result["status"] == "OK"
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
     assert result["comparable_paired_strikes"] == 4
     assert result["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
 
