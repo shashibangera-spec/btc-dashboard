@@ -244,6 +244,79 @@ def _sum_if_complete(series):
     return float(numeric.sum())
 
 
+def _normalize_listed_option_oi(product_universe, received_chain, universe_complete):
+    """Build strike-side OI, zeroing only sides absent from a complete product universe."""
+    columns = ["Strike", "OI_Contracts_Call", "OI_Contracts_Put"]
+    if not product_universe:
+        return pd.DataFrame(columns=columns)
+
+    listed = {}
+    symbols = set()
+    invalid_metadata = False
+
+    for product in product_universe:
+        symbol = str(product.get("symbol") or "")
+        contract_type = product.get("contract_type")
+        side = "Call" if contract_type == "call_options" else "Put" if contract_type == "put_options" else None
+        try:
+            strike_raw = product.get("strike_price")
+            if strike_raw is None:
+                parts = symbol.split("-")
+                raw_strike = parts[2].replace(",", "").strip().upper()
+                strike_raw = float(raw_strike.replace("K", "")) * 1000 if "K" in raw_strike else float(raw_strike)
+            strike = float(strike_raw)
+        except (IndexError, TypeError, ValueError):
+            invalid_metadata = True
+            continue
+
+        if (
+            not symbol or side is None or not np.isfinite(strike) or strike <= 0
+            or symbol in symbols
+        ):
+            invalid_metadata = True
+            continue
+        symbols.add(symbol)
+        key = (strike, side)
+        if key in listed:
+            invalid_metadata = True
+            continue
+        listed[key] = symbol
+
+    if not listed:
+        return pd.DataFrame(columns=columns)
+
+    received = {}
+    if received_chain is not None and not received_chain.empty and "Symbol" in received_chain.columns:
+        for _, row in received_chain.iterrows():
+            symbol = str(row.get("Symbol") or "")
+            if symbol in received:
+                invalid_metadata = True
+            received[symbol] = row
+
+    if set(received) - symbols:
+        invalid_metadata = True
+
+    strikes = sorted({strike for strike, _ in listed})
+    rows = []
+    for strike in strikes:
+        row_out = {"Strike": strike}
+        for side in ("Call", "Put"):
+            symbol = listed.get((strike, side))
+            column = f"OI_Contracts_{side}"
+            if symbol is None:
+                row_out[column] = 0.0 if universe_complete and not invalid_metadata else np.nan
+                continue
+            ticker_row = received.get(symbol)
+            if ticker_row is None or invalid_metadata or not universe_complete:
+                row_out[column] = np.nan
+                continue
+            value = pd.to_numeric(pd.Series([ticker_row.get("OI_Contracts")]), errors="coerce").iloc[0]
+            row_out[column] = float(value) if pd.notna(value) else np.nan
+        rows.append(row_out)
+
+    return pd.DataFrame(rows, columns=columns)
+
+
 def _select_positive_wall(frame, column):
     """Select a wall only from observed, finite, strictly positive measurements."""
     if column not in frame.columns:
@@ -831,6 +904,14 @@ def fetch_delta_options():
             if isinstance(col, tuple): new_cols.append("_".join([str(c) for c in col if c != ""]).strip("_"))
             else: new_cols.append(str(col))
         df_pivot.columns = new_cols
+
+        # Rebuild only contract OI from the selected-expiry product universe. A side
+        # is zero only when that contract is structurally unlisted; listed-but-missing
+        # tickers and invalid OI remain NULL. Incomplete pagination cannot prove absence.
+        oi_by_strike = _normalize_listed_option_oi(filtered_options, df, prod_complete and tick_complete)
+        df_pivot = df_pivot.drop(
+            columns=["OI_Contracts_Call", "OI_Contracts_Put"], errors="ignore"
+        ).merge(oi_by_strike, on="Strike", how="outer")
 
         expected_columns = ['Bid_Call', 'Ask_Call', 'Mark_Call', 'OI_USD_Call', 'OI_Contracts_Call', 'Gamma_Call', 'IV_Call', 'Volume_Call', 'Bid_Put', 'Ask_Put', 'Mark_Put', 'OI_USD_Put', 'OI_Contracts_Put', 'Gamma_Put', 'IV_Put', 'Volume_Put']
         for col in expected_columns:

@@ -114,7 +114,7 @@ def _load_dashboard_math_helpers():
     import types
 
     tree = ast.parse(_source())
-    names = {"_sum_if_complete", "_select_positive_wall", "_calculate_max_pain"}
+    names = {"_sum_if_complete", "_normalize_listed_option_oi", "_select_positive_wall", "_calculate_max_pain"}
     nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     assert {node.name for node in nodes} == names
     module = types.ModuleType("dashboard_math_helpers")
@@ -186,6 +186,106 @@ def test_max_pain_fails_closed_for_incomplete_or_missing_oi_inputs():
     duplicate_strikes = pd.concat([complete, complete.iloc[[0]]], ignore_index=True)
     assert np.isnan(helpers._calculate_max_pain(duplicate_strikes, True))
 
+
+
+def test_structurally_unlisted_option_side_is_zero_but_listed_missing_is_null():
+    import numpy as np
+    import pandas as pd
+
+    helpers = _load_dashboard_math_helpers()
+    # Mirrors the 18-Nov-2026 expiry's Call-only outer strikes.
+    products = [
+        {"symbol": "BTC-18NOV26-60800-C", "contract_type": "call_options", "strike_price": 60800},
+        {"symbol": "BTC-18NOV26-64400-C", "contract_type": "call_options", "strike_price": 64400},
+        {"symbol": "BTC-18NOV26-64400-P", "contract_type": "put_options", "strike_price": 64400},
+        {"symbol": "BTC-18NOV26-68400-C", "contract_type": "call_options", "strike_price": 68400},
+    ]
+    received = pd.DataFrame([
+        {"Symbol": "BTC-18NOV26-60800-C", "OI_Contracts": 5.0},
+        {"Symbol": "BTC-18NOV26-64400-C", "OI_Contracts": 11.0},
+        {"Symbol": "BTC-18NOV26-64400-P", "OI_Contracts": 7.0},
+        {"Symbol": "BTC-18NOV26-68400-C", "OI_Contracts": 13.0},
+    ])
+
+    normalized = helpers._normalize_listed_option_oi(products, received, True).set_index("Strike")
+    assert normalized.loc[60800.0, "OI_Contracts_Call"] == 5.0
+    assert normalized.loc[60800.0, "OI_Contracts_Put"] == 0.0
+    assert normalized.loc[68400.0, "OI_Contracts_Call"] == 13.0
+    assert normalized.loc[68400.0, "OI_Contracts_Put"] == 0.0
+    assert normalized.loc[64400.0, "OI_Contracts_Put"] == 7.0
+    assert np.isfinite(helpers._calculate_max_pain(normalized.reset_index(), True))
+
+    # Both Call-only outer strikes are inside a ±10% band around $64,600.
+    local = normalized.reset_index()
+    local = local[(local["Strike"] >= 64600 * 0.90) & (local["Strike"] <= 64600 * 1.10)]
+    calls = helpers._sum_if_complete(local["OI_Contracts_Call"])
+    puts = helpers._sum_if_complete(local["OI_Contracts_Put"])
+    assert calls == 29.0
+    assert puts == 7.0
+    assert puts / calls == 7.0 / 29.0
+
+    # A listed Put whose ticker is absent is not structurally unlisted.
+    missing_listed_ticker = received[received["Symbol"] != "BTC-18NOV26-64400-P"]
+    missing = helpers._normalize_listed_option_oi(products, missing_listed_ticker, True).set_index("Strike")
+    assert np.isnan(missing.loc[64400.0, "OI_Contracts_Put"])
+    assert np.isnan(helpers._sum_if_complete(pd.Series([missing.loc[64400.0, "OI_Contracts_Put"]])))
+
+
+def test_listed_null_or_invalid_oi_and_incomplete_universe_fail_closed():
+    import numpy as np
+    import pandas as pd
+
+    helpers = _load_dashboard_math_helpers()
+    products = [
+        {"symbol": "BTC-17NOV26-100-C", "contract_type": "call_options", "strike_price": 100},
+        {"symbol": "BTC-17NOV26-100-P", "contract_type": "put_options", "strike_price": 100},
+        {"symbol": "BTC-17NOV26-110-C", "contract_type": "call_options", "strike_price": 110},
+    ]
+    received = pd.DataFrame([
+        {"Symbol": "BTC-17NOV26-100-C", "OI_Contracts": 2.0},
+        {"Symbol": "BTC-17NOV26-100-P", "OI_Contracts": np.nan},
+        {"Symbol": "BTC-17NOV26-110-C", "OI_Contracts": -1.0},
+    ])
+
+    normalized = helpers._normalize_listed_option_oi(products, received, True)
+    assert np.isnan(normalized.loc[normalized["Strike"] == 100, "OI_Contracts_Put"].iloc[0])
+    assert normalized.loc[normalized["Strike"] == 100, "OI_Contracts_Call"].iloc[0] == 2.0
+    assert normalized.loc[normalized["Strike"] == 110, "OI_Contracts_Call"].iloc[0] == -1.0
+
+    incomplete_pages = helpers._normalize_listed_option_oi(products, received, False)
+    assert incomplete_pages[["OI_Contracts_Call", "OI_Contracts_Put"]].isna().all().all()
+
+
+def test_listed_option_oi_normalization_rejects_duplicate_or_unexpected_contracts():
+    import numpy as np
+    import pandas as pd
+
+    helpers = _load_dashboard_math_helpers()
+    products = [
+        {"symbol": "BTC-17NOV26-100-C", "contract_type": "call_options", "strike_price": 100},
+        {"symbol": "BTC-17NOV26-100-P", "contract_type": "put_options", "strike_price": 100},
+    ]
+    received = pd.DataFrame([
+        {"Symbol": "BTC-17NOV26-100-C", "OI_Contracts": 2.0},
+        {"Symbol": "BTC-17NOV26-100-C", "OI_Contracts": 3.0},
+        {"Symbol": "BTC-17NOV26-100-P", "OI_Contracts": 4.0},
+    ])
+    normalized = helpers._normalize_listed_option_oi(products, received, True)
+    assert np.isnan(normalized[["OI_Contracts_Call", "OI_Contracts_Put"]]).all().all()
+
+    unexpected = received.iloc[[0, 2]].copy()
+    unexpected.loc[unexpected.index[0], "Symbol"] = "UNEXPECTED"
+    normalized = helpers._normalize_listed_option_oi(products, unexpected, True)
+    assert np.isnan(normalized[["OI_Contracts_Call", "OI_Contracts_Put"]]).all().all()
+
+
+def test_dashboard_uses_product_universe_to_normalize_only_structural_oi_absence():
+    source = _source()
+    fetch_block = source[source.index("expected_symbol_set ="):source.index("return df_pivot, nearest_expiry")]
+    assert "_normalize_listed_option_oi(filtered_options, df, prod_complete and tick_complete)" in fetch_block
+    assert 'how="outer"' in fetch_block
+    assert "filtered_options.fillna(0)" not in source
+    assert ".fillna(0)" not in source
 
 def test_dashboard_uses_null_preserving_options_helpers_for_oi_and_max_pain():
     source = _source()

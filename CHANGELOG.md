@@ -1,5 +1,15 @@
 ## 2026-11-17
 
+### Fixed — System B listed-contract OI completeness
+
+- Distinguishes structurally unlisted Call/Put sides from listed contracts whose ticker or OI observation is missing.
+- Normalizes a side to zero only when complete product and ticker pagination proves that the contract is absent; listed-but-missing, NULL, negative or non-finite OI remains invalid.
+- Preserves whole-chain completeness for Max Pain and local-band completeness for Local OI PCR, without changing either formula or the ±10% band.
+- Added offline regression coverage for unlisted outer strikes, missing listed tickers, NULL/invalid OI, incomplete pagination, duplicate and unexpected contracts.
+- No CSS, HTML, layout, labels, collectors, database schema, Options Filters backend or AMT/Futures logic changed.
+
+## 2026-11-17
+
 ### Fixed — OI Migration snapshot eligibility and strike-level coverage
 
 - Selects the most recent successful, complete snapshot for the same underlying and expiry within the inclusive 25–45-minute comparison window; reports explicit unavailable reasons when no eligible baseline can be selected.
