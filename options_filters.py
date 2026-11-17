@@ -204,7 +204,7 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
     )
     if not runs:
         return None, {"status": "UNAVAILABLE", "reason": "NO_SUCCESS_RUN"}
-    missing = _missing_record_keys(runs, RUN_COLUMNS)
+    missing = _missing_record_keys(runs, tuple(column for column in RUN_COLUMNS if column != "underlying"))
     if missing["missing_columns"]:
         return None, _missing_record_selection("options_collection_runs", missing)
     current = runs[0]
@@ -212,7 +212,7 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
         return None, {"status": "UNAVAILABLE", "reason": "RUN_COUNTER_MISMATCH"}
     snapshot_id = str(current.get("snapshot_id") or "")
     completed_at = current.get("completed_at")
-    underlying = str(current.get("underlying") or "")
+    underlying = str(current.get("underlying") or "BTCUSD")
     if not snapshot_id or not completed_at or not underlying:
         return None, {"status": "UNAVAILABLE", "reason": "INVALID_RUN_IDENTITY"}
     history = _execute(
@@ -221,7 +221,7 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
         .eq("underlying", underlying)
         .order("completed_at", desc=True).limit(500)
     )
-    missing = _missing_record_keys(history, RUN_COLUMNS)
+    missing = _missing_record_keys(history, tuple(column for column in RUN_COLUMNS if column != "underlying"))
     if missing["missing_columns"]:
         return None, _missing_record_selection("options_collection_runs", missing)
     runs = [current] + [
@@ -436,9 +436,13 @@ def calculate_oi_migration(snapshot: CanonicalSnapshot) -> dict:
             _contract_identity(row) for row in frame.to_dict("records")
         ]
 
-    current_by_id = current.set_index("contract_identity", drop=False)
-    previous_by_id = previous.set_index("contract_identity", drop=False)
-    shared_ids = current_by_id.index.intersection(previous_by_id.index)
+    current_by_id = {
+        _contract_identity(row): row for row in current.to_dict("records")
+    }
+    previous_by_id = {
+        _contract_identity(row): row for row in previous.to_dict("records")
+    }
+    shared_ids = current_by_id.keys() & previous_by_id.keys()
     if len(shared_ids) == 0:
         return _result(
             "OI Migration", "INSUFFICIENT_DATA", snapshot,
@@ -449,8 +453,8 @@ def calculate_oi_migration(snapshot: CanonicalSnapshot) -> dict:
     matched = []
     invalid_strikes = set()
     for identity in shared_ids:
-        now_row = current_by_id.loc[identity]
-        old_row = previous_by_id.loc[identity]
+        now_row = current_by_id[identity]
+        old_row = previous_by_id[identity]
         strike = _finite(now_row["strike_price"])
         side = str(now_row["option_type"]).upper()
         if strike is None:
