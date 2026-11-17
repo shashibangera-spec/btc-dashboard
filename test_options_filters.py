@@ -69,7 +69,7 @@ def database(rows=None, status="SUCCESS"):
     raw = (rows if rows is not None else raw_rows()).to_dict("records")
     return {
         "options_collection_runs": [{
-            "snapshot_id": "s1", "status": status, "started_at": "2026-11-16T12:00:00Z", "completed_at": "2026-11-16T12:30:00Z",
+            "snapshot_id": "s1", "status": status, "started_at": "2026-11-16T12:00:00Z", "completed_at": "2026-11-16T12:30:00Z", "underlying": "BTCUSD",
             "expected_contracts": len(raw), "received_contracts": len(raw), "inserted_contracts": len(raw),
         }],
         "options_derived_snapshots": [{
@@ -93,7 +93,7 @@ def test_snapshot_validation_pins_identity_expiry_and_consistent_spot():
 def test_selector_uses_success_run_and_matching_snapshot_rows():
     db = database()
     db["options_collection_runs"].append({
-        "snapshot_id": "partial", "status": "PARTIAL", "completed_at": "2026-11-16T13:00:00Z",
+        "snapshot_id": "partial", "status": "PARTIAL", "completed_at": "2026-11-16T13:00:00Z", "underlying": "BTCUSD",
     })
     selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
     assert selected.snapshot_id == "s1" and selected.expiry_date == "2026-11-17"
@@ -103,7 +103,7 @@ def test_selector_uses_success_run_and_matching_snapshot_rows():
 def test_latest_success_without_valid_expiry_fails_closed_without_fallback():
     db = database()
     db["options_collection_runs"].insert(0, {
-        "snapshot_id": "newest", "status": "SUCCESS", "started_at": "2026-11-16T12:45:00Z", "completed_at": "2026-11-16T13:00:00Z",
+        "snapshot_id": "newest", "status": "SUCCESS", "started_at": "2026-11-16T12:45:00Z", "completed_at": "2026-11-16T13:00:00Z", "underlying": "BTCUSD",
         "expected_contracts": 1, "received_contracts": 1, "inserted_contracts": 1,
     })
     selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
@@ -174,9 +174,12 @@ def test_migration_tie_break_is_lower_strike_and_elapsed_time_is_reported():
 
 def test_migration_requires_same_contract_universe_and_complete_oi():
     current, previous = raw_rows(), raw_rows(snapshot="s0")
-    assert f.calculate_oi_migration(snapshot(current, previous.iloc[:-1], "s0"))["reason"] == "CONTRACT_UNIVERSE_MISMATCH"
+    assert f.calculate_oi_migration(snapshot(current, previous.iloc[:-1], "s0"))["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
     previous.loc[0, "oi_contracts"] = None
-    assert f.calculate_oi_migration(snapshot(current, previous, "s0"))["status"] == "INSUFFICIENT_DATA"
+    result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
+    assert result["comparable_paired_strikes"] == 4
 
 
 def test_taker_is_sampled_descriptive_and_fails_closed_on_partial_coverage():
@@ -271,3 +274,134 @@ def test_zero_sampled_taker_total_has_null_percentage_balance():
     assert result["status"] == "OK"
     assert result["sampled_volume_balance"] == 0
     assert result["sampled_volume_balance_pct"] is None
+
+
+def _add_previous_snapshot(db, snapshot_id, completed_at, raw=None, underlying="BTCUSD"):
+    rows = (raw if raw is not None else raw_rows(snapshot=snapshot_id)).copy()
+    rows["snapshot_id"] = snapshot_id
+    rows["collected_at"] = completed_at
+    db["options_collection_runs"].append({
+        "snapshot_id": snapshot_id, "status": "SUCCESS",
+        "started_at": completed_at, "completed_at": completed_at,
+        "underlying": underlying,
+        "expected_contracts": len(rows), "received_contracts": len(rows),
+        "inserted_contracts": len(rows),
+    })
+    db["options_derived_snapshots"].append({
+        "snapshot_id": snapshot_id, "expiry_date": "2026-11-17",
+        "metric_status": {"chain": "OK"}, "calculated_at": completed_at,
+        "source_collected_at": completed_at, "underlying_spot_price": 1000,
+    })
+    db["options_oi_snapshots"].extend(rows.to_dict("records"))
+
+
+def test_selector_skips_three_minute_run_and_selects_30_minute_baseline():
+    db = database()
+    _add_previous_snapshot(db, "s_3m", "2026-11-16T12:27:00Z")
+    _add_previous_snapshot(db, "s_30m", "2026-11-16T12:00:00Z")
+    selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected.previous_snapshot_id == "s_30m"
+    assert meta["previous_completed_at"] == "2026-11-16T12:00:00Z"
+
+
+@pytest.mark.parametrize("minutes", [25, 45])
+def test_selector_accepts_inclusive_25_and_45_minute_boundaries(minutes):
+    db = database()
+    timestamp = pd.Timestamp("2026-11-16T12:30:00Z") - pd.Timedelta(minutes=minutes)
+    _add_previous_snapshot(db, "eligible", timestamp.isoformat().replace("+00:00", "Z"))
+    selected, _ = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected.previous_snapshot_id == "eligible"
+
+
+@pytest.mark.parametrize(
+    ("previous_time", "expected_reason"),
+    [
+        ("2026-11-16T12:27:00Z", "SNAPSHOTS_TOO_CLOSE"),
+        ("2026-11-16T11:30:00Z", "SNAPSHOT_GAP_TOO_LARGE"),
+    ],
+)
+def test_selector_reports_out_of_window_previous_snapshot_reason(previous_time, expected_reason):
+    db = database()
+    _add_previous_snapshot(db, "outside", previous_time)
+    selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected is not None and selected.previous_snapshot_id is None
+    assert meta["previous_snapshot_reason"] == expected_reason
+    result = f.calculate_oi_migration(selected)
+    assert result["status"] == "UNAVAILABLE" and result["reason"] == expected_reason
+
+
+def test_selector_reports_no_previous_snapshot():
+    selected, meta = f.select_canonical_snapshot(Client(database()), as_of=date(2026, 11, 16))
+    assert selected.previous_snapshot_id is None
+    assert meta["previous_snapshot_reason"] == "NO_ELIGIBLE_PREVIOUS_SNAPSHOT"
+
+
+def test_selector_skips_invalid_candidate_inside_window():
+    db = database()
+    invalid = raw_rows(snapshot="invalid")
+    invalid["spot_price"] = 0
+    _add_previous_snapshot(db, "invalid", "2026-11-16T12:05:00Z", invalid)
+    _add_previous_snapshot(db, "valid", "2026-11-16T12:00:00Z")
+    selected, _ = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected.previous_snapshot_id == "valid"
+
+
+def test_migration_uses_identity_intersection_and_excludes_unmatched_strikes():
+    current, previous = raw_rows(), raw_rows(snapshot="s0")
+    current = current[current.strike_price != 800]
+    result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
+    assert result["comparable_paired_strikes"] == 4
+
+
+def test_migration_accepts_changed_contract_universe_when_five_pairs_survive():
+    current = raw_rows()
+    current_extra = raw_rows()
+    current_extra["strike_price"] = 1300
+    current_extra["symbol"] = current_extra["option_type"].map(lambda side: f"{side}-1300")
+    current_extra["product_id"] = current_extra["symbol"]
+    current_extra["oi_contracts"] = 200
+    current = pd.concat([current, current_extra], ignore_index=True)
+
+    previous = raw_rows(snapshot="s0")
+    previous_extra = raw_rows(snapshot="s0")
+    previous_extra["strike_price"] = 1300
+    previous_extra["symbol"] = previous_extra["option_type"].map(lambda side: f"{side}-1300")
+    previous_extra["product_id"] = previous_extra["symbol"]
+    previous_extra["oi_contracts"] = 200
+    previous = pd.concat([previous, previous_extra], ignore_index=True)
+
+    current = current[current.strike_price != 800]
+    result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
+    assert result["status"] == "OK"
+    assert result["comparable_paired_strikes"] == 5
+    assert "CONTRACT_UNIVERSE_MISMATCH" not in str(result)
+
+
+def test_migration_excludes_entire_strike_when_one_matched_side_has_null_oi():
+    current, previous = raw_rows(), raw_rows(snapshot="s0")
+    current.loc[(current.strike_price == 800) & (current.option_type == "CALL"), "oi_contracts"] = None
+    result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
+    assert result["comparable_paired_strikes"] == 4
+
+
+def test_migration_requires_five_valid_paired_strikes_and_reports_count():
+    current, previous = raw_rows(), raw_rows(snapshot="s0")
+    current = current[current.strike_price != 800]
+    previous = previous[previous.strike_price != 800]
+    result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
+    assert result["comparable_paired_strikes"] == 4
+
+
+def test_migration_keeps_lower_strike_tie_break_on_comparable_intersection():
+    current, previous = raw_rows(), raw_rows(snapshot="s0")
+    current.loc[current.strike_price.isin([900, 1100]), "oi_contracts"] = 1000
+    previous.loc[previous.strike_price.isin([900, 1100]), "oi_contracts"] = 1000
+    result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
+    assert result["status"] == "OK"
+    assert result["call_shift"] == 0 and result["put_shift"] == 0
