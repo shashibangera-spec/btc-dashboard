@@ -78,27 +78,51 @@ def log_event(event_key, event_type, event_time, payload, status, message_id=Non
         print(f"Failed to log event ({status}): {e}")
 
 def evaluate_amt_transition():
-    # Fetch last 2 completed candles
-    res = supabase.table("amt_snapshots").select("*").eq("data_status", "VALID").order("candle_close_time", desc=True).limit(2).execute()
-    if len(res.data) < 2:
+    # Read a bounded window so a delayed workflow can still detect the first candle
+    # of the current profile instead of missing the boundary after later candles arrive.
+    res = (
+        supabase.table("amt_snapshots")
+        .select("*")
+        .eq("data_status", "VALID")
+        .order("candle_close_time", desc=True)
+        .limit(200)
+        .execute()
+    )
+    rows = res.data or []
+    if len(rows) < 2:
         return None
 
-    curr, prev = res.data[0], res.data[1]
+    curr = rows[0]
     curr_profile = curr.get("profile_id")
-    prev_profile = prev.get("profile_id")
-    if not curr_profile or not prev_profile:
-        print("AMT alert skipped: profile_id is missing; refusing to infer a profile boundary.")
+    if not curr_profile:
+        print("AMT alert skipped: latest profile_id is missing; refusing to infer a profile boundary.")
         return None
 
-    # A profile boundary is an initialization event, not an intraday state transition.
-    # Keep this event type/key separate so it cannot be confused with AMT_STATE_CHANGE.
-    if curr_profile != prev_profile:
-        event_key = f"AMT_PROFILE_INITIALIZATION_{curr_profile}_{curr['candle_close_time']}"
+    # Find the first candle in the latest profile by walking backward from the
+    # newest candle until the preceding profile is encountered.
+    boundary_index = next(
+        (index for index in range(len(rows) - 1)
+         if rows[index].get("profile_id") == curr_profile
+         and rows[index + 1].get("profile_id") != curr_profile),
+        None,
+    )
+    if boundary_index is not None:
+        first_profile_candle = rows[boundary_index]
+        previous_profile_candle = rows[boundary_index + 1]
+        previous_profile = previous_profile_candle.get("profile_id")
+        if not previous_profile:
+            print("AMT alert skipped: preceding profile_id is missing; refusing to infer a profile boundary.")
+            return None
+
+        event_key = (
+            f"AMT_PROFILE_INITIALIZATION_{curr_profile}_"
+            f"{first_profile_candle['candle_close_time']}"
+        )
         if check_event_exists(event_key):
             return None
 
-        curr_state = curr.get("confirmed_state") or "STATE_UNAVAILABLE"
-        close_price = curr.get("close_price")
+        initial_state = first_profile_candle.get("confirmed_state") or "STATE_UNAVAILABLE"
+        close_price = first_profile_candle.get("close_price")
         try:
             close_text = f"USD {float(close_price):,.0f}" if close_price is not None else "Unavailable"
         except (TypeError, ValueError):
@@ -106,29 +130,33 @@ def evaluate_amt_transition():
         msg = (
             "🆕 AMT NEW PROFILE / STATE INITIALIZATION\\n\\n"
             f"Profile: {curr_profile}\\n"
-            f"Initial confirmed state: {curr_state}\\n"
-            f"Candle: {curr.get('candle_open_time', 'Unavailable')}\\n"
+            f"Initial confirmed state: {initial_state}\\n"
+            f"Candle: {first_profile_candle.get('candle_open_time', 'Unavailable')}\\n"
             f"Close: {close_text}"
         )
         payload = {
             "profile_id": curr_profile,
-            "previous_profile_id": prev_profile,
-            "initial_state": curr_state,
-            "candle_open_time": curr.get("candle_open_time"),
-            "candle_close_time": curr.get("candle_close_time"),
+            "previous_profile_id": previous_profile,
+            "initial_state": initial_state,
+            "candle_open_time": first_profile_candle.get("candle_open_time"),
+            "candle_close_time": first_profile_candle.get("candle_close_time"),
             "close_price": close_price,
         }
         return {
             "key": event_key,
             "type": "AMT_PROFILE_INITIALIZATION",
-            "time": curr["candle_close_time"],
+            "time": first_profile_candle["candle_close_time"],
             "msg": msg,
             "payload": payload,
         }
 
+    # No profile boundary in the recent window: preserve the existing same-profile
+    # intraday transition behavior using the latest two completed candles.
+    prev = rows[1]
+    if prev.get("profile_id") != curr_profile:
+        return None
     curr_state = curr["confirmed_state"]
     prev_state = prev["confirmed_state"]
-
     if curr_state != prev_state:
         event_key = f"AMT_STATE_CHANGE_{curr['candle_close_time']}"
         if check_event_exists(event_key):
