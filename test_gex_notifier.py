@@ -160,12 +160,14 @@ def test_gex_failure_isolated_and_amt_oi_still_dispatch(monkeypatch, capsys):
     monkeypatch.setattr(notifier, "evaluate_gex_breach", fail_gex)
     monkeypatch.setattr(notifier, "evaluate_oi_shock", lambda: oi)
     monkeypatch.setattr(notifier, "send_telegram", lambda msg: (sent.append(msg) or (True, 123)))
-    monkeypatch.setattr(notifier, "log_event", lambda *a, **k: logged.append(a[1]))
-    def unexpected(*a, **k): raise AssertionError("GEX must not be logged")
-    monkeypatch.setattr(notifier, "log_gex_event", unexpected)
+    monkeypatch.setattr(notifier, "begin_event_delivery", lambda alert: True)
+    monkeypatch.setattr(
+        notifier, "finish_event_delivery",
+        lambda alert, status, **kwargs: logged.append((alert["type"], status))
+    )
     notifier.main()
     assert sent and "AMT" in sent[0] and "OI" in sent[0]
-    assert logged == ["AMT_STATE_CHANGE", "OI_SHOCK"]
+    assert logged == [("AMT_STATE_CHANGE", "SENT"), ("OI_SHOCK", "SENT")]
     assert "GEX evaluation failed; continuing with AMT/OI alerts" in capsys.readouterr().out
 
 
@@ -214,9 +216,10 @@ def test_test_mode_logs_dedicated_type_and_bypasses_live_evaluation(monkeypatch,
         notifier, "send_telegram",
         lambda message: (sent.append(message) or (True, 456))
     )
+    monkeypatch.setattr(notifier, "begin_event_delivery", lambda alert: logged.append(("PENDING", alert)) or True)
     monkeypatch.setattr(
-        notifier, "log_event",
-        lambda **kwargs: logged.append(kwargs)
+        notifier, "finish_event_delivery",
+        lambda alert, status, **kwargs: logged.append((status, alert, kwargs))
     )
 
     def live_evaluation_must_not_run():
@@ -231,9 +234,11 @@ def test_test_mode_logs_dedicated_type_and_bypasses_live_evaluation(monkeypatch,
     assert len(sent) == 1
     assert "🧪 TEST ALERT" in sent[0]
     assert "verification message" in sent[0]
-    assert len(logged) == 1
-    assert logged[0]["event_type"] == "TEST_ALERT"
-    assert logged[0]["payload"] == {"test": True}
-    assert logged[0]["status"] == "SENT"
-    assert logged[0]["message_id"] == 456
+    assert len(logged) == 2
+    assert logged[0][0] == "PENDING"
+    assert logged[0][1]["type"] == "TEST_ALERT"
+    assert logged[0][1]["payload"] == {"test": True}
+    assert logged[1][0] == "SENT"
+    assert logged[1][1]["type"] == "TEST_ALERT"
+    assert logged[1][2]["message_id"] == 456
     assert "TEST SUCCESS" in capsys.readouterr().out
