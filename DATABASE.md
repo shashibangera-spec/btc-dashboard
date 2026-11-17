@@ -230,8 +230,9 @@ The Telegram operational outbox. It exists to deduplicate notification events, t
 - RLS is enabled.
 - Trusted backend workflows use the service-role credential for operational access.
 - `event_key` prevents the same logical event from being enqueued repeatedly.
-- `PENDING` is queued work, `SENT` is successful delivery and `FAILED` is an unsuccessful attempt subject to workflow retry rules.
-- Telegram itself does not provide database-style transactional idempotency, so interruptions around the send/update boundary remain an operational consideration.
+- `PENDING` is durably upserted before a Telegram network request; `SENT` or `FAILED` is written only after the send attempt returns.
+- A previously confirmed `SENT` event with a positive Telegram message ID is not resent. If the initial `PENDING` write fails, Telegram delivery is aborted.
+- The outbox write and Telegram API cannot share one database transaction. A crash after Telegram accepts a message but before the `SENT` update can leave a `PENDING` row and may still result in a duplicate on later retry; this is a durable outbox lifecycle, not exactly-once delivery.
 
 ---
 
