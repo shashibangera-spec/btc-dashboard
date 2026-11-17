@@ -1193,9 +1193,9 @@ def _render_dashboard():
     
     st.markdown(
         _ui_grid([
-            _ui_card("Developing VAH", _ui_num(dev_vah_ui), tone="up"),
-            _ui_card("Developing POC", _ui_num(dev_poc_ui), tone="warn"),
             _ui_card("Developing VAL", _ui_num(dev_val_ui), tone="down"),
+            _ui_card("Developing POC", _ui_num(dev_poc_ui), tone="warn"),
+            _ui_card("Developing VAH", _ui_num(dev_vah_ui), tone="up"),
             _ui_card("VA Expansion", va_expansion_value, _va_sub, _va_tone),
         ], "g4"),
         unsafe_allow_html=True,
