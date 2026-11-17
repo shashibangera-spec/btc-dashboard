@@ -10,6 +10,7 @@ on:
       - "test_amt_profile_initialization.py"
       - "test_futures_integrity.py"
       - "test_telegram_outbox.py"
+      - "test_telegram_outbox.py"
       - ".github/workflows/data-integrity-tests.yml"
   push:
     branches:
