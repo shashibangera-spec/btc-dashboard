@@ -17,6 +17,15 @@ if not all([SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, TELEGRA
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 IST = timezone(timedelta(hours=5, minutes=30))
 
+# Must stay synchronized with the CHECK constraint in the Supabase migration.
+ALLOWED_EVENT_TYPES = frozenset({
+    "AMT_STATE_CHANGE",
+    "AMT_PROFILE_INITIALIZATION",
+    "GEX_WALL_BREACH",
+    "OI_SHOCK",
+    "TEST_ALERT",
+})
+
 # Final merge commit must replace this marker with its UTC commit timestamp.
 # NOTE: Update this to the exact current UTC time before committing the final merge.
 GEX_ALERT_CUTOVER_UTC = "2026-11-16T15:00:00Z"
@@ -61,6 +70,9 @@ def check_event_exists(event_key):
 
 def begin_event_delivery(alert):
     """Durably create/update an outbox row as PENDING before attempting Telegram."""
+    event_type = alert.get("type")
+    if event_type not in ALLOWED_EVENT_TYPES:
+        raise ValueError(f"Unsupported Telegram outbox event_type: {event_type!r}")
     key = alert["key"]
     existing = (
         supabase.table("telegram_alert_events")

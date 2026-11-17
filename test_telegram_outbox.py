@@ -1,7 +1,9 @@
 """Regression tests for durable Telegram outbox ordering and state transitions."""
 import os
+import re
 import sys
 import types
+from pathlib import Path
 
 os.environ.setdefault("SUPABASE_URL", "https://unit.test")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "unit-test-key")
@@ -151,3 +153,46 @@ def test_initial_outbox_write_failure_prevents_telegram_send(monkeypatch):
     except SystemExit as exc:
         assert exc.code == 1
     assert sent == []
+
+
+def test_python_event_types_match_database_migration():
+    migration_path = (
+        Path(__file__).parent
+        / "migrations"
+        / "20261117_allow_amt_profile_initialization_and_test_alert_event_types.sql"
+    )
+    migration_sql = migration_path.read_text(encoding="utf-8")
+    match = re.search(r"ARRAY\[(.*?)\]::text\[\]", migration_sql, re.DOTALL)
+
+    assert match is not None, "database event-type CHECK allowlist not found"
+    database_event_types = set(re.findall(r"'([^']+)'", match.group(1)))
+    assert notifier.ALLOWED_EVENT_TYPES == database_event_types
+
+
+def test_all_allowed_event_types_can_be_enqueued(monkeypatch):
+    db = FakeSupabase()
+    monkeypatch.setattr(notifier, "supabase", db)
+
+    for event_type in sorted(notifier.ALLOWED_EVENT_TYPES):
+        item = alert()
+        item["key"] = f"{event_type}_test"
+        item["type"] = event_type
+
+        assert notifier.begin_event_delivery(item) is True
+        assert db.rows[item["key"]]["event_type"] == event_type
+        assert db.rows[item["key"]]["delivery_status"] == "PENDING"
+
+
+def test_unknown_event_type_is_rejected_before_database_write(monkeypatch):
+    db = FakeSupabase()
+    monkeypatch.setattr(notifier, "supabase", db)
+    item = alert()
+    item["type"] = "UNRECOGNIZED_EVENT"
+
+    try:
+        notifier.begin_event_delivery(item)
+        assert False, "unsupported event types must fail closed"
+    except ValueError as exc:
+        assert "UNRECOGNIZED_EVENT" in str(exc)
+
+    assert db.rows == {}
