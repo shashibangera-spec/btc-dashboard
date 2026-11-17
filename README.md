@@ -82,16 +82,17 @@ Its information hierarchy remains:
 
 **AMT structure → Futures context → Options context**
 
-The current visually optimized System B UI retains its established terminal skin, CSS hero header, visual Value Area ladder and side-by-side context charts. The Options Filters integration is an additive panel and does not redesign the existing UI.
+System B now uses a visual-first, single-page observation cockpit: a compact market header, explicit last-closed auction and live-price-location labels, a prior-value ladder, AMT structure, and side-by-side Options/Futures context. The redesign is a presentation layer only; it does not change the canonical Pine state-machine integration, AMT calculations, derivatives source contracts, or alert/trading rules. The approved CSS baseline is pinned by `test_fast_dashboard_options_ui.py`.
 
 ### Options Filters — Stage 3 Fast Dashboard integration
 
-The five Options Filters research outputs are now integrated into System B through a collapsible Streamlit expander positioned after the Futures panel. The panel presents Nearby OI, IV Skew, 24h Volume / OI, OI Migration and Sampled Taker Trade Activity as separate research measurements.
+The five Options Filters research outputs are integrated into System B through a collapsible Streamlit expander positioned after the Futures context and before Diagnostics and Raw Data. The panel presents Nearby OI, IV Skew, 24h Volume / OI, OI Migration and Sampled Taker Trade Activity as separate research measurements.
 
 - The UI consumes the validated results from the shared `options_filters.py` backend; filter formulas and classifications are not reimplemented in the dashboard.
 - The Supabase fetch/calculation wrapper uses Streamlit data caching with a **180-second TTL**.
 - If the selected snapshot or an individual filter is unavailable, the panel handles that result without substituting an older snapshot or disrupting the rest of the dashboard.
-- The integration preserves the existing information hierarchy: **AMT structure → Futures context → Options context**. The five filters are an additional Options-context layer; they do not alter AMT or Futures calculations, state logic or presentation.
+- The panel preserves the information hierarchy: **AMT structure → Futures context → Options context**. The five filters are an additional Options-context layer; they do not alter AMT or Futures calculations, state logic or alert/trading behavior.
+- Missing option observations remain unavailable (`N/A`); observed zero values remain numeric zero. Incomplete option-chain inputs fail closed for wall, ratio and Max Pain calculations.
 
 ### Research Dashboard — Stage A canonical data integration
 
