@@ -225,6 +225,18 @@ The Telegram operational outbox. It exists to deduplicate notification events, t
 | `created_at` | Outbox record creation time |
 | `sent_at` | Successful delivery timestamp |
 
+### `event_type` CHECK constraint
+
+The `event_type` column is restricted by `telegram_alert_events_event_type_check` to the following exact values:
+
+- `AMT_STATE_CHANGE` — locally evaluated confirmed AMT state transition.
+- `AMT_PROFILE_INITIALIZATION` — first confirmed state recorded for a newly detected AMT profile.
+- `GEX_WALL_BREACH` — detector-confirmed GEX wall breach read from `system_signal_journal`.
+- `OI_SHOCK` — locally evaluated aggregate Futures OI context event.
+- `TEST_ALERT` — explicit Telegram connectivity-test event; not a live market event.
+
+The same allowlist is enforced in `telegram_alerts.py` by `ALLOWED_EVENT_TYPES`; unsupported values are rejected before a database write. Keep the Python allowlist and this CHECK constraint synchronized. The migration adding `AMT_PROFILE_INITIALIZATION` and `TEST_ALERT` is `migrations/20261117_allow_amt_profile_initialization_and_test_alert_event_types.sql`.
+
 ## Operational semantics
 
 - RLS is enabled.

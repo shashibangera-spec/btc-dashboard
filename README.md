@@ -186,6 +186,8 @@ The Telegram workflow listens for completion of **BTC Data Collection Coordinato
 
 It evaluates alerts only after a successful Coordinator run, meaning the collection sequence and signal detector have already completed.
 
+The notifier validates every outbox `event_type` against a Python allowlist before writing. That allowlist must remain synchronized with the database CHECK constraint documented in `DATABASE.md` and the corresponding SQL migration. The current accepted values are `AMT_STATE_CHANGE`, `AMT_PROFILE_INITIALIZATION`, `GEX_WALL_BREACH`, `OI_SHOCK` and `TEST_ALERT`. `AMT_PROFILE_INITIALIZATION` records the first confirmed state of a newly detected AMT profile; `TEST_ALERT` is reserved for the explicit connectivity-test path and is not a live market event. Unsupported values are rejected before an outbox write.
+
 The research journal and Telegram outbox have distinct responsibilities, but the delivery paths are not identical across event types:
 
 - **GEX:** `GEX_WALL_BREACH` alerts read confirmed events from `system_signal_journal`; the notifier does not independently recompute GEX walls from options snapshots. Cutover eligibility uses `detected_at` (journal insertion/detection time), while `event_timestamp` remains the underlying market-event time.
