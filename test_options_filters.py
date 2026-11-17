@@ -353,14 +353,14 @@ def test_migration_uses_identity_intersection_and_excludes_unmatched_strikes():
     assert result["status"] == "INSUFFICIENT_DATA"
     assert result["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
     assert result["comparable_paired_strikes"] == 4
-    assert result["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
 
 
 def test_migration_excludes_entire_strike_when_one_matched_side_has_null_oi():
     current, previous = raw_rows(), raw_rows(snapshot="s0")
     current.loc[(current.strike_price == 800) & (current.option_type == "CALL"), "oi_contracts"] = None
     result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
-    assert result["status"] == "OK"
+    assert result["status"] == "INSUFFICIENT_DATA"
+    assert result["reason"] == "FEWER_THAN_5_VALID_PAIRED_STRIKES"
     assert result["comparable_paired_strikes"] == 4
 
 
