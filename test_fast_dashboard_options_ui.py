@@ -213,6 +213,7 @@ def test_structurally_unlisted_option_side_is_zero_but_listed_missing_is_null():
     assert normalized.loc[68400.0, "OI_Contracts_Call"] == 13.0
     assert normalized.loc[68400.0, "OI_Contracts_Put"] == 0.0
     assert normalized.loc[64400.0, "OI_Contracts_Put"] == 7.0
+    assert np.isfinite(helpers._calculate_max_pain(normalized.reset_index(), True))
 
     # Both Call-only outer strikes are inside a ±10% band around $64,600.
     local = normalized.reset_index()
