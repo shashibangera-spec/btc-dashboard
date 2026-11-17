@@ -667,14 +667,60 @@ def render_options_filter_panel(payload):
     columns = st.columns(5)
     for column, (key, label) in zip(columns, labels):
         result = filters.get(key, {"status": "UNAVAILABLE", "reason": "MISSING_FILTER_RESULT"})
-        summary, status_text = _format_options_filter_result(key, result)
+        _, status_text = _format_options_filter_result(key, result)
+        if result.get("status") == "OK":
+            if key == "nearby_oi":
+                walls = result.get("walls", [])
+                primary = " · ".join(
+                    f'{wall.get("type", "N/A")} ${float(wall.get("strike")):,.0f}'
+                    for wall in walls
+                ) if walls else "No local concentration detected"
+                secondary = ""
+            elif key == "iv_skew":
+                primary = f'{float(result.get("call_iv_premium_pct")):+.2f}%'
+                secondary = "Call IV Premium"
+            elif key == "volume_oi":
+                primary = str(result.get("classification", "N/A"))
+                secondary = (
+                    f'Call {float(result.get("call_ratio")):.3f} / '
+                    f'Put {float(result.get("put_ratio")):.3f} · '
+                    f'{result.get("direction", "N/A")}'
+                )
+            elif key == "oi_migration":
+                primary = str(result.get("classification", "N/A"))
+                elapsed = result.get("elapsed_seconds")
+                interval = f' · {float(elapsed) / 60:.0f}m interval' if elapsed is not None else ""
+                secondary = (
+                    f'Call {float(result.get("call_shift")):+,.0f} / '
+                    f'Put {float(result.get("put_shift")):+,.0f}{interval}'
+                )
+            elif key == "taker_activity":
+                primary = f'Balance {float(result.get("sampled_volume_balance")):+,.2f}'
+                secondary = (
+                    f'Buy {float(result.get("sampled_buy_volume")):,.2f} / '
+                    f'Sell {float(result.get("sampled_sell_volume")):,.2f}'
+                )
+            else:
+                primary, secondary = "N/A", ""
+        else:
+            primary = "N/A"
+            secondary = str(result.get("reason") or result.get("status") or "Unavailable")
+
         tone = "t-up" if str(status_text).startswith("OK") else "t-flat"
+        secondary_html = (
+            f'<div style="margin-top:5px; color:var(--muted); font-size:0.68rem; '
+            f'line-height:1.3; overflow-wrap:anywhere;">{html.escape(str(secondary))}</div>'
+            if secondary else ""
+        )
         card_html = (
-            f'<div class="card {tone}" style="height:100%; min-height:116px;">'
+            f'<div class="card {tone}" style="height:150px; min-height:150px; '
+            f'box-sizing:border-box; display:flex; flex-direction:column; overflow:hidden;">'
             f'<div class="k">{html.escape(label)}</div>'
-            f'<div class="v" style="font-size:0.92rem; line-height:1.35; overflow-wrap:anywhere;">'
-            f'{html.escape(str(summary))}</div>'
-            f'<div class="s">{html.escape(str(status_text))}</div>'
+            f'<div class="v" style="font-size:1.02rem; line-height:1.25; overflow-wrap:anywhere;">'
+            f'{html.escape(str(primary))}</div>'
+            f'{secondary_html}'
+            f'<div class="s" style="margin-top:auto; padding-top:7px;">'
+            f'{html.escape(str(status_text))}</div>'
             '</div>'
         )
         with column:

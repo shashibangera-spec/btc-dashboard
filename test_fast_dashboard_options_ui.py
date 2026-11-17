@@ -69,6 +69,22 @@ def test_options_filters_panel_is_open_and_uses_five_equal_columns():
         assert label in panel
 
 
+def test_filter_cards_use_two_tier_typography_and_equal_heights():
+    source = _source()
+    start = source.index("def render_options_filter_panel(payload):")
+    end = source.index("\n\ndef calculate_tpo", start)
+    panel = source[start:end]
+    assert "height:150px; min-height:150px;" in panel
+    assert 'font-size:1.02rem' in panel
+    assert 'color:var(--muted); font-size:0.68rem' in panel
+    assert 'margin-top:auto; padding-top:7px;' in panel
+    assert 'primary = f\'{float(result.get("call_iv_premium_pct")):+.2f}%\'' in panel
+    assert 'secondary = "Call IV Premium"' in panel
+    assert 'primary = str(result.get("classification", "N/A"))' in panel
+    assert 'primary = f\'Balance {float(result.get("sampled_volume_balance")):+,.2f}\'' in panel
+    assert 'Buy {float(result.get("sampled_buy_volume")):,.2f} / ' in panel
+
+
 def test_all_five_backend_outputs_are_rendered_independently():
     source = _source()
     for key in ("nearby_oi", "iv_skew", "volume_oi", "oi_migration", "taker_activity"):
