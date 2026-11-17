@@ -126,10 +126,10 @@ def evaluate_amt_transition():
             except (TypeError, ValueError):
                 close_text = "Unavailable"
             msg = (
-                "🆕 AMT NEW PROFILE / STATE INITIALIZATION\\n\\n"
-                f"Profile: {curr_profile}\\n"
-                f"Initial confirmed state: {initial_state}\\n"
-                f"Candle: {first_profile_candle.get('candle_open_time', 'Unavailable')}\\n"
+                "🆕 AMT NEW PROFILE / STATE INITIALIZATION\n\n"
+                f"Profile: {curr_profile}\n"
+                f"Initial confirmed state: {initial_state}\n"
+                f"Candle: {first_profile_candle.get('candle_open_time', 'Unavailable')}\n"
                 f"Close: {close_text}"
             )
             payload = {
@@ -160,8 +160,8 @@ def evaluate_amt_transition():
         if check_event_exists(event_key):
             return None
         msg = (
-            f"🚨 AMT STRUCTURAL CHANGE\\n\\n{prev_state} → {curr_state}"
-            f"\\nCandle: {curr['candle_open_time']}\\nClose: USD {float(curr['close_price']):,.0f}"
+            f"🚨 AMT STRUCTURAL CHANGE\n\n{prev_state} → {curr_state}"
+            f"\nCandle: {curr['candle_open_time']}\nClose: USD {float(curr['close_price']):,.0f}"
         )
         return {
             "key": event_key,
