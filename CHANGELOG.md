@@ -2,6 +2,15 @@
 
 ## 2026-11-17
 
+### Fixed — Telegram outbox event-type constraint synchronization (PR #24)
+
+- Updated the `telegram_alert_events_event_type_check` constraint to accept the five event types emitted or used by the notifier: `AMT_STATE_CHANGE`, `AMT_PROFILE_INITIALIZATION`, `GEX_WALL_BREACH`, `OI_SHOCK` and `TEST_ALERT`.
+- Synchronized the Python `ALLOWED_EVENT_TYPES` guard with the database constraint. Unsupported event types are rejected before an outbox database write.
+- Added regression coverage for allowlist synchronization, successful PENDING enqueue for each supported type, and rejection of unsupported types without creating an outbox row.
+- Applied by migration `20261117_allow_amt_profile_initialization_and_test_alert_event_types.sql`. This changes the allowed values of the existing CHECK constraint; it does not add a table or column.
+
+## 2026-11-17
+
 ### Documentation — Prior Value overlap regime added to OI research architecture
 
 - Added a mathematical Value Area overlap framework comparing each completed Developing Value Area with its frozen Prior Value Area. Prior-Value Coverage % is the primary measure; Developing-Value Coverage % and symmetric Intersection-over-Union are retained as diagnostics.
