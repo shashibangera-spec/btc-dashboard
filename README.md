@@ -548,3 +548,10 @@ The options research module exposes a canonical, read-only snapshot selector and
 - The taker measurement remains a sampled subset of available trade activity, not complete order flow.
 
 CI runs the offline backend regression suite through `.github/workflows/options-filters-tests.yml`.
+
+
+### OI Migration — comparable snapshot contract
+
+OI Migration compares the latest valid options snapshot with the most recent successful, complete snapshot for the same underlying and expiry that completed **25–45 minutes earlier** (inclusive). A nearer run is not used as the baseline. If no eligible baseline exists, the filter returns `UNAVAILABLE` with one of `NO_ELIGIBLE_PREVIOUS_SNAPSHOT`, `SNAPSHOTS_TOO_CLOSE`, `SNAPSHOT_GAP_TOO_LARGE` or `NO_VALID_PREVIOUS_SNAPSHOT_IN_WINDOW`.
+
+Migration is calculated only from the strike-level intersection of contract identities present in both snapshots (product ID, falling back to symbol, together with option type and strike). A strike is excluded when either Call/Put side is not represented by comparable contracts or any matched contract at that strike has missing or invalid OI in either snapshot. Missing OI is never converted to zero. At least **five valid paired strikes** must remain; otherwise the result is `INSUFFICIENT_DATA` with reason `FEWER_THAN_5_VALID_PAIRED_STRIKES`. The reported migration remains descriptive and does not identify buyer/seller intent, dealer positioning or a directional trading signal.

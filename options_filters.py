@@ -22,7 +22,7 @@ RAW_COLUMNS = (
     "spot_price", "collected_at", "exchange_timestamp", "data_status",
 )
 RUN_COLUMNS = (
-    "snapshot_id", "status", "started_at", "completed_at",
+    "snapshot_id", "status", "started_at", "completed_at", "underlying",
     "expected_contracts", "received_contracts", "inserted_contracts",
 )
 DERIVED_COLUMNS = (
@@ -41,6 +41,7 @@ class CanonicalSnapshot:
     previous_snapshot_id: Optional[str] = None
     previous_completed_at: Optional[str] = None
     previous_raw: Optional[pd.DataFrame] = None
+    previous_snapshot_reason: Optional[str] = None
 
 
 def _rows(response: Any) -> List[dict]:
@@ -190,16 +191,16 @@ def _run_is_complete(run: dict) -> bool:
 
 
 def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
-    """Pin latest SUCCESS run, its nearest valid future expiry and raw chain.
+    """Pin the latest SUCCESS snapshot and select a bounded same-expiry baseline.
 
-    No fallback to an older run or another expiry occurs if the latest
-    successful run fails validation.
+    The current snapshot remains fail-closed. Previous snapshots are searched
+    newest-first within the inclusive 25-45 minute comparison window.
     """
     today = as_of or datetime.now(timezone.utc).date()
     runs = _execute(
         client.table("options_collection_runs")
         .select(",".join(RUN_COLUMNS)).eq("status", "SUCCESS")
-        .order("completed_at", desc=True).limit(2)
+        .order("completed_at", desc=True).limit(500)
     )
     if not runs:
         return None, {"status": "UNAVAILABLE", "reason": "NO_SUCCESS_RUN"}
@@ -209,22 +210,26 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
     current = runs[0]
     if not _run_is_complete(current):
         return None, {"status": "UNAVAILABLE", "reason": "RUN_COUNTER_MISMATCH"}
-    snapshot_id, completed_at = str(current.get("snapshot_id") or ""), current.get("completed_at")
-    if not snapshot_id or not completed_at:
+    snapshot_id = str(current.get("snapshot_id") or "")
+    completed_at = current.get("completed_at")
+    underlying = str(current.get("underlying") or "")
+    if not snapshot_id or not completed_at or not underlying:
         return None, {"status": "UNAVAILABLE", "reason": "INVALID_RUN_IDENTITY"}
+
     derived = _execute(
         client.table("options_derived_snapshots")
         .select(",".join(DERIVED_COLUMNS)).eq("snapshot_id", snapshot_id)
         .order("expiry_date", desc=False)
     )
-    future_valid = []
-    for row in derived:
-        expiry_day, quality = _iso_date(row.get("expiry_date")), row.get("metric_status")
-        if expiry_day is not None and expiry_day >= today and isinstance(quality, dict) and quality.get("chain") == "OK":
-            future_valid.append(row)
     missing = _missing_record_keys(derived, DERIVED_COLUMNS)
     if missing["missing_columns"]:
         return None, _missing_record_selection("options_derived_snapshots", missing)
+    future_valid = []
+    for row in derived:
+        expiry_day, quality = _iso_date(row.get("expiry_date")), row.get("metric_status")
+        if (expiry_day is not None and expiry_day >= today
+                and isinstance(quality, dict) and quality.get("chain") == "OK"):
+            future_valid.append(row)
     if not future_valid:
         return None, {"status": "UNAVAILABLE", "reason": "NO_VALID_FUTURE_EXPIRY",
                       "snapshot_id": snapshot_id, "completed_at": completed_at}
@@ -238,38 +243,69 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
         return None, {"status": "UNAVAILABLE", "reason": "RAW_CHAIN_INVALID",
                       "snapshot_id": snapshot_id, "expiry_date": expiry, "validation": validation}
 
+    current_time = pd.to_datetime(completed_at, utc=True, errors="coerce")
+    earlier = []
+    for run in runs[1:]:
+        if str(run.get("underlying") or "") != underlying or not _run_is_complete(run):
+            continue
+        run_time = pd.to_datetime(run.get("completed_at"), utc=True, errors="coerce")
+        if pd.isna(run_time) or pd.isna(current_time) or run_time >= current_time:
+            continue
+        elapsed_minutes = (current_time - run_time).total_seconds() / 60.0
+        earlier.append((elapsed_minutes, run))
+    earlier.sort(key=lambda item: item[0])
     previous_id = previous_completed = previous_raw = None
-    if len(runs) > 1:
-        previous = runs[1]
-        if _run_is_complete(previous):
-            prev_id = str(previous.get("snapshot_id") or "")
-            prev_derived = _execute(
-                client.table("options_derived_snapshots")
-                .select(",".join(DERIVED_COLUMNS)).eq("snapshot_id", prev_id)
-                .eq("expiry_date", expiry).limit(1)
+    previous_reason = "NO_ELIGIBLE_PREVIOUS_SNAPSHOT"
+    if earlier:
+        nearest_gap = earlier[0][0]
+        eligible = [(gap, run) for gap, run in earlier if 25 <= gap <= 45]
+        if not eligible:
+            previous_reason = (
+                "SNAPSHOTS_TOO_CLOSE" if nearest_gap < 25
+                else "SNAPSHOT_GAP_TOO_LARGE"
             )
-            if prev_derived and isinstance(prev_derived[0].get("metric_status"), dict) and prev_derived[0]["metric_status"].get("chain") == "OK":
+        else:
+            previous_reason = "NO_VALID_PREVIOUS_SNAPSHOT_IN_WINDOW"
+            for _, previous in eligible:
+                prev_id = str(previous.get("snapshot_id") or "")
+                if not prev_id:
+                    continue
+                prev_derived = _execute(
+                    client.table("options_derived_snapshots")
+                    .select(",".join(DERIVED_COLUMNS)).eq("snapshot_id", prev_id)
+                    .eq("expiry_date", expiry).limit(1)
+                )
+                if not prev_derived:
+                    continue
+                if _missing_record_keys(prev_derived, DERIVED_COLUMNS)["missing_columns"]:
+                    continue
+                quality = prev_derived[0].get("metric_status")
+                if not isinstance(quality, dict) or quality.get("chain") != "OK":
+                    continue
                 try:
                     candidate = _query_raw(client, prev_id, expiry)
-                except MissingRequiredRecordKeys as exc:
-                    return None, _missing_record_selection(exc.source, exc.details)
-                if validate_raw_snapshot(candidate, prev_id, expiry)["status"] == "OK":
-                    current_ids = {_contract_identity(x) for x in raw.to_dict("records")}
-                    previous_ids = {_contract_identity(x) for x in candidate.to_dict("records")}
-                    if current_ids == previous_ids:
-                        previous_id, previous_completed, previous_raw = prev_id, previous.get("completed_at"), candidate
+                except MissingRequiredRecordKeys:
+                    continue
+                if validate_raw_snapshot(candidate, prev_id, expiry)["status"] != "OK":
+                    continue
+                previous_id = prev_id
+                previous_completed = previous.get("completed_at")
+                previous_raw = candidate
+                previous_reason = None
+                break
 
     snapshot = CanonicalSnapshot(
         snapshot_id=snapshot_id, expiry_date=expiry, completed_at=completed_at,
         spot_price=validation["spot_price"], raw=raw,
         previous_snapshot_id=previous_id, previous_completed_at=previous_completed,
-        previous_raw=previous_raw,
+        previous_raw=previous_raw, previous_snapshot_reason=previous_reason,
     )
     return snapshot, {"status": "OK", "snapshot_id": snapshot_id,
                       "expiry_date": expiry, "completed_at": completed_at,
                       "spot_price": validation["spot_price"],
                       "previous_snapshot_id": previous_id,
-                      "previous_completed_at": previous_completed}
+                      "previous_completed_at": previous_completed,
+                      "previous_snapshot_reason": previous_reason}
 
 
 def _aggregate_chain(raw: pd.DataFrame) -> pd.DataFrame:
@@ -372,40 +408,110 @@ def calculate_volume_oi(snapshot: CanonicalSnapshot) -> dict:
 
 def calculate_oi_migration(snapshot: CanonicalSnapshot) -> dict:
     if snapshot.previous_raw is None or not snapshot.previous_snapshot_id:
-        return _result("OI Migration", "UNAVAILABLE", snapshot, reason="NO_ELIGIBLE_PREVIOUS_SNAPSHOT")
-    current, previous = snapshot.raw.copy(), snapshot.previous_raw.copy()
+        return _result(
+            "OI Migration", "UNAVAILABLE", snapshot,
+            reason=snapshot.previous_snapshot_reason or "NO_ELIGIBLE_PREVIOUS_SNAPSHOT",
+        )
+
+    current = snapshot.raw.copy()
+    previous = snapshot.previous_raw.copy()
     for frame in (current, previous):
+        frame["strike_price"] = pd.to_numeric(frame["strike_price"], errors="coerce")
         frame["oi_contracts"] = pd.to_numeric(frame["oi_contracts"], errors="coerce")
-        if frame["oi_contracts"].isna().any():
-            return _result("OI Migration", "INSUFFICIENT_DATA", snapshot, reason="INCOMPLETE_OI_COVERAGE")
         frame["option_type"] = frame["option_type"].astype(str).str.upper()
-    current_ids = {_contract_identity(x) for x in current.to_dict("records")}
-    previous_ids = {_contract_identity(x) for x in previous.to_dict("records")}
-    if current_ids != previous_ids:
-        return _result("OI Migration", "UNAVAILABLE", snapshot, reason="CONTRACT_UNIVERSE_MISMATCH")
-    def peaks(frame):
-        grouped = frame.groupby(["strike_price", "option_type"], sort=True)["oi_contracts"].sum().unstack()
-        grouped = grouped.reindex(columns=["CALL", "PUT"])
-        if grouped.isna().any().any() or grouped.empty:
-            raise ValueError("MISSING_OI_SIDE")
-        return {"CALL": float(grouped["CALL"].idxmax()), "PUT": float(grouped["PUT"].idxmax())}
-    try:
-        now_peaks, old_peaks = peaks(current), peaks(previous)
-    except (ValueError, KeyError):
-        return _result("OI Migration", "INSUFFICIENT_DATA", snapshot, reason="MISSING_OI_SIDE")
-    call_shift, put_shift = now_peaks["CALL"] - old_peaks["CALL"], now_peaks["PUT"] - old_peaks["PUT"]
-    status = "STABLE"
-    if call_shift > 0 and put_shift > 0: status = "BULLISH_MIGRATION"
-    elif call_shift < 0 and put_shift < 0: status = "BEARISH_MIGRATION"
-    elif call_shift > 0 and put_shift <= 0: status = "MILD_BULLISH"
+        frame["contract_identity"] = [
+            _contract_identity(row) for row in frame.to_dict("records")
+        ]
+
+    current_by_id = current.set_index("contract_identity", drop=False)
+    previous_by_id = previous.set_index("contract_identity", drop=False)
+    shared_ids = current_by_id.index.intersection(previous_by_id.index)
+    if len(shared_ids) == 0:
+        return _result(
+            "OI Migration", "INSUFFICIENT_DATA", snapshot,
+            reason="FEWER_THAN_5_VALID_PAIRED_STRIKES",
+            comparable_paired_strikes=0,
+        )
+
+    matched = []
+    for identity in shared_ids:
+        now_row = current_by_id.loc[identity]
+        old_row = previous_by_id.loc[identity]
+        now_oi, old_oi = _finite(now_row["oi_contracts"]), _finite(old_row["oi_contracts"])
+        strike = _finite(now_row["strike_price"])
+        side = str(now_row["option_type"]).upper()
+        if (strike is None or now_oi is None or old_oi is None
+                or now_oi < 0 or old_oi < 0
+                or _finite(old_row["strike_price"]) != strike
+                or str(old_row["option_type"]).upper() != side):
+            continue
+        matched.append({
+            "strike_price": strike, "option_type": side,
+            "current_oi": now_oi, "previous_oi": old_oi,
+        })
+
+    if not matched:
+        return _result(
+            "OI Migration", "INSUFFICIENT_DATA", snapshot,
+            reason="FEWER_THAN_5_VALID_PAIRED_STRIKES",
+            comparable_paired_strikes=0,
+        )
+    matched_frame = pd.DataFrame(matched)
+    # A strike is eligible only when both sides have at least one comparable
+    # contract and every matched contract at that strike has valid OI.
+    valid_strikes = []
+    for strike, group in matched_frame.groupby("strike_price", sort=True):
+        sides = set(group["option_type"])
+        if sides == {"CALL", "PUT"}:
+            valid_strikes.append(float(strike))
+    valid = matched_frame[matched_frame["strike_price"].isin(valid_strikes)]
+    if valid.empty or len(valid_strikes) < 5:
+        return _result(
+            "OI Migration", "INSUFFICIENT_DATA", snapshot,
+            reason="FEWER_THAN_5_VALID_PAIRED_STRIKES",
+            comparable_paired_strikes=len(valid_strikes),
+        )
+
+    grouped = valid.groupby(["strike_price", "option_type"], sort=True).agg(
+        current_oi=("current_oi", "sum"),
+        previous_oi=("previous_oi", "sum"),
+    ).reset_index()
+    current_peaks = {}
+    previous_peaks = {}
+    for side in ("CALL", "PUT"):
+        side_rows = grouped[grouped["option_type"] == side].sort_values("strike_price")
+        if side_rows.empty:
+            return _result(
+                "OI Migration", "INSUFFICIENT_DATA", snapshot,
+                reason="FEWER_THAN_5_VALID_PAIRED_STRIKES",
+                comparable_paired_strikes=len(valid_strikes),
+            )
+        current_peaks[side] = float(
+            side_rows.loc[side_rows["current_oi"].idxmax(), "strike_price"]
+        )
+        previous_peaks[side] = float(
+            side_rows.loc[side_rows["previous_oi"].idxmax(), "strike_price"]
+        )
+
+    call_shift = current_peaks["CALL"] - previous_peaks["CALL"]
+    put_shift = current_peaks["PUT"] - previous_peaks["PUT"]
+    classification = "STABLE"
+    if call_shift > 0 and put_shift > 0:
+        classification = "BULLISH_MIGRATION"
+    elif call_shift < 0 and put_shift < 0:
+        classification = "BEARISH_MIGRATION"
+    elif call_shift > 0 and put_shift <= 0:
+        classification = "MILD_BULLISH"
     t_now = pd.to_datetime(snapshot.completed_at, utc=True, errors="coerce")
     t_old = pd.to_datetime(snapshot.previous_completed_at, utc=True, errors="coerce")
     elapsed = (t_now - t_old).total_seconds() if pd.notna(t_now) and pd.notna(t_old) else None
-    return _result("OI Migration", "OK", snapshot, classification=status,
-                   call_shift=call_shift, put_shift=put_shift,
-                   previous_snapshot_id=snapshot.previous_snapshot_id,
-                   previous_completed_at=snapshot.previous_completed_at,
-                   elapsed_seconds=elapsed)
+    return _result(
+        "OI Migration", "OK", snapshot,
+        classification=classification, call_shift=call_shift, put_shift=put_shift,
+        previous_snapshot_id=snapshot.previous_snapshot_id,
+        previous_completed_at=snapshot.previous_completed_at,
+        elapsed_seconds=elapsed, comparable_paired_strikes=len(valid_strikes),
+    )
 
 
 def calculate_taker_activity(snapshot: CanonicalSnapshot) -> dict:

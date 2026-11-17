@@ -1,3 +1,14 @@
+## 2026-11-17
+
+### Fixed — OI Migration snapshot eligibility and strike-level coverage
+
+- Selects the most recent successful, complete snapshot for the same underlying and expiry within the inclusive 25–45-minute comparison window; reports explicit unavailable reasons when no eligible baseline can be selected.
+- Replaces whole-chain contract-universe equality with a contract-identity intersection at strike and option-type level.
+- Excludes an entire strike when either Call/Put side is not comparable or any matched OI observation is NULL/invalid; missing OI is never converted to zero.
+- Requires at least five valid paired strikes and returns `INSUFFICIENT_DATA · FEWER_THAN_5_VALID_PAIRED_STRIKES` below that threshold.
+- Adds offline regression coverage for interval boundaries, too-close/too-old baselines, invalid candidates, contract changes, NULL OI, the five-strike minimum and tie-breaking.
+- No database schema, collector, workflow, UI, CSS, AMT, Futures, Pine, alert or trading-rule changes.
+
 # Changelog
 
 ## 2026-11-17
