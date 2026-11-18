@@ -22,7 +22,7 @@ Required environment variables:
 
 Optional environment variables:
   ARCHIVE_DIR       Default: btc_data_archive
-  RETENTION_DAYS    Default: 5
+  RETENTION_DAYS    Default: 3
   PAGE_SIZE         Default: 1000
 """
 
@@ -69,7 +69,7 @@ MANIFEST_COLUMNS = [
 ]
 
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "1000"))
-DEFAULT_RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "5"))
+DEFAULT_RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "3"))
 DEFAULT_ARCHIVE_DIR = os.getenv("ARCHIVE_DIR", "btc_data_archive")
 
 LOG_FORMAT = "%(asctime)s UTC | %(levelname)s | %(message)s"
@@ -399,6 +399,71 @@ def verify_archive(
 # Deletion
 # ---------------------------------------------------------------------
 
+
+def fetch_eligible_row_ids(client: Any, day: date, cutoff: datetime) -> set[str]:
+    """Fetch every exact deletion-candidate ID for one UTC partition."""
+    start, end = utc_day_bounds(day)
+    ids: set[str] = set()
+    offset = 0
+    while True:
+        response = (
+            client.table(TABLE_NAME)
+            .select("id,collected_at")
+            .gte("collected_at", iso_utc(start))
+            .lt("collected_at", iso_utc(end))
+            .lt("collected_at", iso_utc(cutoff))
+            .order("collected_at")
+            .order("id")
+            .range(offset, offset + PAGE_SIZE - 1)
+            .execute()
+        )
+        rows = response.data or []
+        for row in rows:
+            row_id = row.get("id")
+            if row_id is None:
+                raise RuntimeError(f"Deletion candidate in {day} has no id.")
+            ids.add(str(row_id))
+        offset += len(rows)
+        if len(rows) < PAGE_SIZE:
+            break
+    return ids
+
+
+def read_archive_ids(archive_dir: Path, day: date) -> set[str]:
+    """Read unique snapshot IDs from the checksum-verified daily archive."""
+    archive_path = archive_dir / f"{ARCHIVE_PREFIX}{day.isoformat()}{ARCHIVE_SUFFIX}"
+    ids: set[str] = set()
+    with gzip.open(archive_path, mode="rt", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames or "id" not in reader.fieldnames:
+            raise RuntimeError(f"Archive {archive_path.name} is missing id column.")
+        for row in reader:
+            row_id = row.get("id")
+            if not row_id:
+                raise RuntimeError(f"Archive {archive_path.name} contains a row without id.")
+            if row_id in ids:
+                raise RuntimeError(f"Archive {archive_path.name} contains duplicate id {row_id}.")
+            ids.add(row_id)
+    return ids
+
+
+def verify_archive_covers_deletion_candidates(
+    archive_dir: Path, day: date, eligible_ids: set[str]
+) -> tuple[bool, str]:
+    """Require exact ID coverage of all rows currently eligible for deletion."""
+    archived_ids = read_archive_ids(archive_dir, day)
+    missing_ids = eligible_ids - archived_ids
+    if missing_ids:
+        sample = ", ".join(sorted(missing_ids)[:5])
+        return False, (
+            f"Archive incomplete for {day}: {len(missing_ids)} eligible database "
+            f"row(s) absent from archive (sample IDs: {sample})."
+        )
+    return True, (
+        f"Archive covers all {len(eligible_ids)} eligible database rows; "
+        f"{len(archived_ids)} total archived rows retained."
+    )
+
 def delete_old_rows_for_day(
     client: Any,
     day: date,
@@ -451,7 +516,7 @@ def delete_old_rows_for_day(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Verify raw-options archives and apply five-day retention."
+        description="Verify raw-options archives and apply three-day retention."
     )
 
     parser.add_argument(
@@ -464,7 +529,7 @@ def main() -> int:
         "--retention-days",
         type=int,
         default=DEFAULT_RETENTION_DAYS,
-        help="Retention window in days. Default comes from RETENTION_DAYS or 5.",
+        help="Retention window in days. Default comes from RETENTION_DAYS or 3.",
     )
 
     parser.add_argument(
@@ -540,11 +605,28 @@ def main() -> int:
         log.info("ARCHIVE VERIFIED: %s", message)
 
         try:
+            eligible_ids = fetch_eligible_row_ids(client, day, cutoff)
             eligible_count = count_old_rows_for_day(client, day, cutoff)
+            if eligible_count != len(eligible_ids):
+                raise RuntimeError(
+                    f"Exact count/ID mismatch for {day}: count={eligible_count}, "
+                    f"unique IDs={len(eligible_ids)}."
+                )
+            covered, coverage_message = verify_archive_covers_deletion_candidates(
+                archive_dir, day, eligible_ids
+            )
+            if not covered:
+                raise RuntimeError(coverage_message)
+            log.info("ARCHIVE COVERAGE VERIFIED: %s", coverage_message)
         except Exception as exc:
             skipped_dates += 1
-            log.error("Could not count eligible rows for %s: %s", day, exc)
-            continue
+            log.error(
+                "ARCHIVE/DB RECONCILIATION FAILED for %s: %s. "
+                "No deletion will be attempted for this date.",
+                day, exc
+            )
+            # Fail closed for the entire retention run: do not delete any other date.
+            return 1
 
         if eligible_count == 0:
             log.info("No rows older than the exact cutoff in %s.", day)
