@@ -102,7 +102,37 @@ def main():
             session_candles.append((candle, cl))
 
     rows_out = []
+    raw_quote_quality = Counter()
+    valid_spreads_pct = []
     for (snapshot_id, expiry), contracts in sorted(observations.items()):
+        for contract in contracts:
+            def finite_number(value):
+                try:
+                    number = float(value)
+                except (TypeError, ValueError, OverflowError):
+                    return None
+                return number if number == number and abs(number) != float("inf") else None
+            bid = finite_number(contract.get("bid_price"))
+            ask = finite_number(contract.get("ask_price"))
+            bid_iv = finite_number(contract.get("bid_iv"))
+            ask_iv = finite_number(contract.get("ask_iv"))
+            if bid is None or bid <= 0:
+                raw_quote_quality["missing_or_invalid_bid_price"] += 1
+            if ask is None or ask <= 0:
+                raw_quote_quality["missing_or_invalid_ask_price"] += 1
+            if bid_iv is None or bid_iv <= 0 or abs(bid_iv - 0.01) < 1e-12:
+                raw_quote_quality["invalid_or_sentinel_bid_iv"] += 1
+            if ask_iv is None or ask_iv <= 0 or abs(ask_iv - 0.01) < 1e-12:
+                raw_quote_quality["invalid_or_sentinel_ask_iv"] += 1
+            if bid is not None and ask is not None and bid > 0 and ask > 0 and bid <= ask:
+                raw_quote_quality["valid_two_sided_price_quotes"] += 1
+                mid = (bid + ask) / 2.0
+                if mid > 0:
+                    valid_spreads_pct.append((ask - bid) / mid * 100.0)
+            elif bid is not None and ask is not None and bid > 0 and ask > 0 and bid > ask:
+                raw_quote_quality["crossed_price_quotes"] += 1
+            else:
+                raw_quote_quality["incomplete_or_invalid_price_quotes"] += 1
         run = runs_by_id.get(snapshot_id, {})
         completed = parse_dt(run.get("completed_at"))
         started = parse_dt(run.get("started_at"))
@@ -233,7 +263,17 @@ def main():
     print(f"Calculator invalid/crossed price-quote flags: {invalid_prices}")
     print(f"Calculator invalid/sentinel mark-IV flags: {invalid_mark_ivs}")
     print(f"Calculator invalid-delta flags: {invalid_deltas}")
-    print("Note: quote flags are calculator diagnostics; raw bid-IV/ask-IV sentinel and spread distributions are not currently persisted by this runner.")
+    print(f"Raw valid two-sided price quotes: {raw_quote_quality['valid_two_sided_price_quotes']}")
+    print(f"Raw crossed price quotes: {raw_quote_quality['crossed_price_quotes']}")
+    print(f"Raw incomplete/invalid price quotes: {raw_quote_quality['incomplete_or_invalid_price_quotes']}")
+    print(f"Missing/invalid bid prices: {raw_quote_quality['missing_or_invalid_bid_price']}")
+    print(f"Missing/invalid ask prices: {raw_quote_quality['missing_or_invalid_ask_price']}")
+    print(f"Invalid/sentinel bid IV (including 0.01 sentinel): {raw_quote_quality['invalid_or_sentinel_bid_iv']}")
+    print(f"Invalid/sentinel ask IV (including 0.01 sentinel): {raw_quote_quality['invalid_or_sentinel_ask_iv']}")
+    if valid_spreads_pct:
+        print(f"Valid quote spread % of mid: count={len(valid_spreads_pct)} | median={median(valid_spreads_pct):.6f}% | min={min(valid_spreads_pct):.6f}% | max={max(valid_spreads_pct):.6f}%")
+    else:
+        print("Valid quote spread % of mid: no valid two-sided quotes")
     print("\n--- ALIGNMENT / EXPIRY DETAILS ---")
     print("Alignment: first same-IST-session AMT candle closing at/after collection completion; FRESH <= 30 minutes.")
     print("Settlement convention: expiry date at 17:30 IST (research assumption).")
