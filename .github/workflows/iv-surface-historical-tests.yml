@@ -61,7 +61,7 @@ jobs:
           test -n "$SUPABASE_ANON_KEY" || { echo "Missing SUPABASE_ANON_KEY GitHub Secret"; exit 1; }
           echo "Supabase URL and anon key are present; values are not printed."
       - name: Run historical IV surface reconciliation (read-only)
-        # Keep each PostgREST IN query to one snapshot; ten-ID batches timed out.
+        # Single-snapshot IN queries; runner logs fetch duration for each batch.
         run: python scripts/run_iv_surface_historical.py --batch-size 1 --format csv
       - name: Upload reconciled CSV
         uses: actions/upload-artifact@v4
