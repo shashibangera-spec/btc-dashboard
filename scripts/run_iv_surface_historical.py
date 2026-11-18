@@ -11,7 +11,9 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timezone
+from collections import Counter
+from statistics import median
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -184,11 +186,59 @@ def main():
         except ImportError as exc:
             raise SystemExit("Parquet output requires pandas and pyarrow.") from exc
         pd.DataFrame(rows_out).to_parquet(output, index=False)
-    print(f"Rows reconciled: {len(rows_out)}")
-    print(f"Snapshots: {len(snapshot_ids)} | expiry observations: {len(observations)}")
-    print(f"Freshness: { {k: sum(r['freshness']==k for r in rows_out) for k in ('FRESH','STALE','UNMATCHED')} }")
-    print(f"RR25 available: {sum(r['rr25_call_minus_put_vol_points'] is not None for r in rows_out)}")
-    print(f"Output: {output.resolve()}")
+    # Full reconciliation report is emitted to the GitHub Actions step log.
+    freshness_counts = Counter(row["freshness"] for row in rows_out)
+    latest_rows = [row for row in rows_out if row["is_latest_fresh_for_candle"]]
+    matched_candles = {row["amt_candle_id"] for row in rows_out if row["amt_candle_id"] is not None}
+    rr25_count = sum(row["rr25_call_minus_put_vol_points"] is not None for row in rows_out)
+    atm_count = sum(row["atm_iv"] is not None for row in rows_out)
+    expiry_counts = Counter(row["expiry_date"] for row in rows_out)
+    confirmed_states = Counter(str(row.get("amt_confirmed_state") or "MISSING")
+                               for row in rows_out if row.get("amt_candle_id") is not None)
+    developing_states = Counter(str(row.get("amt_developing_state") or "MISSING")
+                                 for row in rows_out if row.get("amt_candle_id") is not None)
+    lookahead_violations = sum(
+        1 for row in rows_out
+        if row["snapshot_completed_at"] and row["candle_close_time"]
+        and parse_dt(row["snapshot_completed_at"]) > parse_dt(row["candle_close_time"])
+    )
+    raw_contracts = sum(row["contract_count"] for row in rows_out)
+    eligible = sum(row["eligible_contracts"] for row in rows_out)
+    invalid_prices = sum(row["crossed_or_invalid_price_quotes"] for row in rows_out)
+    invalid_mark_ivs = sum(row["invalid_or_sentinel_mark_iv"] for row in rows_out)
+    invalid_deltas = sum(row["invalid_delta"] for row in rows_out)
+    print("\n========== IV SURFACE HISTORICAL RECONCILIATION ==========")
+    print(f"Calculation version: {VERSION}")
+    print(f"Reconciled observations: {len(rows_out)} / 1995")
+    print(f"Distinct snapshots: {len(snapshot_ids)}")
+    print(f"Distinct expiries: {len(expiry_counts)}")
+    print(f"Expiry observation counts: {dict(sorted(expiry_counts.items()))}")
+    print(f"Raw option contract rows reviewed: {raw_contracts}")
+    print("\n--- FRESHNESS / AMT ALIGNMENT ---")
+    print(f"FRESH: {freshness_counts['FRESH']} | STALE: {freshness_counts['STALE']} | UNMATCHED: {freshness_counts['UNMATCHED']}")
+    print(f"AMT source candles in 05:30–17:30 IST session: {len(session_candles)}")
+    print(f"Distinct AMT candles matched: {len(matched_candles)}")
+    print(f"Latest-fresh flagged observations: {len(latest_rows)}")
+    print(f"Candles represented by latest-fresh snapshots: {len({r['amt_candle_id'] for r in latest_rows})}")
+    print(f"Strict no-lookahead violations: {lookahead_violations}")
+    if session_candles:
+        dates = sorted({c["candle_open_time"][:10] for c, _ in session_candles})
+        print(f"AMT session dates: {dates[0]} through {dates[-1]} ({len(dates)} dates)")
+    print(f"Confirmed AMT state distribution (expiry rows): {dict(confirmed_states)}")
+    print(f"Developing AMT state distribution (expiry rows): {dict(developing_states)}")
+    print("\n--- IV / QUOTE QUALITY ---")
+    print(f"Paired ATM IV available: {atm_count}/{len(rows_out)}")
+    print(f"RR25 interpolation available: {rr25_count}/{len(rows_out)}")
+    print(f"Calculator-eligible contracts: {eligible}")
+    print(f"Calculator invalid/crossed price-quote flags: {invalid_prices}")
+    print(f"Calculator invalid/sentinel mark-IV flags: {invalid_mark_ivs}")
+    print(f"Calculator invalid-delta flags: {invalid_deltas}")
+    print("Note: quote flags are calculator diagnostics; raw bid-IV/ask-IV sentinel and spread distributions are not currently persisted by this runner.")
+    print("\n--- ALIGNMENT / EXPIRY DETAILS ---")
+    print("Alignment: first same-IST-session AMT candle closing at/after collection completion; FRESH <= 30 minutes.")
+    print("Settlement convention: expiry date at 17:30 IST (research assumption).")
+    print(f"Output CSV: {output.resolve()}")
+    print("==========================================================\n")
 
 
 if __name__ == "__main__":
