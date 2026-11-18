@@ -720,15 +720,18 @@ def _interpolate_delta_iv(rows: List[dict], side: str) -> dict:
         delta = _research_delta(row)
         iv = _research_iv(row.get("mark_iv"))
         quote = _research_quote_diagnostics(row)
-        reasons = list(quote["rejection_reasons"])
+        # RR25 uses mark_iv with signed Greeks Delta. Bid/ask IV sentinel
+        # flags remain visible in quote diagnostics but do not invalidate an
+        # otherwise usable mark-IV observation when bid/ask prices are valid.
+        reasons = []
+        if quote["mid_price"] is None:
+            reasons.append("UNUSABLE_TWO_SIDED_PRICE_QUOTE")
         if delta is None:
             reasons.append("INVALID_OR_MISSING_DELTA")
         elif (side == "CALL" and delta <= 0) or (side == "PUT" and delta >= 0):
             reasons.append("DELTA_SIGN_MISMATCH")
         if iv is None:
             reasons.append("INVALID_OR_SENTINEL_MARK_IV")
-        if quote["mid_price"] is None:
-            reasons.append("UNUSABLE_TWO_SIDED_PRICE_QUOTE")
         if reasons:
             rejected.append({"symbol": row.get("symbol"), "strike_price": row.get("strike_price"),
                              "option_type": side, "rejection_reasons": sorted(set(reasons))})
