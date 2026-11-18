@@ -1,0 +1,41 @@
+name: Archive Retention Regression Tests
+
+on:
+  pull_request:
+    paths:
+      - "archive_options_snapshots.py"
+      - "retention_cron.py"
+      - "tests/test_archive_retention.py"
+      - ".github/workflows/archive-retention-tests.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "archive_options_snapshots.py"
+      - "retention_cron.py"
+      - "tests/test_archive_retention.py"
+      - ".github/workflows/archive-retention-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  archive-retention-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest "psycopg[binary]" supabase
+
+      - name: Run archive retention regression tests
+        run: pytest -q tests/test_archive_retention.py
