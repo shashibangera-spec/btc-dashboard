@@ -771,6 +771,15 @@ def _interpolate_delta_iv(rows: List[dict], side: str) -> dict:
             "rejected_contracts": rejected, "curve_points": curve}
 
 
+def _quote_age_seconds(exchange_timestamp: Any, snapshot_completed_at: str) -> Optional[float]:
+    """Report source quote age without imposing an unapproved stale-age cutoff."""
+    source_time = pd.to_datetime(exchange_timestamp, utc=True, errors="coerce")
+    snapshot_time = pd.to_datetime(snapshot_completed_at, utc=True, errors="coerce")
+    if pd.isna(source_time) or pd.isna(snapshot_time):
+        return None
+    return float((snapshot_time - source_time).total_seconds())
+
+
 def calculate_iv_surface_research(snapshot: CanonicalSnapshot, raw: Optional[pd.DataFrame] = None) -> dict:
     """Calculate additive ATM IV and 25-delta risk reversal research metrics."""
     frame = (raw if raw is not None else snapshot.raw).copy()
@@ -821,7 +830,17 @@ def calculate_iv_surface_research(snapshot: CanonicalSnapshot, raw: Optional[pd.
         quality_rows.append({
             "symbol": row.get("symbol"), "option_type": str(row.get("option_type", "")).upper(),
             "strike_price": _finite(row.get("strike_price")),
-            "delta": _research_delta(row), **diag,
+            "delta": _research_delta(row),
+            "exchange_timestamp": row.get("exchange_timestamp"),
+            "quote_age_seconds": _quote_age_seconds(
+                row.get("exchange_timestamp"), snapshot.completed_at
+            ),
+            "quote_timestamp_status": (
+                "AVAILABLE" if _quote_age_seconds(
+                    row.get("exchange_timestamp"), snapshot.completed_at
+                ) is not None else "MISSING_OR_INVALID"
+            ),
+            **diag,
         })
     quality_counts = {
         "contracts_reviewed": len(quality_rows),
@@ -850,4 +869,5 @@ def calculate_iv_surface_research(snapshot: CanonicalSnapshot, raw: Optional[pd.
         "put_rejected_contracts": puts.get("rejected_contracts", []),
         "quote_quality": quality_counts, "quote_quality_rows": quality_rows,
         "spread_policy": "SPREAD_PERCENT_REPORTED_NO_UNAPPROVED_WIDE_SPREAD_CUTOFF",
+        "freshness_policy": "SOURCE_TIMESTAMP_AGE_REPORTED_NO_UNAPPROVED_STALE_AGE_CUTOFF",
     }
