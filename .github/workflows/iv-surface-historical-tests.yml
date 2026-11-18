@@ -1,0 +1,72 @@
+name: Historical IV surface research tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "iv_surface_research.py"
+      - "test_iv_surface_research.py"
+      - "scripts/run_iv_surface_historical.py"
+      - ".github/workflows/iv-surface-historical-tests.yml"
+  push:
+    branches:
+      - "research/iv-surface-historical-v1"
+    paths:
+      - "iv_surface_research.py"
+      - "test_iv_surface_research.py"
+      - "scripts/run_iv_surface_historical.py"
+      - ".github/workflows/iv-surface-historical-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  iv-surface-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+      - name: Run IV surface regression suite
+        run: pytest -q test_iv_surface_research.py
+      - name: Compile research runner and calculation module
+        run: python -m py_compile iv_surface_research.py scripts/run_iv_surface_historical.py
+
+  historical-reconciliation:
+    needs: iv-surface-tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/research/iv-surface-historical-v1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install read-only research runner dependency
+        run: |
+          python -m pip install --upgrade pip
+          pip install "supabase>=2.0.0"
+      - name: Validate required read-only Supabase secrets
+        shell: bash
+        run: |
+          test -n "$SUPABASE_URL" || { echo "Missing SUPABASE_URL GitHub Secret"; exit 1; }
+          test -n "$SUPABASE_ANON_KEY" || { echo "Missing SUPABASE_ANON_KEY GitHub Secret"; exit 1; }
+          echo "Supabase URL and anon key are present; values are not printed."
+      - name: Run historical IV surface reconciliation (read-only)
+        # Single-snapshot IN queries; runner logs fetch duration for each batch.
+        run: python scripts/run_iv_surface_historical.py --batch-size 1 --format csv
+      - name: Upload reconciled CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: iv-surface-research-v1.0-csv
+          path: research_outputs/iv-surface-research-v1.0.csv
+          if-no-files-found: error
+          retention-days: 14
