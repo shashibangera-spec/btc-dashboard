@@ -44,7 +44,10 @@ jobs:
       - name: Reconcile versioned IV surface dataset (read-only)
         run: python scripts/run_iv_surface_historical.py --batch-size 1 --format csv
       - name: Run empirical Layer 4 analysis (read-only)
-        run: python scripts/analyze_iv_amt_layer4.py --input research_outputs/iv-surface-research-v1.0.csv | tee research_outputs/iv-amt-layer4-report.txt
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/analyze_iv_amt_layer4.py --input research_outputs/iv-surface-research-v1.0.csv | tee research_outputs/iv-amt-layer4-report.txt
       - name: Upload Layer 4 report and source dataset
         uses: actions/upload-artifact@v4
         with:

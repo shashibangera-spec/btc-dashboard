@@ -30,7 +30,6 @@ VERSION = "iv-surface-research-v1.0"
 WIDE_SPREAD_PCT = 10.0
 SENTINEL_IV = 0.01
 PAGE_SIZE = 1000
-BATCH_SIZE = 25
 EXPECTED_COLUMNS = {
     "snapshot_id", "expiry_date", "snapshot_completed_at", "spot_price",
     "atm_iv", "rr25_call_minus_put_vol_points", "amt_candle_id",
@@ -234,11 +233,16 @@ def fetch_contracts_for_fresh_rows(client: Any,
     result: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     columns = ("snapshot_id,expiry_date,option_type,strike_price,mark_iv,"
                "bid_price,ask_price,bid_iv,ask_iv")
-    for offset in range(0, len(snapshot_ids), BATCH_SIZE):
-        batch = snapshot_ids[offset:offset + BATCH_SIZE]
-        raw = fetch_all(
-            client.table("options_oi_snapshots").select(columns)
-            .in_("snapshot_id", batch).order("id")
+    # Fetch only the distinct snapshots represented by the FRESH/latest-fresh
+    # CSV rows. One equality-filtered request per snapshot avoids scanning the
+    # full options table, OFFSET pagination, and unused JSON/Greeks payloads.
+    for sid in snapshot_ids:
+        raw = (
+            client.table("options_oi_snapshots")
+            .select(columns)
+            .eq("snapshot_id", sid)
+            .execute()
+            .data or []
         )
         for contract in raw:
             key = (contract.get("snapshot_id"), str(contract.get("expiry_date"))[:10])
