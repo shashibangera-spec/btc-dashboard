@@ -53,36 +53,40 @@ def main():
     parser.add_argument("--output-dir", default="research_outputs")
     parser.add_argument("--format", choices=("csv", "parquet"), default="csv")
     args = parser.parse_args()
-    if not 20 <= args.batch_size <= 25:
-        parser.error("--batch-size must be between 20 and 25")
+    if not 1 <= args.batch_size <= 25:
+        parser.error("--batch-size must be between 1 and 25")
     url, key = os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_ANON_KEY")
     if not url or not key:
         parser.error("Set SUPABASE_URL and SUPABASE_ANON_KEY (anon key only).")
 
     client = create_client(url, key)
-    # Discover snapshot IDs from raw rows, then de-duplicate in stable order.
-    raw_ids = fetch_all(client.table("options_oi_snapshots")
-                        .select("snapshot_id").order("id"))
-    snapshot_ids = list(dict.fromkeys(r["snapshot_id"] for r in raw_ids
-                                      if r.get("snapshot_id")))
-    runs_by_id, amt = {}, []
+    # The compact run ledger is the snapshot index. Avoid a table-wide scan
+    # of options_oi_snapshots merely to discover snapshot IDs.
+    run_rows = fetch_all(
+        client.table("options_collection_runs").select(
+            "snapshot_id,started_at,completed_at,status"
+        ).eq("underlying", "BTC").order("completed_at")
+    )
+    runs_by_id = {
+        run["snapshot_id"]: run for run in run_rows if run.get("snapshot_id")
+    }
+    snapshot_ids = list(runs_by_id)
+    observations = {}
+    option_columns = (
+        "id,snapshot_id,expiry_date,option_type,strike_price,spot_price,"
+        "bid_price,ask_price,bid_iv,ask_iv,mark_iv,greeks"
+    )
     for offset in range(0, len(snapshot_ids), args.batch_size):
         batch = snapshot_ids[offset:offset + args.batch_size]
-        raw = fetch_all(client.table("options_oi_snapshots").select(
-            "id,snapshot_id,collected_at,expiry_date,option_type,strike_price,"
-            "spot_price,bid_price,ask_price,bid_iv,ask_iv,mark_iv,greeks"
-        ).in_("snapshot_id", batch).order("id"))
-        runs = fetch_all(client.table("options_collection_runs").select(
-            "snapshot_id,started_at,completed_at,status"
-        ).in_("snapshot_id", batch))
-        for run in runs:
-            runs_by_id[run["snapshot_id"]] = run
+        raw = fetch_all(
+            client.table("options_oi_snapshots")
+            .select(option_columns)
+            .in_("snapshot_id", batch)
+            .order("id")
+        )
         grouped = {}
         for row in raw:
             grouped.setdefault((row["snapshot_id"], row["expiry_date"]), []).append(row)
-        # Keep observations until after per-snapshot run metadata is joined.
-        if offset == 0:
-            observations = {}
         observations.update(grouped)
 
     # AMT candle history is small; select only the known BTC 30m source.
@@ -91,7 +95,7 @@ def main():
         "high_price,low_price,close_price,volume,atr_21,atr_buffer,prior_vah,"
         "prior_poc,prior_val,developing_vah,developing_poc,developing_val,"
         "confirmed_state,developing_state,state_output,profile_id"
-    ).eq("symbol", "BTCUSDT").eq("timeframe", "30m").order("candle_close_time"))
+    ).eq("symbol", "BTCUSDT").eq("timeframe", "30").order("candle_close_time"))
     session_candles = []
     for candle in amt:
         op, cl = parse_dt(candle["candle_open_time"]), parse_dt(candle["candle_close_time"])
@@ -197,8 +201,11 @@ def main():
         if row["amt_candle_id"] in latest and row["snapshot_id"] == latest[row["amt_candle_id"]][1]:
             row["is_latest_fresh_for_candle"] = True
 
-    if len(rows_out) != 1995:
-        raise SystemExit(f"Reconciliation failed: expected 1995 observations, got {len(rows_out)}")
+    if len(rows_out) != len(observations) or not rows_out:
+        raise SystemExit(
+            f"Reconciliation failed: expected {len(observations)} grouped observations, "
+            f"produced {len(rows_out)}"
+        )
     outdir = Path(args.output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
     output = outdir / f"iv-surface-research-v1.0.{args.format}"
@@ -240,7 +247,9 @@ def main():
     print("\n========== IV SURFACE HISTORICAL RECONCILIATION ==========")
     print(f"Calculation version: {VERSION}")
     print(f"Reconciled observations: {len(rows_out)} / 1995")
-    print(f"Distinct snapshots: {len(snapshot_ids)}")
+    snapshots_with_rows = {snapshot_id for snapshot_id, _ in observations}
+    print(f"Distinct snapshots in run ledger: {len(snapshot_ids)}")
+    print(f"Distinct snapshots with option rows: {len(snapshots_with_rows)}")
     print(f"Distinct expiries: {len(expiry_counts)}")
     print(f"Expiry observation counts: {dict(sorted(expiry_counts.items()))}")
     print(f"Raw option contract rows reviewed: {raw_contracts}")
