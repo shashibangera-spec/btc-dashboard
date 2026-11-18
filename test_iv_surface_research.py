@@ -1,4 +1,5 @@
 import math
+import pytest
 
 from iv_surface_research import calculate_iv_surface_research
 
@@ -15,7 +16,7 @@ def test_paired_atm_uses_nearest_strike_with_both_sides():
     ]}
     out = calculate_iv_surface_research(snap)
     assert out["atm_strike"] == 100
-    assert out["atm_iv"] == .41
+    assert out["atm_iv"] == pytest.approx(0.41)
 
 
 def test_rr25_linear_interpolation_call_minus_put_in_vol_points():
