@@ -12,6 +12,7 @@ import pytest
 from archive_options_snapshots import COLUMNS, merge_rows_by_id, read_existing_archive
 from retention_cron import (
     DEFAULT_RETENTION_DAYS,
+    discover_eligible_dates,
     verify_archive_covers_deletion_candidates,
 )
 
@@ -99,3 +100,101 @@ def test_retention_rejects_duplicate_ids_in_archive(tmp_path):
 
 def test_default_retention_is_three_days():
     assert DEFAULT_RETENTION_DAYS == 3
+
+
+
+class FakeCursor:
+    def __init__(self, *, index_exists=True, rows=None, timeout=False):
+        self.index_exists = index_exists
+        self.rows = rows or []
+        self.timeout = timeout
+        self.last_query = ""
+        self.executed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def execute(self, query, params=None):
+        self.last_query = query
+        self.executed.append((query, params))
+        if self.timeout and "WITH bounds AS" in query:
+            raise RuntimeError("statement timeout")
+        return self
+
+    def fetchone(self):
+        return (self.index_exists,)
+
+    def fetchall(self):
+        return self.rows
+
+
+class FakeConnection:
+    def __init__(self, cursor):
+        self.fake_cursor = cursor
+
+    def cursor(self):
+        return self.fake_cursor
+
+
+def test_database_side_discovery_returns_utc_dates_without_offset_pagination():
+    from datetime import datetime, timezone
+
+    first = date(2026, 11, 15)
+    second = date(2026, 11, 16)
+    cursor = FakeCursor(rows=[(first,), (second,)])
+
+    discovered = discover_eligible_dates(
+        FakeConnection(cursor),
+        datetime(2026, 11, 18, 8, 20, tzinfo=timezone.utc),
+    )
+
+    assert discovered == {first, second}
+    discovery_sql = next(query for query, _ in cursor.executed if "WITH bounds AS" in query)
+    assert "generate_series" in discovery_sql
+    assert "OFFSET" not in discovery_sql.upper()
+    assert "collected_at < %s" in discovery_sql
+
+
+def test_database_side_discovery_fails_closed_without_collected_at_index():
+    from datetime import datetime, timezone
+
+    cursor = FakeCursor(index_exists=False)
+
+    with pytest.raises(RuntimeError, match="No valid B-tree index"):
+        discover_eligible_dates(
+            FakeConnection(cursor),
+            datetime(2026, 11, 18, 8, 20, tzinfo=timezone.utc),
+        )
+
+    assert len(cursor.executed) == 1
+
+
+def test_database_side_discovery_timeout_propagates_without_fallback():
+    from datetime import datetime, timezone
+
+    cursor = FakeCursor(timeout=True)
+
+    with pytest.raises(RuntimeError, match="statement timeout"):
+        discover_eligible_dates(
+            FakeConnection(cursor),
+            datetime(2026, 11, 18, 8, 20, tzinfo=timezone.utc),
+        )
+
+    assert any("WITH bounds AS" in query for query, _ in cursor.executed)
+    assert not any("OFFSET" in query.upper() for query, _ in cursor.executed)
+
+
+def test_database_side_discovery_handles_no_eligible_rows():
+    from datetime import datetime, timezone
+
+    cursor = FakeCursor(rows=[])
+
+    discovered = discover_eligible_dates(
+        FakeConnection(cursor),
+        datetime(2026, 11, 18, 8, 20, tzinfo=timezone.utc),
+    )
+
+    assert discovered == set()
