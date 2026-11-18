@@ -31,10 +31,11 @@ def test_dte_buckets_are_explicit():
 def test_quote_exposure_flags_wide_and_sentinel_independently():
     result = quote_exposure([{
         "bid_price": 80, "ask_price": 120,
-        "bid_iv": 0.01, "ask_iv": 0.55,
+        "bid_iv": 0.01, "ask_iv": 0.55, "mark_iv": 0.01,
     }])
     assert result["wide_spread_exposed"] is True
     assert result["sentinel_exposed"] is True
+    assert result["mark_iv_sentinel_contract_count"] == 1
 
 
 def test_pearson_positive_and_sample_count():
