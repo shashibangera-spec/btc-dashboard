@@ -43,6 +43,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import psycopg
 from supabase import create_client
 
 
@@ -163,57 +164,80 @@ def count_old_rows_for_day(
     return int(response.count)
 
 
-def discover_eligible_dates(
-    client: Any,
-    cutoff: datetime,
-) -> set[date]:
+def discover_eligible_dates(connection: Any, cutoff: datetime) -> set[date]:
+    """Discover UTC partitions in PostgreSQL without downloading timestamp pages.
+
+    Requires a valid, ready B-tree index led by collected_at. It uses ordered
+    LIMIT 1 index lookups for the date bounds, then one indexed range-existence
+    probe per UTC day. It deliberately fails closed instead of falling back to
+    a large PostgREST OFFSET scan or an unbounded table scan.
     """
-    Paginate through all rows older than the exact cutoff and collect
-    their UTC partition dates.
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_index AS i
+                JOIN pg_class AS t ON t.oid = i.indrelid
+                JOIN pg_namespace AS n ON n.oid = t.relnamespace
+                JOIN pg_class AS index_class ON index_class.oid = i.indexrelid
+                JOIN pg_am AS am ON am.oid = index_class.relam
+                JOIN pg_attribute AS a
+                  ON a.attrelid = t.oid AND a.attname = 'collected_at'
+                 AND a.attnum = i.indkey[0]
+                WHERE n.nspname = 'public'
+                  AND t.relname = 'options_oi_snapshots'
+                  AND am.amname = 'btree'
+                  AND i.indisvalid AND i.indisready
+            )
+        """)
+        if not bool(cursor.fetchone()[0]):
+            raise RuntimeError(
+                "No valid B-tree index led by public.options_oi_snapshots.collected_at "
+                "was found. Refusing an unbounded eligible-date scan; inspect indexes "
+                "through an approved review before considering any schema change."
+            )
 
-    This does not assume that the database's default response limit
-    contains all eligible rows.
-    """
-    discovered: set[date] = set()
-    offset = 0
-    scanned = 0
+        cursor.execute("""
+            WITH bounds AS (
+                SELECT
+                    (SELECT (collected_at AT TIME ZONE 'UTC')::date
+                     FROM public.options_oi_snapshots
+                     WHERE collected_at < %s
+                     ORDER BY collected_at ASC LIMIT 1) AS first_day,
+                    (SELECT (collected_at AT TIME ZONE 'UTC')::date
+                     FROM public.options_oi_snapshots
+                     WHERE collected_at < %s
+                     ORDER BY collected_at DESC LIMIT 1) AS last_day
+            ),
+            utc_days AS (
+                SELECT generate_series(
+                    bounds.first_day::timestamp,
+                    bounds.last_day::timestamp,
+                    interval '1 day'
+                ) AS day_start
+                FROM bounds
+                WHERE bounds.first_day IS NOT NULL AND bounds.last_day IS NOT NULL
+            )
+            SELECT utc_days.day_start::date
+            FROM utc_days
+            WHERE EXISTS (
+                SELECT 1
+                FROM public.options_oi_snapshots AS snapshots
+                WHERE snapshots.collected_at >= (utc_days.day_start AT TIME ZONE 'UTC')
+                  AND snapshots.collected_at < ((utc_days.day_start + interval '1 day') AT TIME ZONE 'UTC')
+                  AND snapshots.collected_at < %s
+            )
+            ORDER BY utc_days.day_start
+        """, (cutoff, cutoff, cutoff))
+        rows = cursor.fetchall()
 
-    while True:
-        response = (
-            client.table(TABLE_NAME)
-            .select("collected_at")
-            .lt("collected_at", iso_utc(cutoff))
-            .order("collected_at")
-            .order("id")
-            .range(offset, offset + PAGE_SIZE - 1)
-            .execute()
-        )
-
-        rows = response.data or []
-
-        if not rows:
-            break
-
-        for row in rows:
-            timestamp = row.get("collected_at")
-
-            if not timestamp:
-                raise RuntimeError(
-                    "Encountered an eligible database row with empty collected_at. "
-                    "Stopping without deletion."
-                )
-
-            discovered.add(date_from_timestamp(timestamp))
-
-        scanned += len(rows)
-        offset += len(rows)
-
-        if len(rows) < PAGE_SIZE:
-            break
-
-    log.info("Scanned %s old timestamp records", scanned)
-    return discovered
-
+    eligible_dates = {row[0] for row in rows}
+    log.info(
+        "Database-side eligible-date discovery completed: %s UTC date(s); "
+        "no timestamp rows transferred or OFFSET pages scanned.",
+        len(eligible_dates),
+    )
+    return eligible_dates
 
 # ---------------------------------------------------------------------
 # Manifest and archive verification
@@ -583,9 +607,17 @@ def main() -> int:
 
     try:
         client = get_supabase_client()
-        eligible_dates = discover_eligible_dates(client, cutoff)
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            raise RuntimeError("DATABASE_URL is required for indexed database-side eligible-date discovery.")
+        with psycopg.connect(
+            database_url, connect_timeout=20,
+            application_name="btc_retention_date_discovery",
+        ) as connection:
+            connection.execute("SET TRANSACTION READ ONLY")
+            eligible_dates = discover_eligible_dates(connection, cutoff)
     except Exception as exc:
-        log.error("Database connection or eligible-date scan failed: %s", exc)
+        log.error("Database connection or database-side eligible-date discovery failed: %s", exc)
         return 1
 
     log.info("Eligible UTC dates discovered: %s", len(eligible_dates))
