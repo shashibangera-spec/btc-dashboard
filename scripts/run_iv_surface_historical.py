@@ -12,6 +12,7 @@ import json
 import os
 import sys
 from datetime import datetime, time, timezone
+from time import perf_counter
 from collections import Counter
 from statistics import median
 from pathlib import Path
@@ -78,11 +79,17 @@ def main():
     )
     for offset in range(0, len(snapshot_ids), args.batch_size):
         batch = snapshot_ids[offset:offset + args.batch_size]
+        query_started = perf_counter()
         raw = fetch_all(
             client.table("options_oi_snapshots")
             .select(option_columns)
             .in_("snapshot_id", batch)
             .order("id")
+        )
+        query_elapsed = perf_counter() - query_started
+        print(
+            f"Fetched {len(raw)} option rows for {len(batch)} snapshot(s) "
+            f"in {query_elapsed:.3f}s"
         )
         grouped = {}
         for row in raw:
