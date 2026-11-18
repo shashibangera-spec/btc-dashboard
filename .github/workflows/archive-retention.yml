@@ -59,7 +59,7 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: |
           python archive_options_snapshots.py \
-            --older-than-days 5 \
+            --older-than-days 3 \
             --output ../btc_data_archive
 
       # 6. Publish archives BEFORE database deletion
@@ -97,5 +97,67 @@ jobs:
             echo "Manifest found. Running retention..."
             python retention_cron.py --execute --archive-dir ../btc_data_archive
           else
-            echo "No archive manifest found (no data older than 5 days). Skipping retention."
+            echo "No archive manifest found (no data older than 3 days). Skipping retention."
           fi
+
+      # 8. Log database size and run routine vacuum/analyze after retention.
+      - name: Measure database size before vacuum
+        working-directory: btc-dashboard
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+
+          with psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=20) as connection:
+              size = connection.execute(
+                  "SELECT pg_database_size(current_database())"
+              ).fetchone()[0]
+          mb = size / (1024 * 1024)
+          print(f"DATABASE_SIZE_BEFORE_VACUUM_BYTES={size}")
+          print(f"DATABASE_SIZE_BEFORE_VACUUM_MB={mb:.2f}")
+          print(f"STORAGE_THRESHOLD_300_MB={'BREACHED' if mb >= 300 else 'OK'}")
+          print(f"STORAGE_THRESHOLD_350_MB={'BREACHED' if mb >= 350 else 'OK'}")
+          print(f"STORAGE_THRESHOLD_400_MB={'BREACHED' if mb >= 400 else 'OK'}")
+          PY
+
+      - name: Vacuum and analyze options snapshots
+        working-directory: btc-dashboard
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+
+          # VACUUM cannot run inside a transaction block.
+          with psycopg.connect(
+              os.environ["DATABASE_URL"],
+              connect_timeout=20,
+              autocommit=True,
+          ) as connection:
+              connection.execute("VACUUM (VERBOSE, ANALYZE) options_oi_snapshots;")
+          print("Routine VACUUM (VERBOSE, ANALYZE) completed.")
+          PY
+
+      - name: Measure database size after vacuum
+        working-directory: btc-dashboard
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+
+          with psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=20) as connection:
+              size = connection.execute(
+                  "SELECT pg_database_size(current_database())"
+              ).fetchone()[0]
+          mb = size / (1024 * 1024)
+          print(f"DATABASE_SIZE_AFTER_VACUUM_BYTES={size}")
+          print(f"DATABASE_SIZE_AFTER_VACUUM_MB={mb:.2f}")
+          print(f"STORAGE_THRESHOLD_300_MB={'BREACHED' if mb >= 300 else 'OK'}")
+          print(f"STORAGE_THRESHOLD_350_MB={'BREACHED' if mb >= 350 else 'OK'}")
+          print(f"STORAGE_THRESHOLD_400_MB={'BREACHED' if mb >= 400 else 'OK'}")
+          PY
