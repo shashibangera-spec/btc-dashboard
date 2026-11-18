@@ -24,7 +24,7 @@ def test_research_adapter_exposes_all_five_canonical_filter_results():
 
 
 def test_missing_previous_snapshot_is_unavailable_not_stable():
-    result = load_canonical_research_options(Client(make_db()))
+    result = load_canonical_research_options(Client(make_db()), as_of=TEST_AS_OF)
     migration = result["filters"]["oi_migration"]
     assert migration["status"] == "UNAVAILABLE"
     assert migration["reason"] == "NO_ELIGIBLE_PREVIOUS_SNAPSHOT"
