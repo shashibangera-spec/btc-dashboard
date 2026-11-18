@@ -1,3 +1,15 @@
+## 2026-11-18
+
+### Added — isolated IV-surface research methodology (unmerged PR)
+
+- Added additive `iv-surface-research-v1.0` helpers for 25-delta risk reversal, ATM IV and contract-level quote-quality diagnostics. The existing nearest-five IV skew function, signatures and return values are unchanged.
+- Handles Delta Exchange negative Put deltas by validating the signed convention and using absolute Delta for 25Δ interpolation; interpolation requires a bracket and never extrapolates.
+- Rejects the exact decimal IV sentinel `0.01`; reports bid/ask IV sentinel flags separately from mark-IV eligibility.
+- Reports positive/two-sided/crossed quote checks, relative bid/ask spread, source timestamp age, methodology version, interpolation brackets and rejection reasons. No unapproved wide-spread or stale-age threshold is imposed.
+- Adds a separate SELECT-only loader for the extra fields from `options_oi_snapshots`. No UPDATE, DELETE, INSERT, schema change, collector change, UI integration or production alert/trading-rule change.
+- Adds offline regression tests for negative Put Delta, interpolation/no-extrapolation, sentinel IV, crossed quotes, ATM IV and read-only loader behavior.
+- Layer 3 persistence is deliberately deferred: results are returned in memory; no database or local artifact is written pending review of the unmerged PR.
+
 ## 2026-11-17
 
 ### Fixed — System B listed-contract OI completeness
