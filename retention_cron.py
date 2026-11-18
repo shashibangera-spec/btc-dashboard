@@ -181,6 +181,7 @@ def discover_eligible_dates(
             .select("collected_at")
             .lt("collected_at", iso_utc(cutoff))
             .order("collected_at")
+            .order("id")
             .range(offset, offset + PAGE_SIZE - 1)
             .execute()
         )
@@ -493,7 +494,6 @@ def delete_old_rows_for_day(
         .gte("collected_at", iso_utc(start))
         .lt("collected_at", iso_utc(end))
         .lt("collected_at", iso_utc(cutoff))
-        .in_("id", sorted(expected_ids))
         .execute()
     )
 
@@ -591,22 +591,23 @@ def main() -> int:
     total_deleted = 0
     verified_dates = 0
     skipped_dates = 0
+    deletion_plan: list[tuple[date, int, set[str]]] = []
 
+    # Phase 1: preflight EVERY eligible date before deleting anything.
+    # This prevents an incomplete later partition from causing partial retention.
     for day in sorted(eligible_dates):
         log.info("--------------------------------------------------")
-        log.info("Processing UTC partition: %s", day)
+        log.info("Preflight UTC partition: %s", day)
 
         verified, message = verify_archive(
             archive_dir=archive_dir,
             manifest_rows=manifest_rows,
             day=day,
         )
-
         if not verified:
-            skipped_dates += 1
             log.error("ARCHIVE VERIFICATION FAILED for %s: %s", day, message)
-            log.error("No deletion will be attempted for this date.")
-            continue
+            log.error("Preflight failed. No database rows will be deleted in this run.")
+            return 1
 
         verified_dates += 1
         log.info("ARCHIVE VERIFIED: %s", message)
@@ -626,13 +627,11 @@ def main() -> int:
                 raise RuntimeError(coverage_message)
             log.info("ARCHIVE COVERAGE VERIFIED: %s", coverage_message)
         except Exception as exc:
-            skipped_dates += 1
             log.error(
                 "ARCHIVE/DB RECONCILIATION FAILED for %s: %s. "
-                "No deletion will be attempted for this date.",
+                "Preflight failed; no database rows will be deleted in this run.",
                 day, exc
             )
-            # Fail closed for the entire retention run: do not delete any other date.
             return 1
 
         if eligible_count == 0:
@@ -640,27 +639,33 @@ def main() -> int:
             continue
 
         total_eligible += eligible_count
+        deletion_plan.append((day, eligible_count, eligible_ids))
         log.info("Rows eligible for %s: %s", day, eligible_count)
 
-        if not args.execute:
-            log.info("DRY RUN: no rows deleted for %s.", day)
-            continue
+    if not args.execute:
+        log.info("DRY RUN: all %s eligible partition(s) passed archive preflight.",
+                 len(deletion_plan))
+    else:
+        # Phase 2: only execute after every eligible date has passed preflight.
+        for day, eligible_count, eligible_ids in deletion_plan:
+            try:
+                deleted = delete_old_rows_for_day(
+                    client=client,
+                    day=day,
+                    cutoff=cutoff,
+                    expected_count=eligible_count,
+                    expected_ids=eligible_ids,
+                )
+            except Exception as exc:
+                log.error(
+                    "Deletion failed or count could not be confirmed for %s: %s",
+                    day, exc
+                )
+                log.error("Stop and inspect the database before rerunning.")
+                return 1
 
-        try:
-            deleted = delete_old_rows_for_day(
-                client=client,
-                day=day,
-                cutoff=cutoff,
-                expected_count=eligible_count,
-                expected_ids=eligible_ids,
-            )
-        except Exception as exc:
-            log.error("Deletion failed or count could not be confirmed for %s: %s", day, exc)
-            log.error("Stop and inspect the database before rerunning.")
-            return 1
-
-        total_deleted += deleted
-        log.info("Rows deleted for %s: %s", day, deleted)
+            total_deleted += deleted
+            log.info("Rows deleted for %s: %s", day, deleted)
 
     log.info("==================================================")
     log.info("RETENTION RUN SUMMARY")
