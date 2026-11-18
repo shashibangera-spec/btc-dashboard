@@ -153,14 +153,18 @@ def legacy_nearest_five_skew(contracts: Iterable[dict[str, Any]],
 
 
 def quote_exposure(contracts: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    wide_count = sentinel_count = valid_spreads = 0
+    wide_count = bid_ask_sentinel_count = mark_sentinel_count = valid_spreads = 0
     max_spread = None
     for contract in contracts:
         bid, ask = finite(contract.get("bid_price")), finite(contract.get("ask_price"))
-        bid_iv, ask_iv = finite(contract.get("bid_iv")), finite(contract.get("ask_iv"))
+        bid_iv = finite(contract.get("bid_iv"))
+        ask_iv = finite(contract.get("ask_iv"))
+        mark_iv = finite(contract.get("mark_iv"))
         if ((bid_iv is not None and math.isclose(bid_iv, SENTINEL_IV, abs_tol=1e-12))
                 or (ask_iv is not None and math.isclose(ask_iv, SENTINEL_IV, abs_tol=1e-12))):
-            sentinel_count += 1
+            bid_ask_sentinel_count += 1
+        if mark_iv is not None and math.isclose(mark_iv, SENTINEL_IV, abs_tol=1e-12):
+            mark_sentinel_count += 1
         if bid is not None and ask is not None and bid > 0 and ask > 0 and bid <= ask:
             mid = (bid + ask) / 2.0
             if mid > 0:
@@ -169,10 +173,13 @@ def quote_exposure(contracts: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 max_spread = spread if max_spread is None else max(max_spread, spread)
                 if spread > WIDE_SPREAD_PCT:
                     wide_count += 1
+    sentinel_count = bid_ask_sentinel_count + mark_sentinel_count
     return {
         "wide_spread_contract_count": wide_count,
         "valid_spread_contract_count": valid_spreads,
         "wide_spread_exposed": wide_count > 0,
+        "bid_ask_sentinel_contract_count": bid_ask_sentinel_count,
+        "mark_iv_sentinel_contract_count": mark_sentinel_count,
         "sentinel_contract_count": sentinel_count,
         "sentinel_exposed": sentinel_count > 0,
         "max_spread_pct_mid": max_spread,
@@ -395,6 +402,9 @@ def main() -> int:
     print("Exposure mix (per expiry observation):")
     for label in ("NEITHER", "WIDE_ONLY", "SENTINEL_ONLY", "WIDE_AND_SENTINEL"):
         print(f"  {label}: {exposure_counts[label]} ({pct(exposure_counts[label], len(rows))})")
+    print("Sentinel exposure counts (raw contracts across selected expiry chains):")
+    print(f"  Bid/ask IV 0.01 sentinel contracts: {sum(r['bid_ask_sentinel_contract_count'] for r in rows)}")
+    print(f"  Mark IV 0.01 sentinel contracts: {sum(r['mark_iv_sentinel_contract_count'] for r in rows)}")
     print("Sensitivity cohorts (correlation and sign disagreement):")
     cohorts = [
         ("ALL", comparable),
