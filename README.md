@@ -555,3 +555,17 @@ CI runs the offline backend regression suite through `.github/workflows/options-
 OI Migration compares the latest valid options snapshot with the most recent successful, complete snapshot for the same underlying and expiry that completed **25–45 minutes earlier** (inclusive). A nearer run is not used as the baseline. If no eligible baseline exists, the filter returns `UNAVAILABLE` with one of `NO_ELIGIBLE_PREVIOUS_SNAPSHOT`, `SNAPSHOTS_TOO_CLOSE`, `SNAPSHOT_GAP_TOO_LARGE` or `NO_VALID_PREVIOUS_SNAPSHOT_IN_WINDOW`.
 
 Migration is calculated only from the strike-level intersection of contract identities present in both snapshots (product ID, falling back to symbol, together with option type and strike). A strike is excluded when either Call/Put side is not represented by comparable contracts or any matched contract at that strike has missing or invalid OI in either snapshot. Missing OI is never converted to zero. At least **five valid paired strikes** must remain; otherwise the result is `INSUFFICIENT_DATA` with reason `FEWER_THAN_5_VALID_PAIRED_STRIKES`. The reported migration remains descriptive and does not identify buyer/seller intent, dealer positioning or a directional trading signal.
+
+
+### Additive IV-surface research methodology — `iv-surface-research-v1.0`
+
+The isolated research layer in `options_filters.py` adds two measurements without changing the legacy nearest-five `calculate_iv_skew()` function or its return contract:
+
+- **25-delta risk reversal:** `IV_25Δ Call − IV_25Δ Put`, expressed in volatility points. Call Delta must be positive; Delta Exchange Put Delta must be negative. Put matching and interpolation use absolute Delta while retaining the signed value in diagnostics. The target is interpolated only when it is bracketed by valid observations; no extrapolation is performed.
+- **ATM IV:** average of Call and Put mark IV at the nearest strike to snapshot spot for which both sides have usable, non-crossed two-sided price quotes and valid mark IV.
+- **IV sentinel:** the exact decimal value `0.01` (1%) is rejected as an IV measurement. Bid/ask IV sentinel flags are retained as quote-quality diagnostics; they do not by themselves invalidate an otherwise usable mark-IV observation.
+- **Quote diagnostics:** positive bid/ask prices, crossed-market checks, bid/ask/mark IV validity, relative spread, source timestamp and timestamp age are exposed. Spread and quote age are reported without imposing an unapproved wide-spread or stale-age cutoff.
+- **Provenance:** outputs include snapshot ID, expiry, snapshot completion time, spot, methodology version, interpolation method/bracket, quality counts and contract-level rejection reasons.
+- **Read-only boundary:** the research loader SELECTs the additional quote and Greek fields from `options_oi_snapshots`. It performs no database writes, schema changes, collector changes or dashboard integration. Existing nearest-five calculations and public function signatures/return values remain unchanged.
+
+**Layer 3 persistence decision is intentionally deferred.** The calculator currently returns a structured in-memory result. No research table, local output file, or persistent export is created by this PR. After review, choose a local versioned research artifact or a separately approved research output table. The raw `options_oi_snapshots` table remains read-only throughout this work.
