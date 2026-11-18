@@ -59,7 +59,7 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: |
           python archive_options_snapshots.py \
-            --older-than-days 3 \
+            --older-than-days 5 \
             --output ../btc_data_archive
 
       # 6. Publish archives BEFORE database deletion
@@ -98,7 +98,7 @@ jobs:
             echo "Manifest found. Running retention..."
             python retention_cron.py --execute --archive-dir ../btc_data_archive
           else
-            echo "No archive manifest found (no data older than 3 days). Skipping retention."
+            echo "No archive manifest found (no data older than 5 days). Skipping retention."
           fi
 
       # 8. Log database size and run routine vacuum/analyze after retention.
