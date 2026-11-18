@@ -30,7 +30,7 @@ MANIFEST_COLUMNS = [
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Read-only BTC options archive exporter")
     parser.add_argument("--output", default="./btc_data_archive", help="Local archive output directory")
-    parser.add_argument("--older-than-days", type=int, default=5, help="Export records older than this many days (default: 5)")
+    parser.add_argument("--older-than-days", type=int, default=3, help="Export records older than this many days (default: 3)")
     parser.add_argument("--test-date", type=str, default=None, help="Export one specific UTC date, YYYY-MM-DD")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help="Number of database records fetched per batch")
     args = parser.parse_args()
@@ -78,16 +78,56 @@ def discover_dates(connection, test_date, cutoff):
     first_day = minimum.astimezone(timezone.utc).date(); last_day = maximum.astimezone(timezone.utc).date()
     return list(date_range(first_day, last_day)), mode
 
+
+def _row_signature(row):
+    return tuple("" if row.get(column) is None else str(row.get(column)) for column in COLUMNS)
+
+
+def merge_rows_by_id(existing_rows, database_rows):
+    """Merge archived and newly eligible rows without losing prior partial exports."""
+    id_column = COLUMNS.index("id")
+    merged = {}
+    for source, rows in (("archive", existing_rows), ("database", database_rows)):
+        for row in rows:
+            normalized = {
+                column: ("" if row.get(column) is None else str(row.get(column)))
+                for column in COLUMNS
+            }
+            row_id = normalized["id"]
+            if not row_id:
+                raise RuntimeError(f"{source} contains a row without id; refusing archive.")
+            previous = merged.get(row_id)
+            if previous is not None and _row_signature(previous) != _row_signature(normalized):
+                raise RuntimeError(f"Conflicting contents for snapshot id {row_id}; refusing archive.")
+            merged[row_id] = normalized
+    return list(merged.values())
+
+
+def read_existing_archive(path):
+    """Read and validate an existing daily archive before merging into it."""
+    if not path.exists():
+        return []
+    rows = []
+    with gzip.open(path, mode="rt", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames != COLUMNS:
+            raise RuntimeError(
+                f"Existing archive schema mismatch for {path.name}: {reader.fieldnames}"
+            )
+        for row in reader:
+            if not row.get("id") or not row.get("collected_at"):
+                raise RuntimeError(f"Existing archive contains an incomplete row: {path.name}")
+            rows.append(row)
+    if not rows:
+        raise RuntimeError(f"Existing archive is empty; refusing to replace {path.name}")
+    return rows
+
 def export_one_day(connection, day, output_directory, mode, cutoff, batch_size):
     start = utc_midnight(day); end = start + timedelta(days=1)
     output_name = f"options_oi_{day.isoformat()}.csv.gz"
     final_path = output_directory / output_name
     temp_path = output_directory / (output_name + ".tmp")
 
-    if final_path.exists():
-        print(f"SKIP: Archive already exists for {day} -> {output_name}")
-        return None
-        
     if temp_path.exists():
         temp_path.unlink()
 
@@ -98,46 +138,83 @@ def export_one_day(connection, day, output_directory, mode, cutoff, batch_size):
         filter_sql = "collected_at >= %s AND collected_at < %s AND collected_at < %s"
         filter_params = (start, end, cutoff)
 
-    stats_query = f"SELECT COUNT(*), MIN(collected_at), MAX(collected_at) FROM {TABLE_NAME} WHERE {filter_sql}"
-    with connection.cursor() as cursor:
-        cursor.execute(stats_query, filter_params)
-        row_count, min_time, max_time = cursor.fetchone()
-
-    if row_count == 0: return None
-
+    existing_rows = read_existing_archive(final_path)
     columns_sql = ", ".join(COLUMNS)
     export_query = f"SELECT {columns_sql} FROM {TABLE_NAME} WHERE {filter_sql} ORDER BY collected_at ASC, id ASC"
-    exported_rows = 0
+    database_rows = []
 
     try:
+        with connection.cursor(name=f"archive_cursor_{day.strftime('%Y%m%d')}") as cursor:
+            cursor.execute(export_query, filter_params)
+            while True:
+                rows = cursor.fetchmany(batch_size)
+                if not rows:
+                    break
+                for values in rows:
+                    database_rows.append({
+                        column: ("" if value is None else str(csv_value(value)))
+                        for column, value in zip(COLUMNS, values)
+                    })
+
+        if not database_rows and not existing_rows:
+            return None
+        if not database_rows:
+            print(f"UNCHANGED: {day} has no newly eligible rows; existing archive preserved.")
+            return None
+
+        merged_rows = merge_rows_by_id(existing_rows, database_rows)
+        merged_rows.sort(key=lambda row: (
+            datetime.fromisoformat(row["collected_at"].replace("Z", "+00:00")),
+            row["id"],
+        ))
+
         with gzip.open(temp_path, mode="wt", encoding="utf-8", newline="") as compressed_file:
             writer = csv.writer(compressed_file, quoting=csv.QUOTE_MINIMAL)
             writer.writerow(COLUMNS)
-            with connection.cursor(name=f"archive_cursor_{day.strftime('%Y%m%d')}") as cursor:
-                cursor.execute(export_query, filter_params)
-                while True:
-                    rows = cursor.fetchmany(batch_size)
-                    if not rows: break
-                    for row in rows:
-                        writer.writerow([csv_value(value) for value in row])
-                    exported_rows += len(rows)
+            for row in merged_rows:
+                writer.writerow([row[column] for column in COLUMNS])
 
-        if exported_rows != row_count:
-            raise RuntimeError(f"Row count mismatch for {day}: db={row_count}, exported={exported_rows}")
+        # Re-open the completed temporary archive before publishing it.
+        verified_count = 0
+        with gzip.open(temp_path, mode="rt", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != COLUMNS:
+                raise RuntimeError(f"Generated archive schema mismatch for {day}")
+            for row in reader:
+                if not row.get("id") or datetime.fromisoformat(
+                    row["collected_at"].replace("Z", "+00:00")
+                ).astimezone(timezone.utc).date() != day:
+                    raise RuntimeError(f"Generated archive contains invalid partition data for {day}")
+                verified_count += 1
+        if verified_count != len(merged_rows):
+            raise RuntimeError(
+                f"Archive row-count mismatch for {day}: expected={len(merged_rows)}, actual={verified_count}"
+            )
         os.replace(temp_path, final_path)
     except Exception:
-        if temp_path.exists(): temp_path.unlink()
+        if temp_path.exists():
+            temp_path.unlink()
         raise
 
+    timestamps = [
+        datetime.fromisoformat(row["collected_at"].replace("Z", "+00:00"))
+        for row in merged_rows
+    ]
+    min_time = min(timestamps)
+    max_time = max(timestamps)
     file_size = final_path.stat().st_size
     checksum = calculate_sha256(final_path)
-    print(f"ARCHIVED {day}: {exported_rows:,} rows | {file_size:,} bytes")
+    print(
+        f"ARCHIVED {day}: {len(database_rows):,} newly eligible + "
+        f"{len(existing_rows):,} previously archived -> {len(merged_rows):,} total rows | "
+        f"{file_size:,} bytes"
+    )
 
     return {
         "source_table": TABLE_NAME,
         "archive_mode": mode,
         "partition_date_utc": day.isoformat(),
-        "row_count": exported_rows,
+        "row_count": len(merged_rows),
         "min_collected_at_utc": min_time.isoformat(),
         "max_collected_at_utc": max_time.isoformat(),
         "file_name": output_name,
@@ -150,16 +227,36 @@ def export_one_day(connection, day, output_directory, mode, cutoff, batch_size):
 def write_manifest(output_directory, manifest_rows):
     if not manifest_rows:
         return
-        
+
     manifest_path = output_directory / "archive_manifest.csv"
-    file_exists = manifest_path.exists()
-    
-    with open(manifest_path, mode="a" if file_exists else "w", encoding="utf-8", newline="") as manifest_file:
-        writer = csv.DictWriter(manifest_file, fieldnames=MANIFEST_COLUMNS)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerows(manifest_rows)
-    print(f"\nManifest updated: {manifest_path}")
+    existing = []
+    if manifest_path.exists():
+        with open(manifest_path, mode="r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != MANIFEST_COLUMNS:
+                raise RuntimeError("Existing archive manifest schema mismatch.")
+            existing = list(reader)
+
+    for update in manifest_rows:
+        key = (update["source_table"], update["partition_date_utc"], update["file_name"])
+        matches = [
+            row for row in existing
+            if (row.get("source_table"), row.get("partition_date_utc"), row.get("file_name")) == key
+        ]
+        if len(matches) > 1:
+            raise RuntimeError(f"Duplicate manifest entries for {key}; refusing update.")
+        if matches:
+            existing[existing.index(matches[0])] = update
+        else:
+            existing.append(update)
+
+    temp_path = manifest_path.with_suffix(".csv.tmp")
+    with open(temp_path, mode="w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=MANIFEST_COLUMNS)
+        writer.writeheader()
+        writer.writerows(existing)
+    os.replace(temp_path, manifest_path)
+    print(f"Manifest atomically updated: {manifest_path}")
 
 def main():
     args = parse_arguments()
