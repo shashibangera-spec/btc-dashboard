@@ -12,6 +12,7 @@ import json
 import os
 import sys
 from datetime import datetime, time, timezone
+from math import ceil
 from time import perf_counter
 from collections import Counter
 from statistics import median
@@ -131,10 +132,14 @@ def main():
                 raw_quote_quality["missing_or_invalid_bid_price"] += 1
             if ask is None or ask <= 0:
                 raw_quote_quality["missing_or_invalid_ask_price"] += 1
-            if bid_iv is None or bid_iv <= 0 or abs(bid_iv - 0.01) < 1e-12:
-                raw_quote_quality["invalid_or_sentinel_bid_iv"] += 1
-            if ask_iv is None or ask_iv <= 0 or abs(ask_iv - 0.01) < 1e-12:
-                raw_quote_quality["invalid_or_sentinel_ask_iv"] += 1
+            if bid_iv is not None and abs(bid_iv - 0.01) < 1e-12:
+                raw_quote_quality["bid_iv_exact_001_sentinel"] += 1
+            elif bid_iv is None or bid_iv <= 0:
+                raw_quote_quality["bid_iv_other_invalid_or_null"] += 1
+            if ask_iv is not None and abs(ask_iv - 0.01) < 1e-12:
+                raw_quote_quality["ask_iv_exact_001_sentinel"] += 1
+            elif ask_iv is None or ask_iv <= 0:
+                raw_quote_quality["ask_iv_other_invalid_or_null"] += 1
             if bid is not None and ask is not None and bid > 0 and ask > 0 and bid <= ask:
                 raw_quote_quality["valid_two_sided_price_quotes"] += 1
                 mid = (bid + ask) / 2.0
@@ -234,6 +239,18 @@ def main():
     freshness_counts = Counter(row["freshness"] for row in rows_out)
     latest_rows = [row for row in rows_out if row["is_latest_fresh_for_candle"]]
     matched_candles = {row["amt_candle_id"] for row in rows_out if row["amt_candle_id"] is not None}
+    matched_candle_records = {
+        candle["id"]: candle for candle, _ in session_candles
+        if candle.get("id") in matched_candles
+    }
+    candle_confirmed_states = Counter(
+        str(candle.get("confirmed_state") or "MISSING")
+        for candle in matched_candle_records.values()
+    )
+    candle_developing_states = Counter(
+        str(candle.get("developing_state") or "MISSING")
+        for candle in matched_candle_records.values()
+    )
     rr25_count = sum(row["rr25_call_minus_put_vol_points"] is not None for row in rows_out)
     atm_count = sum(row["atm_iv"] is not None for row in rows_out)
     expiry_counts = Counter(row["expiry_date"] for row in rows_out)
@@ -253,7 +270,7 @@ def main():
     invalid_deltas = sum(row["invalid_delta"] for row in rows_out)
     print("\n========== IV SURFACE HISTORICAL RECONCILIATION ==========")
     print(f"Calculation version: {VERSION}")
-    print(f"Reconciled observations: {len(rows_out)} / 1995")
+    print(f"Reconciled observations: {len(rows_out)} / {len(observations)}")
     snapshots_with_rows = {snapshot_id for snapshot_id, _ in observations}
     print(f"Distinct snapshots in run ledger: {len(snapshot_ids)}")
     print(f"Distinct snapshots with option rows: {len(snapshots_with_rows)}")
@@ -262,8 +279,14 @@ def main():
     print(f"Raw option contract rows reviewed: {raw_contracts}")
     print("\n--- FRESHNESS / AMT ALIGNMENT ---")
     print(f"FRESH: {freshness_counts['FRESH']} | STALE: {freshness_counts['STALE']} | UNMATCHED: {freshness_counts['UNMATCHED']}")
-    print(f"AMT source candles in 05:30–17:30 IST session: {len(session_candles)}")
-    print(f"Distinct AMT candles matched: {len(matched_candles)}")
+    unmatched_candles = max(0, len(session_candles) - len(matched_candles))
+    print(
+        "AMT candle coverage (05:30–17:30 IST): "
+        f"{len(session_candles)} total | {len(matched_candles)} matched | "
+        f"{unmatched_candles} unmatched"
+    )
+    print(f"Deduplicated confirmed AMT state counts (matched candles): {dict(sorted(candle_confirmed_states.items()))}")
+    print(f"Deduplicated developing AMT state counts (matched candles): {dict(sorted(candle_developing_states.items()))}")
     print(f"Latest-fresh flagged observations: {len(latest_rows)}")
     print(f"Candles represented by latest-fresh snapshots: {len({r['amt_candle_id'] for r in latest_rows})}")
     print(f"Strict no-lookahead violations: {lookahead_violations}")
@@ -284,10 +307,28 @@ def main():
     print(f"Raw incomplete/invalid price quotes: {raw_quote_quality['incomplete_or_invalid_price_quotes']}")
     print(f"Missing/invalid bid prices: {raw_quote_quality['missing_or_invalid_bid_price']}")
     print(f"Missing/invalid ask prices: {raw_quote_quality['missing_or_invalid_ask_price']}")
-    print(f"Invalid/sentinel bid IV (including 0.01 sentinel): {raw_quote_quality['invalid_or_sentinel_bid_iv']}")
-    print(f"Invalid/sentinel ask IV (including 0.01 sentinel): {raw_quote_quality['invalid_or_sentinel_ask_iv']}")
+    def report_count_rate(label, count, denominator):
+        rate = (count / denominator * 100.0) if denominator else 0.0
+        print(f"{label}: {count} ({rate:.4f}% of {denominator} raw option rows)")
+
+    report_count_rate("Bid IV exact 0.01 sentinel", raw_quote_quality["bid_iv_exact_001_sentinel"], raw_contracts)
+    report_count_rate("Bid IV other invalid/null (excluding 0.01)", raw_quote_quality["bid_iv_other_invalid_or_null"], raw_contracts)
+    report_count_rate("Ask IV exact 0.01 sentinel", raw_quote_quality["ask_iv_exact_001_sentinel"], raw_contracts)
+    report_count_rate("Ask IV other invalid/null (excluding 0.01)", raw_quote_quality["ask_iv_other_invalid_or_null"], raw_contracts)
     if valid_spreads_pct:
-        print(f"Valid quote spread % of mid: count={len(valid_spreads_pct)} | median={median(valid_spreads_pct):.6f}% | min={min(valid_spreads_pct):.6f}% | max={max(valid_spreads_pct):.6f}%")
+        ordered_spreads = sorted(valid_spreads_pct)
+        spread_p95 = ordered_spreads[max(0, ceil(0.95 * len(ordered_spreads)) - 1)]
+        wide_spread_threshold_pct = 10.0
+        wide_spread_outliers = sum(value > wide_spread_threshold_pct for value in ordered_spreads)
+        print(
+            f"Valid quote spread % of mid: count={len(ordered_spreads)} | "
+            f"median={median(ordered_spreads):.6f}% | p95={spread_p95:.6f}% | "
+            f"min={ordered_spreads[0]:.6f}% | max={ordered_spreads[-1]:.6f}%"
+        )
+        print(
+            f"Wide-spread outliers (> {wide_spread_threshold_pct:.1f}% of mid): "
+            f"{wide_spread_outliers} ({wide_spread_outliers / len(ordered_spreads) * 100.0:.4f}% of valid two-sided quotes)"
+        )
     else:
         print("Valid quote spread % of mid: no valid two-sided quotes")
     print("\n--- ALIGNMENT / EXPIRY DETAILS ---")
