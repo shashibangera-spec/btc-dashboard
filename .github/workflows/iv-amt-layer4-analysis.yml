@@ -1,0 +1,77 @@
+name: Empirical IV AMT Layer 4 analysis
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/analyze_iv_amt_layer4.py"
+      - "scripts/run_iv_surface_historical.py"
+      - "iv_surface_research.py"
+      - "test_analyze_iv_amt_layer4.py"
+      - "test_iv_surface_research.py"
+      - ".github/workflows/iv-amt-layer4-analysis.yml"
+  workflow_dispatch:
+  push:
+    branches:
+      - "research/iv-amt-layer4-analysis"
+    paths:
+      - "scripts/analyze_iv_amt_layer4.py"
+      - "scripts/run_iv_surface_historical.py"
+      - "iv_surface_research.py"
+      - "test_analyze_iv_amt_layer4.py"
+      - "test_iv_surface_research.py"
+      - ".github/workflows/iv-amt-layer4-analysis.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  layer4-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install lightweight test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+      - name: Run Layer 4 unit tests and compile
+        run: |
+          pytest -q test_analyze_iv_amt_layer4.py test_iv_surface_research.py
+          python -m py_compile scripts/analyze_iv_amt_layer4.py scripts/run_iv_surface_historical.py iv_surface_research.py
+      - name: Install Supabase client for full research run
+        if: github.event_name != 'pull_request'
+        run: pip install "supabase>=2.0.0"
+      - name: Validate read-only Supabase secrets
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          test -n "$SUPABASE_URL" || { echo "Missing SUPABASE_URL GitHub Secret"; exit 1; }
+          test -n "$SUPABASE_ANON_KEY" || { echo "Missing SUPABASE_ANON_KEY GitHub Secret"; exit 1; }
+          echo "Supabase URL and anon key are present; values are not printed."
+      - name: Reconcile versioned IV surface dataset (read-only)
+        if: github.event_name != 'pull_request'
+        run: python scripts/run_iv_surface_historical.py --batch-size 1 --format csv
+      - name: Run empirical Layer 4 analysis (read-only)
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -o pipefail
+          python scripts/analyze_iv_amt_layer4.py --input research_outputs/iv-surface-research-v1.0.csv | tee research_outputs/iv-amt-layer4-report.txt
+      - name: Upload Layer 4 report and source dataset
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: iv-amt-layer4-analysis
+          path: |
+            research_outputs/iv-amt-layer4-report.txt
+            research_outputs/iv-surface-research-v1.0.csv
+          if-no-files-found: error
+          retention-days: 14
