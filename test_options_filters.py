@@ -405,3 +405,122 @@ def test_migration_keeps_lower_strike_tie_break_on_comparable_intersection():
     result = f.calculate_oi_migration(snapshot(current, previous, "s0"))
     assert result["status"] == "OK"
     assert result["call_shift"] == 0 and result["put_shift"] == 0
+
+
+# Isolated IV-surface research tests. These do not alter legacy nearest-five tests.
+def iv_research_rows():
+    rows = []
+    for side, points in (
+        ("CALL", [(0.20, .42, 1100), (0.30, .40, 1050)]),
+        ("PUT", [(-0.20, .46, 900), (-0.30, .50, 950)]),
+    ):
+        for delta, iv, strike in points:
+            rows.append({
+                "snapshot_id": "s1", "expiry_date": "2026-11-17",
+                "symbol": f"{side}-{strike}", "product_id": f"{side}-{strike}",
+                "option_type": side, "strike_price": strike, "spot_price": 1000.0,
+                "mark_iv": iv, "bid_iv": 0.01, "ask_iv": 0.01,
+                "bid_price": 10.0, "ask_price": 12.0,
+                "greeks": {"delta": delta},
+                "exchange_timestamp": "2026-11-16T12:29:00Z",
+                "collected_at": "2026-11-16T12:29:01Z", "data_status": "OK",
+            })
+    # Same-strike ATM pair to test ATM IV independently from RR25 wings.
+    for side, delta, iv in (("CALL", .51, .31), ("PUT", -.49, .33)):
+        rows.append({
+            "snapshot_id": "s1", "expiry_date": "2026-11-17",
+            "symbol": f"{side}-1000", "product_id": f"{side}-1000",
+            "option_type": side, "strike_price": 1000, "spot_price": 1000.0,
+            "mark_iv": iv, "bid_iv": .30, "ask_iv": .32,
+            "bid_price": 20.0, "ask_price": 22.0,
+            "greeks": {"delta": delta},
+            "exchange_timestamp": "2026-11-16T12:29:00Z",
+            "collected_at": "2026-11-16T12:29:01Z", "data_status": "OK",
+        })
+    return pd.DataFrame(rows)
+
+
+def test_rr25_interpolates_puts_using_absolute_negative_delta():
+    rows = iv_research_rows().to_dict("records")
+    call = f._interpolate_delta_iv(rows, "CALL")
+    put = f._interpolate_delta_iv(rows, "PUT")
+    assert call["status"] == put["status"] == "OK"
+    assert call["method"] == put["method"] == "LINEAR_DELTA_INTERPOLATION"
+    assert call["iv_25d"] == pytest.approx(.41)
+    assert put["iv_25d"] == pytest.approx(.48)
+    assert put["lower_delta"] == pytest.approx(.20)
+    assert put["upper_delta"] == pytest.approx(.30)
+    assert all(point["abs_delta"] > 0 for point in put["curve_points"])
+
+
+def test_rr25_rejects_wrong_put_delta_sign_and_does_not_extrapolate():
+    rows = iv_research_rows().to_dict("records")
+    puts = [row for row in rows if row["option_type"] == "PUT"]
+    for row in puts:
+        row["greeks"] = {"delta": abs(row["greeks"]["delta"])}
+    result = f._interpolate_delta_iv(puts, "PUT")
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason"] == "NO_QUALIFIED_CONTRACTS"
+    assert all("DELTA_SIGN_MISMATCH" in item["rejection_reasons"]
+               for item in result["rejected_contracts"])
+
+
+def test_rr25_requires_bracket_and_never_extrapolates():
+    rows = iv_research_rows().to_dict("records")
+    calls = [row for row in rows if row["option_type"] == "CALL"]
+    for row in calls:
+        row["greeks"] = {"delta": .35}
+    result = f._interpolate_delta_iv(calls, "CALL")
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason"] == "MISSING_25D_BRACKET"
+
+
+def test_iv_sentinel_001_is_flagged_but_does_not_discard_valid_mark_iv():
+    rows = iv_research_rows().to_dict("records")
+    result = f._interpolate_delta_iv(rows, "PUT")
+    assert result["status"] == "OK"
+    quality = f._research_quote_diagnostics(rows[0])
+    assert "BID_IV_SENTINEL_0_01" in quality["rejection_reasons"]
+    assert "ASK_IV_SENTINEL_0_01" in quality["rejection_reasons"]
+    assert f._research_iv(.01) is None
+    assert f._research_iv(.0100001) == pytest.approx(.0100001)
+
+
+def test_quote_quality_flags_crossed_market_and_reports_spread_without_cutoff():
+    row = iv_research_rows().iloc[0].to_dict()
+    row["bid_price"], row["ask_price"] = 12, 10
+    result = f._research_quote_diagnostics(row)
+    assert result["quality_status"] == "REVIEW"
+    assert "CROSSED_MARKET" in result["rejection_reasons"]
+    assert result["mid_price"] is None
+
+
+def test_iv_surface_research_returns_atm_and_rr25_with_methodology_version():
+    raw = iv_research_rows()
+    result = f.calculate_iv_surface_research(snapshot(raw), raw)
+    assert result["methodology_version"] == f.IV_RESEARCH_VERSION
+    assert result["atm_strike"] == 1000
+    assert result["atm_iv"] == pytest.approx(.32)
+    assert result["rr25_status"] == "OK"
+    assert result["rr25_call_minus_put_vol_points"] == pytest.approx(-7.0)
+    assert result["quote_quality"]["contracts_review"] >= 4
+
+
+def test_iv_research_loader_uses_read_only_select_query_and_pins_identity():
+    class ReadOnlyQuery(Query):
+        def __init__(self, db, table):
+            super().__init__(db, table)
+            self.selected = None
+        def select(self, columns):
+            self.selected = columns
+            return self
+    class ReadOnlyClient(Client):
+        def table(self, name):
+            return ReadOnlyQuery(self.db, name)
+    raw = iv_research_rows()
+    db = {"options_oi_snapshots": raw.to_dict("records")}
+    result = f.load_iv_research_chain(ReadOnlyClient(db), snapshot())
+    assert result["status"] == "OK"
+    assert "greeks" in result["raw"].columns
+    assert "bid_price" in result["raw"].columns
+    assert set(result["raw"]["snapshot_id"]) == {"s1"}

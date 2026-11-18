@@ -588,3 +588,287 @@ def load_and_calculate_options_filters(client: Any, *, as_of: Optional[date] = N
     if snapshot is None:
         return {"status": "UNAVAILABLE", "selection": selection, "filters": {}}
     return {"status": "OK", "selection": selection, "filters": calculate_all_filters(snapshot)}
+
+
+# Additive IV-surface research layer. The legacy nearest-five calculator above is
+# intentionally unchanged; this layer uses a separate read-only raw-chain query.
+IV_RESEARCH_VERSION = "iv-surface-research-v1.0"
+IV_RESEARCH_COLUMNS = (
+    "snapshot_id", "expiry_date", "symbol", "product_id", "option_type",
+    "strike_price", "spot_price", "mark_iv", "bid_iv", "ask_iv",
+    "bid_price", "ask_price", "greeks", "exchange_timestamp",
+    "collected_at", "data_status",
+)
+
+
+def load_iv_research_chain(client: Any, snapshot: CanonicalSnapshot) -> dict:
+    """Read the extra quote/Greek fields needed by the isolated IV research layer.
+
+    This function only SELECTs from options_oi_snapshots. It does not write,
+    mutate, or change the legacy CanonicalSnapshot.raw contract.
+    """
+    query = (
+        client.table("options_oi_snapshots")
+        .select(",".join(IV_RESEARCH_COLUMNS))
+        .eq("snapshot_id", snapshot.snapshot_id)
+        .eq("expiry_date", snapshot.expiry_date)
+    )
+    records: List[dict] = []
+    start, page_size = 0, 500
+    try:
+        while True:
+            page = _execute(query.range(start, start + page_size - 1))
+            records.extend(page)
+            if len(page) < page_size:
+                break
+            start += page_size
+    except Exception as exc:
+        return {"status": "UNAVAILABLE", "reason": "IV_RESEARCH_READ_FAILED",
+                "error_type": type(exc).__name__, "snapshot_id": snapshot.snapshot_id,
+                "expiry_date": snapshot.expiry_date}
+    missing = _missing_record_keys(records, IV_RESEARCH_COLUMNS)
+    if missing["missing_columns"]:
+        return {"status": "UNAVAILABLE", "reason": "MISSING_IV_RESEARCH_COLUMNS",
+                **missing, "snapshot_id": snapshot.snapshot_id,
+                "expiry_date": snapshot.expiry_date}
+    frame = pd.DataFrame(records, columns=list(IV_RESEARCH_COLUMNS))
+    if frame.empty:
+        return {"status": "UNAVAILABLE", "reason": "EMPTY_IV_RESEARCH_CHAIN",
+                "snapshot_id": snapshot.snapshot_id, "expiry_date": snapshot.expiry_date}
+    if set(frame["snapshot_id"].dropna().astype(str)) != {snapshot.snapshot_id}:
+        return {"status": "UNAVAILABLE", "reason": "SNAPSHOT_ID_MISMATCH",
+                "snapshot_id": snapshot.snapshot_id, "expiry_date": snapshot.expiry_date}
+    if set(frame["expiry_date"].dropna().astype(str)) != {snapshot.expiry_date}:
+        return {"status": "UNAVAILABLE", "reason": "EXPIRY_MISMATCH",
+                "snapshot_id": snapshot.snapshot_id, "expiry_date": snapshot.expiry_date}
+    return {"status": "OK", "raw": frame, "snapshot_id": snapshot.snapshot_id,
+            "expiry_date": snapshot.expiry_date}
+
+
+def _research_delta(row: dict) -> Optional[float]:
+    greeks = row.get("greeks")
+    if not isinstance(greeks, dict):
+        return None
+    delta = _finite(greeks.get("delta", greeks.get("Delta")))
+    if delta is None or abs(delta) > 1:
+        return None
+    return delta
+
+
+def _research_iv(value: Any) -> Optional[float]:
+    """Accept positive finite decimal IV, but reject the known 0.01 sentinel."""
+    iv = _finite(value)
+    if iv is None or iv <= 0 or math.isclose(iv, 0.01, rel_tol=0, abs_tol=1e-12):
+        return None
+    return iv
+
+
+def _research_quote_diagnostics(row: dict) -> dict:
+    bid, ask = _finite(row.get("bid_price")), _finite(row.get("ask_price"))
+    bid_iv, ask_iv = _finite(row.get("bid_iv")), _finite(row.get("ask_iv"))
+    mark_iv = _research_iv(row.get("mark_iv"))
+    reasons: List[str] = []
+    if bid is None:
+        reasons.append("MISSING_OR_INVALID_BID_PRICE")
+    elif bid <= 0:
+        reasons.append("NON_POSITIVE_BID_PRICE")
+    if ask is None:
+        reasons.append("MISSING_OR_INVALID_ASK_PRICE")
+    elif ask <= 0:
+        reasons.append("NON_POSITIVE_ASK_PRICE")
+    if bid is not None and ask is not None and bid > 0 and ask > 0 and bid > ask:
+        reasons.append("CROSSED_MARKET")
+    if bid_iv is None or bid_iv <= 0:
+        reasons.append("MISSING_OR_INVALID_BID_IV")
+    elif math.isclose(bid_iv, 0.01, rel_tol=0, abs_tol=1e-12):
+        reasons.append("BID_IV_SENTINEL_0_01")
+    if ask_iv is None or ask_iv <= 0:
+        reasons.append("MISSING_OR_INVALID_ASK_IV")
+    elif math.isclose(ask_iv, 0.01, rel_tol=0, abs_tol=1e-12):
+        reasons.append("ASK_IV_SENTINEL_0_01")
+    if mark_iv is None:
+        reasons.append("INVALID_OR_SENTINEL_MARK_IV")
+    mid = ((bid + ask) / 2) if bid is not None and ask is not None and bid > 0 and ask > 0 and bid <= ask else None
+    spread_pct = ((ask - bid) / mid * 100) if mid and mid > 0 else None
+    if spread_pct is not None and spread_pct < 0:
+        reasons.append("NEGATIVE_SPREAD")
+    # No arbitrary wide-spread cutoff is imposed. The measured spread is exposed
+    # for review, rather than silently treating an unapproved threshold as truth.
+    return {
+        "bid_price": bid, "ask_price": ask, "mid_price": mid,
+        "spread_pct_mid": spread_pct,
+        "bid_iv_valid": _research_iv(bid_iv) is not None,
+        "ask_iv_valid": _research_iv(ask_iv) is not None,
+        "mark_iv_valid": mark_iv is not None,
+        "quality_status": "OK" if not reasons else "REVIEW",
+        "rejection_reasons": reasons,
+    }
+
+
+def _interpolate_delta_iv(rows: List[dict], side: str) -> dict:
+    """Interpolate mark IV at |delta|=0.25 without extrapolation.
+
+    Delta Exchange Put deltas are negative; their absolute magnitude is used
+    for target matching while the original signed delta remains in diagnostics.
+    """
+    points = []
+    rejected = []
+    for row in rows:
+        option_type = str(row.get("option_type", "")).upper()
+        if option_type != side:
+            continue
+        delta = _research_delta(row)
+        iv = _research_iv(row.get("mark_iv"))
+        quote = _research_quote_diagnostics(row)
+        # RR25 uses mark_iv with signed Greeks Delta. Bid/ask IV sentinel
+        # flags remain visible in quote diagnostics but do not invalidate an
+        # otherwise usable mark-IV observation when bid/ask prices are valid.
+        reasons = []
+        if quote["mid_price"] is None:
+            reasons.append("UNUSABLE_TWO_SIDED_PRICE_QUOTE")
+        if delta is None:
+            reasons.append("INVALID_OR_MISSING_DELTA")
+        elif (side == "CALL" and delta <= 0) or (side == "PUT" and delta >= 0):
+            reasons.append("DELTA_SIGN_MISMATCH")
+        if iv is None:
+            reasons.append("INVALID_OR_SENTINEL_MARK_IV")
+        if reasons:
+            rejected.append({"symbol": row.get("symbol"), "strike_price": row.get("strike_price"),
+                             "option_type": side, "rejection_reasons": sorted(set(reasons))})
+            continue
+        points.append({"abs_delta": abs(delta), "signed_delta": delta, "iv": iv,
+                       "strike_price": _finite(row.get("strike_price")),
+                       "symbol": row.get("symbol"), "spread_pct_mid": quote["spread_pct_mid"]})
+    if not points:
+        return {"status": "UNAVAILABLE", "reason": "NO_QUALIFIED_CONTRACTS",
+                "rejected_contracts": rejected}
+    # Multiple contracts at identical absolute delta are averaged at that delta
+    # before interpolation; no strike-based extrapolation is performed.
+    grouped = {}
+    for point in points:
+        grouped.setdefault(point["abs_delta"], []).append(point)
+    curve = [{"abs_delta": delta,
+              "iv": sum(p["iv"] for p in group) / len(group),
+              "contracts": [p["symbol"] for p in group]}
+             for delta, group in sorted(grouped.items())]
+    target = 0.25
+    exact = [p for p in curve if math.isclose(p["abs_delta"], target, abs_tol=1e-9)]
+    if exact:
+        value = exact[0]["iv"]
+        return {"status": "OK", "iv_25d": value, "method": "EXACT_DELTA",
+                "lower_delta": target, "upper_delta": target,
+                "rejected_contracts": rejected, "curve_points": curve}
+    lower = [p for p in curve if p["abs_delta"] < target]
+    upper = [p for p in curve if p["abs_delta"] > target]
+    if not lower or not upper:
+        return {"status": "UNAVAILABLE", "reason": "MISSING_25D_BRACKET",
+                "rejected_contracts": rejected, "curve_points": curve}
+    lo, hi = lower[-1], upper[0]
+    weight = (target - lo["abs_delta"]) / (hi["abs_delta"] - lo["abs_delta"])
+    value = lo["iv"] + weight * (hi["iv"] - lo["iv"])
+    return {"status": "OK", "iv_25d": value, "method": "LINEAR_DELTA_INTERPOLATION",
+            "lower_delta": lo["abs_delta"], "upper_delta": hi["abs_delta"],
+            "rejected_contracts": rejected, "curve_points": curve}
+
+
+def _quote_age_seconds(exchange_timestamp: Any, snapshot_completed_at: str) -> Optional[float]:
+    """Report source quote age without imposing an unapproved stale-age cutoff."""
+    source_time = pd.to_datetime(exchange_timestamp, utc=True, errors="coerce")
+    snapshot_time = pd.to_datetime(snapshot_completed_at, utc=True, errors="coerce")
+    if pd.isna(source_time) or pd.isna(snapshot_time):
+        return None
+    return float((snapshot_time - source_time).total_seconds())
+
+
+def calculate_iv_surface_research(snapshot: CanonicalSnapshot, raw: Optional[pd.DataFrame] = None) -> dict:
+    """Calculate additive ATM IV and 25-delta risk reversal research metrics."""
+    frame = (raw if raw is not None else snapshot.raw).copy()
+    required = {"option_type", "strike_price", "mark_iv", "greeks",
+                "bid_price", "ask_price", "bid_iv", "ask_iv"}
+    missing = sorted(required - set(frame.columns))
+    base = {"methodology_version": IV_RESEARCH_VERSION,
+            "snapshot_id": snapshot.snapshot_id, "expiry_date": snapshot.expiry_date,
+            "snapshot_completed_at": snapshot.completed_at,
+            "spot_price": snapshot.spot_price}
+    if missing:
+        return {**base, "status": "UNAVAILABLE", "reason": "MISSING_IV_RESEARCH_FIELDS",
+                "missing_columns": missing}
+    rows = frame.to_dict("records")
+    calls = _interpolate_delta_iv(rows, "CALL")
+    puts = _interpolate_delta_iv(rows, "PUT")
+    rr_status = "OK" if calls.get("status") == "OK" and puts.get("status") == "OK" else "UNAVAILABLE"
+    rr = (calls["iv_25d"] - puts["iv_25d"]) * 100 if rr_status == "OK" else None
+
+    # ATM pair: nearest strike to snapshot spot with valid mark IV on both sides
+    # and usable, non-crossed two-sided prices. IV sentinel 0.01 is excluded.
+    work = []
+    spot = _finite(snapshot.spot_price)
+    for strike, group in frame.groupby(pd.to_numeric(frame["strike_price"], errors="coerce"), dropna=True):
+        side_values = {}
+        side_symbols = {}
+        for side in ("CALL", "PUT"):
+            candidates = group[group["option_type"].astype(str).str.upper() == side]
+            valid = []
+            for row in candidates.to_dict("records"):
+                quote = _research_quote_diagnostics(row)
+                iv = _research_iv(row.get("mark_iv"))
+                if iv is not None and quote["mid_price"] is not None:
+                    valid.append((iv, row.get("symbol")))
+            if valid:
+                side_values[side] = sum(item[0] for item in valid) / len(valid)
+                side_symbols[side] = [item[1] for item in valid]
+        if spot is not None and set(side_values) == {"CALL", "PUT"}:
+            work.append({"strike": float(strike), "distance": abs(float(strike) - spot),
+                         "call_iv": side_values["CALL"], "put_iv": side_values["PUT"],
+                         "symbols": side_symbols})
+    work.sort(key=lambda item: (item["distance"], item["strike"]))
+    atm = work[0] if work else None
+    atm_iv = ((atm["call_iv"] + atm["put_iv"]) / 2) if atm else None
+
+    quality_rows = []
+    for row in rows:
+        diag = _research_quote_diagnostics(row)
+        quality_rows.append({
+            "symbol": row.get("symbol"), "option_type": str(row.get("option_type", "")).upper(),
+            "strike_price": _finite(row.get("strike_price")),
+            "delta": _research_delta(row),
+            "exchange_timestamp": row.get("exchange_timestamp"),
+            "quote_age_seconds": _quote_age_seconds(
+                row.get("exchange_timestamp"), snapshot.completed_at
+            ),
+            "quote_timestamp_status": (
+                "AVAILABLE" if _quote_age_seconds(
+                    row.get("exchange_timestamp"), snapshot.completed_at
+                ) is not None else "MISSING_OR_INVALID"
+            ),
+            **diag,
+        })
+    quality_counts = {
+        "contracts_reviewed": len(quality_rows),
+        "contracts_ok": sum(item["quality_status"] == "OK" for item in quality_rows),
+        "contracts_review": sum(item["quality_status"] != "OK" for item in quality_rows),
+        "sentinel_iv_contracts": sum(
+            any(reason.endswith("SENTINEL_0_01") for reason in item["rejection_reasons"])
+            for item in quality_rows
+        ),
+    }
+    return {
+        **base, "status": "OK" if atm is not None or rr_status == "OK" else "INSUFFICIENT_DATA",
+        "atm_iv": atm_iv,
+        "atm_strike": atm["strike"] if atm else None,
+        "atm_call_iv": atm["call_iv"] if atm else None,
+        "atm_put_iv": atm["put_iv"] if atm else None,
+        "atm_method": "NEAREST_STRIKE_WITH_VALID_CALL_PUT_PAIR" if atm else None,
+        "rr25_status": rr_status, "rr25_reason": None if rr_status == "OK" else {
+            "call": calls.get("reason"), "put": puts.get("reason")},
+        "call_iv_25d": calls.get("iv_25d"), "put_iv_25d": puts.get("iv_25d"),
+        "rr25_call_minus_put_vol_points": rr,
+        "call_25d_method": calls.get("method"), "put_25d_method": puts.get("method"),
+        "call_25d_curve": calls.get("curve_points", []),
+        "put_25d_curve": puts.get("curve_points", []),
+        "call_rejected_contracts": calls.get("rejected_contracts", []),
+        "put_rejected_contracts": puts.get("rejected_contracts", []),
+        "quote_quality": quality_counts, "quote_quality_rows": quality_rows,
+        "spread_policy": "SPREAD_PERCENT_REPORTED_NO_UNAPPROVED_WIDE_SPREAD_CUTOFF",
+        "freshness_policy": "SOURCE_TIMESTAMP_AGE_REPORTED_NO_UNAPPROVED_STALE_AGE_CUTOFF",
+    }

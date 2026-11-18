@@ -1,13 +1,17 @@
 """Stage B regression tests: canonical filter outputs drive Research Dashboard."""
 from pathlib import Path
+from datetime import date
 
 from research_options_adapter import load_canonical_research_options
 from options_filters import load_and_calculate_options_filters
 from test_research_options_stage_a import Client, make_db
 
 
+TEST_AS_OF = date(2026, 11, 16)  # Fixture expiry is 2026-11-17; keep tests clock-independent.
+
+
 def test_research_adapter_exposes_all_five_canonical_filter_results():
-    result = load_canonical_research_options(Client(make_db()))
+    result = load_canonical_research_options(Client(make_db()), as_of=TEST_AS_OF)
     assert result["status"] == "OK"
     filters = result["filters"]
     assert set(filters) == {
@@ -20,7 +24,7 @@ def test_research_adapter_exposes_all_five_canonical_filter_results():
 
 
 def test_missing_previous_snapshot_is_unavailable_not_stable():
-    result = load_canonical_research_options(Client(make_db()))
+    result = load_canonical_research_options(Client(make_db()), as_of=TEST_AS_OF)
     migration = result["filters"]["oi_migration"]
     assert migration["status"] == "UNAVAILABLE"
     assert migration["reason"] == "NO_ELIGIBLE_PREVIOUS_SNAPSHOT"
@@ -30,7 +34,7 @@ def test_missing_previous_snapshot_is_unavailable_not_stable():
 def test_partial_taker_result_is_not_presented_as_neutral_flow():
     db = make_db()
     db["options_oi_snapshots"][0]["taker_sell_volume"] = None
-    result = load_canonical_research_options(Client(db))
+    result = load_canonical_research_options(Client(db), as_of=TEST_AS_OF)
     taker = result["filters"]["taker_activity"]
     assert taker["status"] == "PARTIAL"
     assert taker["reason"] == "INCOMPLETE_NEAREST_STRIKE_TAKER_SAMPLE"
@@ -65,8 +69,8 @@ def test_fast_and_research_dashboards_produce_identical_five_filter_outputs_for_
     # Research Dashboard adapter calls the same canonical selector and
     # calculate_all_filters() path while also loading matching derived metrics.
     client = Client(make_db())
-    fast = load_and_calculate_options_filters(client)
-    research = load_canonical_research_options(client)
+    fast = load_and_calculate_options_filters(client, as_of=TEST_AS_OF)
+    research = load_canonical_research_options(client, as_of=TEST_AS_OF)
     assert fast["status"] == research["status"] == "OK"
     assert fast["selection"]["snapshot_id"] == research["snapshot"].snapshot_id
     assert fast["selection"]["expiry_date"] == research["snapshot"].expiry_date
