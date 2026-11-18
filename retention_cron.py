@@ -469,6 +469,7 @@ def delete_old_rows_for_day(
     day: date,
     cutoff: datetime,
     expected_count: int,
+    expected_ids: set[str],
 ) -> int:
     """
     Delete only rows in the verified UTC partition whose collected_at
@@ -478,6 +479,11 @@ def delete_old_rows_for_day(
     """
     if expected_count <= 0:
         return 0
+    if len(expected_ids) != expected_count:
+        raise RuntimeError(
+            f"Verified ID/count mismatch for {day}: "
+            f"IDs={len(expected_ids)}, expected count={expected_count}."
+        )
 
     start, end = utc_day_bounds(day)
 
@@ -487,6 +493,7 @@ def delete_old_rows_for_day(
         .gte("collected_at", iso_utc(start))
         .lt("collected_at", iso_utc(end))
         .lt("collected_at", iso_utc(cutoff))
+        .in_("id", sorted(expected_ids))
         .execute()
     )
 
@@ -645,6 +652,7 @@ def main() -> int:
                 day=day,
                 cutoff=cutoff,
                 expected_count=eligible_count,
+                expected_ids=eligible_ids,
             )
         except Exception as exc:
             log.error("Deletion failed or count could not be confirmed for %s: %s", day, exc)
