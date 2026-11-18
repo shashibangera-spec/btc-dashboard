@@ -197,6 +197,8 @@ def discover_eligible_dates(connection: Any, cutoff: datetime) -> set[date]:
                 "through an approved review before considering any schema change."
             )
 
+        # A timeout aborts the run before preflight/deletion; no slower fallback.
+        cursor.execute("SET LOCAL statement_timeout = '30s'")
         cursor.execute("""
             WITH bounds AS (
                 SELECT
