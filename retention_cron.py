@@ -13,6 +13,9 @@ A UTC date partition is eligible for deletion only after its archive passes:
   5. Gzip and CSV readability verification
   6. CSV row-count verification
   7. CSV collected_at min/max verification against the manifest
+  8. Exact snapshot-ID coverage for every current database deletion candidate
+
+All eligible UTC partitions are preflighted before the first deletion.
 
 Default mode is DRY RUN. Use --execute to enable deletion.
 
