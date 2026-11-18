@@ -1,0 +1,37 @@
+name: Historical IV surface research tests
+
+on:
+  pull_request:
+    paths:
+      - "iv_surface_research.py"
+      - "test_iv_surface_research.py"
+      - "scripts/run_iv_surface_historical.py"
+      - ".github/workflows/iv-surface-historical-tests.yml"
+  push:
+    branches:
+      - "research/iv-surface-historical-v1"
+    paths:
+      - "iv_surface_research.py"
+      - "test_iv_surface_research.py"
+      - "scripts/run_iv_surface_historical.py"
+      - ".github/workflows/iv-surface-historical-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  iv-surface-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+      - name: Run IV surface regression suite
+        run: pytest -q test_iv_surface_research.py
+      - name: Compile research runner and calculation module
+        run: python -m py_compile iv_surface_research.py scripts/run_iv_surface_historical.py
