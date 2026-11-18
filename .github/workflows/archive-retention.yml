@@ -117,9 +117,9 @@ jobs:
           mb = size / (1024 * 1024)
           print(f"DATABASE_SIZE_BEFORE_VACUUM_BYTES={size}")
           print(f"DATABASE_SIZE_BEFORE_VACUUM_MB={mb:.2f}")
-          print(f"STORAGE_THRESHOLD_300_MB={'BREACHED' if mb >= 300 else 'OK'}")
-          print(f"STORAGE_THRESHOLD_350_MB={'BREACHED' if mb >= 350 else 'OK'}")
-          print(f"STORAGE_THRESHOLD_400_MB={'BREACHED' if mb >= 400 else 'OK'}")
+          print(f"STORAGE_TARGET_300_MB={'BREACHED' if mb >= 300 else 'OK'}")
+          print(f"STORAGE_WARNING_350_MB={'BREACHED' if mb >= 350 else 'OK'}")
+          print(f"STORAGE_EMERGENCY_400_MB={'BREACHED' if mb >= 400 else 'OK'}")
           PY
 
       - name: Vacuum and analyze options snapshots
