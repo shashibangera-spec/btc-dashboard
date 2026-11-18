@@ -802,6 +802,7 @@ def calculate_iv_surface_research(snapshot: CanonicalSnapshot, raw: Optional[pd.
     # ATM pair: nearest strike to snapshot spot with valid mark IV on both sides
     # and usable, non-crossed two-sided prices. IV sentinel 0.01 is excluded.
     work = []
+    spot = _finite(snapshot.spot_price)
     for strike, group in frame.groupby(pd.to_numeric(frame["strike_price"], errors="coerce"), dropna=True):
         side_values = {}
         side_symbols = {}
@@ -816,8 +817,8 @@ def calculate_iv_surface_research(snapshot: CanonicalSnapshot, raw: Optional[pd.
             if valid:
                 side_values[side] = sum(item[0] for item in valid) / len(valid)
                 side_symbols[side] = [item[1] for item in valid]
-        if set(side_values) == {"CALL", "PUT"}:
-            work.append({"strike": float(strike), "distance": abs(float(strike) - snapshot.spot_price),
+        if spot is not None and set(side_values) == {"CALL", "PUT"}:
+            work.append({"strike": float(strike), "distance": abs(float(strike) - spot),
                          "call_iv": side_values["CALL"], "put_iv": side_values["PUT"],
                          "symbols": side_symbols})
     work.sort(key=lambda item: (item["distance"], item["strike"]))
