@@ -94,6 +94,7 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
     anchor_price = None
     min_close = max_close = min_low = max_high = None
     previous_valid = None
+    force_anchor_reset = False
 
     active_test = False
     active_test_time = None
@@ -106,6 +107,7 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
         if not valid:
             # Do not bridge an invalid candle as if the auction were continuous.
             previous_valid = None
+            force_anchor_reset = True
             active_test = False
             active_test_time = None
             active_test_level = None
@@ -122,11 +124,9 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
         poc = float(row["developing_poc"])
         atr = float(row["atr_21"])
 
-        state_reset = (
-            anchor_profile is None
-            or profile_id != anchor_profile
-            or state != anchor_state
-        )
+        profile_reset = anchor_profile is not None and profile_id != anchor_profile
+        state_change = anchor_state is not None and state != anchor_state
+        state_reset = anchor_profile is None or profile_reset or state_change or force_anchor_reset
         gap_reset = False
         if previous_valid is not None:
             prior_open = _timestamp(previous_valid["candle_open_time"])
@@ -134,10 +134,13 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
 
         status = "NONE"
         if state_reset or gap_reset:
-            if active_test and gap_reset and not state_reset:
+            if active_test and (gap_reset or force_anchor_reset) and not profile_reset and not state_change:
                 status = "INCOMPLETE_GAP"
-            elif state_reset and anchor_profile is not None:
-                status = "RESET_STATE_CHANGE"
+            elif anchor_profile is not None:
+                status = "RESET_CONTEXT"
+            if profile_reset:
+                test_count = 0
+                rejection_count = 0
             active_test = False
             active_test_time = None
             active_test_level = None
@@ -149,6 +152,7 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
             min_close = max_close = close
             min_low = low
             max_high = high
+            force_anchor_reset = False
         else:
             min_close = min(min_close, close)
             max_close = max(max_close, close)
@@ -259,6 +263,21 @@ def fetch_source_rows(client) -> List[Dict[str, Any]]:
     return collected
 
 
+def latest_persisted_close(client) -> Optional[datetime]:
+    response = (
+        client.table("auction_deterioration_metrics")
+        .select("candle_close_time")
+        .eq("exchange", EXCHANGE)
+        .eq("symbol", SYMBOL)
+        .eq("timeframe", TIMEFRAME)
+        .order("candle_close_time", desc=True)
+        .limit(1)
+        .execute()
+    )
+    latest = response.data or []
+    return _timestamp(latest[0]["candle_close_time"]) if latest else None
+
+
 def persist_rows(client, rows: List[Dict[str, Any]]) -> int:
     written = 0
     for start in range(0, len(rows), UPSERT_BATCH_SIZE):
@@ -287,10 +306,15 @@ def main() -> int:
             print("No AMT source rows found; nothing written.")
             return 0
         calculated = calculate_shadow_rows(source_rows)
-        written = persist_rows(client, calculated)
+        latest = latest_persisted_close(client)
+        pending = [
+            row for row in calculated
+            if latest is None or _timestamp(row["candle_close_time"]) >= latest
+        ]
+        written = persist_rows(client, pending)
         print(
             f"Shadow monitor complete: source_rows={len(source_rows)}, "
-            f"valid_metric_rows={len(calculated)}, upserted={written}, "
+            f"valid_metric_rows={len(calculated)}, pending_rows={len(pending)}, upserted={written}, "
             f"version={CALCULATION_VERSION}"
         )
         return 0
