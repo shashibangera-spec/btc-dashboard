@@ -11,13 +11,13 @@ This document describes the database that was actually present during the audit.
 
 | Table | Purpose | Rows at audit |
 |---|---|---:|
-| amt_snapshots | Completed BTCUSDT 30m AMT candles, prior/developing value and state output | 422 |
-| auction_deterioration_metrics | Research-only shadow metrics and frozen-VAL episode tracking | 0 |
-| futures_oi_snapshots | Per-exchange and aggregate Futures OI, funding, basis and source status | 1,854 |
-| gex_strike_attribution | Event-only strike-level GEX wall change and Shapley attribution records | 138 |
-| options_collection_runs | Options collection run status and contract counts | 381 |
-| options_derived_snapshots | Per-snapshot/per-expiry calculated Options metrics | 2,702 |
-| options_oi_snapshots | Raw Delta India BTC options contract observations | 177,166 |
+| amt_snapshots | Completed BTCUSDT 30m AMT candles, prior/developing value and state output | 423 |
+| auction_deterioration_metrics | Research-only shadow metrics and frozen-VAL episode tracking | 375 |
+| futures_oi_snapshots | Per-exchange and aggregate Futures OI, funding, basis and source status | 1,859 |
+| gex_strike_attribution | Event-only strike-level GEX wall change and Shapley attribution records | 147 |
+| options_collection_runs | Options collection run status and contract counts | 382 |
+| options_derived_snapshots | Per-snapshot/per-expiry calculated Options metrics | 2,709 |
+| options_oi_snapshots | Raw Delta India BTC options contract observations | 177,808 |
 | signal_reaction_analysis | Versioned, non-directional price reaction measurements linked to journal events | 31 |
 | system_signal_journal | Deduplicated research event journal | 33 |
 | telegram_alert_events | Telegram notification outbox, deduplication and delivery/retry state | 23 |
@@ -240,6 +240,6 @@ The live catalog, not this document or a migration filename alone, is authoritat
 
 ## 7. Audit notes
 
-- The live shadow table existed and was empty (zero rows) at the audit time. Successful deployment does not prove that the sidecar has successfully persisted its first row.
+- The live shadow table was observed at 375 rows on the final verification query during this audit, confirming that it has begun persisting metrics. Row counts are volatile and should be rechecked before relying on them.
 - The current live schema is more complete than the checked-in migration folder. This is documented drift, not silently resolved by this documentation update.
 - This file is a descriptive inventory. It does not change schema, RLS, grants, indexes, retention, collectors or calculation logic.
