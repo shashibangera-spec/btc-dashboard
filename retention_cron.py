@@ -25,7 +25,7 @@ Required environment variables:
 
 Optional environment variables:
   ARCHIVE_DIR       Default: btc_data_archive
-  RETENTION_DAYS    Default: 5
+  RETENTION_DAYS    Default: 3
   PAGE_SIZE         Default: 1000
 """
 
