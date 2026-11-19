@@ -167,19 +167,29 @@ def build_attribution_rows(
         current_all = _side_exposures(current_rows, side, c_spot, c_mult)
         previous_top = _top_n(previous_all)
         current_top = _top_n(current_all)
-        if not previous_top or not current_top:
+        if not previous_top:
             continue
 
         tracked_union = set(previous_top) | set(current_top)
-        previous_wall, current_wall = next(iter(previous_top)), next(iter(current_top))
-        current_wall_gex = current_top[current_wall]["gex"]
+        previous_wall = next(iter(previous_top))
+        current_wall = next(iter(current_top)) if current_top else None
+        current_wall_gex = current_top[current_wall]["gex"] if current_wall is not None else 0.0
         new_exposure_floor = current_wall_gex * (new_exposure_min_pct / 100.0)
 
         # Event map ensures a strike is persisted once per comparison/side.
         events: Dict[float, Dict[str, Any]] = {}
 
+        # If every current strike has zero GEX, all previous Top-3 walls have
+        # disappeared. Do not skip this case merely because current Top-3 is empty.
+        if current_wall is None:
+            for strike in previous_top:
+                events[strike] = {
+                    "event": "DISAPPEARED", "margin_contributions": None,
+                    "margin_change": None, "driver": "UNATTRIBUTED",
+                }
+
         # Wall events retain precedence for the two wall strikes.
-        if previous_wall != current_wall:
+        elif previous_wall != current_wall:
             old_p, old_c = previous_all.get(previous_wall), current_all.get(previous_wall)
             new_p, new_c = previous_all.get(current_wall), current_all.get(current_wall)
             margin_contributions = None
@@ -201,7 +211,7 @@ def build_attribution_rows(
                     "margin_change": margin_change,
                     "driver": driver,
                 }
-        else:
+        elif current_wall is not None:
             p_wall, c_wall = previous_all.get(previous_wall), current_all.get(current_wall)
             if p_wall and c_wall and abs(p_wall["gex"]) > GEX_EPSILON:
                 pct = abs(c_wall["gex"] - p_wall["gex"]) / abs(p_wall["gex"]) * 100.0
@@ -217,7 +227,7 @@ def build_attribution_rows(
         # Any newly Top-3 strike above the materiality floor is an event,
         # even when it does not become the #1 wall.
         for strike, values in current_top.items():
-            if strike not in previous_top and values["gex"] > new_exposure_floor and strike not in events:
+            if current_wall is not None and strike not in previous_top and values["gex"] > new_exposure_floor and strike not in events:
                 events[strike] = {
                     "event": "NEW_EXPOSURE", "margin_contributions": None,
                     "margin_change": None, "driver": "UNATTRIBUTED",
