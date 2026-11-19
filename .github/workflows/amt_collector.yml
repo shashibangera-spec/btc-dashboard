@@ -31,3 +31,12 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python amt_collector.py
+
+      # Research-only sidecar: run after a successful AMT write. A shadow
+      # failure must never block Futures/Options collection or AMT success.
+      - name: Run auction deterioration shadow monitor
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python shadow_monitor.py
