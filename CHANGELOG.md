@@ -1,3 +1,11 @@
+## 2026-11-19
+
+### Changed — Session OHLC History value-column order
+
+- Reordered only the Session OHLC History table's value-area columns to **VAL → POC → VAH**, matching the dashboard's established low-to-high AMT visual convention.
+- Preserved the session TPO calculation, OHLC values, bias classifications, and all other dashboard sections.
+- Added an offline regression test that executes the session-history helper and verifies the displayed column order and unchanged sample values.
+
 ## 2026-11-18
 
 ### Added — isolated IV-surface research methodology (unmerged PR)
