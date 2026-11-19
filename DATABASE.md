@@ -67,7 +67,7 @@ Columns:
 - val_test_status text; val_test_count integer; val_rejection_count integer
 - calculation_version text; created_at timestamptz
 
-Primary key: id. Unique candle key: (exchange, symbol, timeframe, profile_id, candle_close_time). Status values: NONE, STARTED, CONTINUING, REJECTED, BROKEN, INCOMPLETE_GAP, RESET_CONTEXT. Current migration default calculation version: shadow-v1.0. At audit time this table existed but contained zero rows.
+Primary key: id. Unique candle key: (exchange, symbol, timeframe, profile_id, candle_close_time). Status values: NONE, STARTED, CONTINUING, REJECTED, BROKEN, INCOMPLETE_GAP, RESET_CONTEXT. Current migration default calculation version: shadow-v1.0. The first catalog snapshot during this audit showed zero rows; a subsequent live verification during the same documentation pass showed 375 rows. The sidecar has therefore begun persisting metrics.
 
 Indexes: candle_close_time DESC, (profile_id, candle_close_time DESC), (confirmed_state, candle_close_time DESC), plus primary/unique indexes.
 
