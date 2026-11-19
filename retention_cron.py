@@ -593,6 +593,13 @@ def main() -> int:
     )
 
     parser.add_argument(
+        "--cutoff-utc",
+        type=parse_utc,
+        default=None,
+        help="Use the exact UTC cutoff established by the archive workflow.",
+    )
+
+    parser.add_argument(
         "--archive-dir",
         default=DEFAULT_ARCHIVE_DIR,
         help="Directory containing archive_manifest.csv and archive files.",
@@ -614,9 +621,10 @@ def main() -> int:
 
     mode = "EXECUTE" if args.execute else "DRY RUN"
 
-    # Freeze one cutoff for the entire run. Do not recalculate it per date.
+    # Use the workflow's shared cutoff when supplied; otherwise preserve the
+    # standalone CLI behavior by freezing one cutoff for this run.
     run_started = datetime.now(timezone.utc)
-    cutoff = run_started - timedelta(days=args.retention_days)
+    cutoff = args.cutoff_utc or (run_started - timedelta(days=args.retention_days))
 
     log.info("Mode: %s", mode)
     log.info("Target table: %s", SOURCE_TABLE)
