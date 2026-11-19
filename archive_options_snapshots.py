@@ -27,16 +27,29 @@ MANIFEST_COLUMNS = [
     "sha256", "exported_at_utc", "cutoff_utc",
 ]
 
+def parse_cutoff_utc(value):
+    if value is None:
+        return None
+    normalized = value.strip().replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        raise argparse.ArgumentTypeError("--cutoff-utc must include a timezone (UTC Z or explicit offset)")
+    return parsed.astimezone(timezone.utc)
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Read-only BTC options archive exporter")
     parser.add_argument("--output", default="./btc_data_archive", help="Local archive output directory")
     parser.add_argument("--older-than-days", type=int, default=3, help="Export records older than this many days (default: 3)")
+    parser.add_argument("--cutoff-utc", type=parse_cutoff_utc, default=None, help="Use the exact UTC cutoff shared with the retention verifier")
     parser.add_argument("--test-date", type=str, default=None, help="Export one specific UTC date, YYYY-MM-DD")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help="Number of database records fetched per batch")
     args = parser.parse_args()
     if args.test_date:
         try: args.test_date = date.fromisoformat(args.test_date)
         except ValueError: parser.error("--test-date must use YYYY-MM-DD")
+        if args.cutoff_utc is not None:
+            parser.error("--cutoff-utc cannot be combined with --test-date")
     return args
 
 def csv_value(value):
@@ -267,11 +280,16 @@ def main():
     output_directory = Path(args.output).resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     now_utc = datetime.now(timezone.utc)
-    cutoff = (now_utc - timedelta(days=args.older_than_days)) if not args.test_date else None
+    cutoff = (
+        args.cutoff_utc
+        if args.cutoff_utc is not None
+        else ((now_utc - timedelta(days=args.older_than_days)) if not args.test_date else None)
+    )
 
     print("BTC OPTIONS ARCHIVE PIPELINE")
     print(f"Output: {output_directory}")
     print(f"Started UTC: {now_utc.isoformat()}")
+    print(f"Retention cutoff UTC: {cutoff.isoformat() if cutoff else 'TEST_DATE (not applicable)'}")
 
     manifest_rows = []
     try:
