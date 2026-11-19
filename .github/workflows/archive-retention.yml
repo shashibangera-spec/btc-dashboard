@@ -2,8 +2,8 @@ name: BTC Options Archive and Retention
 
 on:
   schedule:
-    # 00:40 IST (19:10 UTC), temporary retention verification run.
-    - cron: "10 19 * * *"
+    # 02:47 IST (21:17 UTC), shifted away from the top of the hour.
+    - cron: "17 21 * * *"
 
   workflow_dispatch:
 
