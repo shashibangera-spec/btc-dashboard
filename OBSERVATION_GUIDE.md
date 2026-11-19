@@ -158,3 +158,13 @@ At the end of 30 days, review the complete sample before proposing any change. S
 ---
 
 *This guide describes the observation protocol and the repository's research components. For the full architecture and live database inventory, see [README.md](README.md) and [DATABASE.md](DATABASE.md).*
+
+## Document Lifecycle & Decision History
+
+This guide is a permanent, evolving record of the project's research protocol and engineering decisions.
+
+1. **Do not delete this file.** When an observation period ends or a feature moves from research into implementation/production (for example, if the Adverse Auction Warning is eventually approved for production), update this guide to reflect the new state and preserve the prior decision context. Do not delete the guide at the end of an observation period.
+2. **Keep a dated decision log.** Whenever a hypothesis is supported, rejected, or remains inconclusive based on the collected data, add a dated entry describing the observation period/sample, what the data showed (including relevant counterexamples and limitations), the resulting decision, and why any associated code or configuration was changed. If no code change is justified, record that outcome too. Link relevant commits, pull requests, tests, or reports where available. Do not describe a hypothesis as proven unless the evidence genuinely warrants that conclusion.
+3. **Archive, don't erase.** When a tool, integration, hypothesis, or data source is abandoned (including the ByKaranteli paid historical API route), move its description and decision rationale into a clearly labelled **Deprecated** subsection or section. Preserve why it was retired and any replacement/cross-check arrangement; do not silently remove the historical record.
+
+Add new dated decision entries rather than rewriting history. Correct factual errors transparently, retain superseded decisions with their dates and rationale, and distinguish observed evidence, interpretation, and approved implementation. This keeps the repository's research and development history auditable over time.
