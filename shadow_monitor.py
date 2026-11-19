@@ -191,6 +191,8 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
                     active_test = True
                     active_test_time = candle_close
                     active_test_level = val
+                    reported_test_time = candle_close
+                    reported_test_level = val
                     test_count += 1
                     status = "STARTED"
 
