@@ -1,3 +1,12 @@
+## 2026-11-20
+
+### Changed — Raw options snapshot retention reduced to three days
+
+- Reduced the archive workflow export cutoff and retention worker default from five days to three days for `public.options_oi_snapshots` only.
+- Preserved the existing archive-first sequence and manifest, file-size, SHA-256, gzip/CSV, row-count, timestamp-range and exact snapshot-ID coverage checks before deletion.
+- `public.gex_strike_attribution` and all other research tables remain outside this retention process and unchanged.
+- Updated the retention default regression test. No database schema, collector, dashboard, alert, Pine or trading-rule changes.
+
 ## 2026-11-19
 
 ### Added — Phase 2 event-only GEX wall attribution (review branch)
