@@ -143,8 +143,10 @@ def log_event(event_key, event_type, event_time, payload, status, message_id=Non
         print("Failed to persist event lifecycle ({}): {}".format(event_key, exc))
 
 def evaluate_amt_transition():
-    # Read a bounded window so a delayed workflow can still detect the first candle
-    # of the current profile instead of missing the boundary after later candles arrive.
+    """
+    Return every undelivered state transition in the latest profile, oldest first.
+    The query is bounded to the latest 200 valid snapshots.
+    """
     res = (
         supabase.table("amt_snapshots")
         .select("*")
@@ -154,21 +156,33 @@ def evaluate_amt_transition():
         .execute()
     )
     rows = res.data or []
-    if len(rows) < 2:
-        return None
+    if not rows:
+        return []
 
-    curr = rows[0]
-    curr_profile = curr.get("profile_id")
+    curr_profile = rows[0].get("profile_id")
     if not curr_profile:
         print("AMT alert skipped: latest profile_id is missing; refusing to infer a profile boundary.")
-        return None
+        return []
 
-    # Profile IDs are expected to be monotonic by candle time. Locate the first
-    # row of the latest profile, even when this workflow runs several candles late.
+    # The query is newest-first. Keep only the latest profile and reverse it
+    # so every adjacent candle transition is evaluated oldest-to-newest.
+    current_profile_rows = [
+        row for row in rows if row.get("profile_id") == curr_profile
+    ]
+    current_profile_rows.reverse()
+    if not current_profile_rows:
+        return []
+
+    alerts = []
+
+    # Preserve the one-off profile initialization event. It is ordered before
+    # intraprofile transitions because it belongs to the first candle in profile.
     boundary_index = next(
-        (index for index in range(len(rows) - 1)
-         if rows[index].get("profile_id") == curr_profile
-         and rows[index + 1].get("profile_id") != curr_profile),
+        (
+            index for index in range(len(rows) - 1)
+            if rows[index].get("profile_id") == curr_profile
+            and rows[index + 1].get("profile_id") != curr_profile
+        ),
         None,
     )
     if boundary_index is not None:
@@ -176,55 +190,58 @@ def evaluate_amt_transition():
         previous_profile = rows[boundary_index + 1].get("profile_id")
         if not previous_profile:
             print("AMT alert skipped: preceding profile_id is missing; refusing to infer a profile boundary.")
-            return None
-        event_key = (
-            f"AMT_PROFILE_INITIALIZATION_{curr_profile}_"
-            f"{first_profile_candle['candle_close_time']}"
-        )
-        # A delivered initialization is a one-off event. After it is recorded,
-        # continue evaluating the newest intraday transition on every run.
-        if not check_event_exists(event_key):
-            initial_state = first_profile_candle.get("confirmed_state") or "STATE_UNAVAILABLE"
-            close_price = first_profile_candle.get("close_price")
-            try:
-                close_text = f"USD {float(close_price):,.0f}" if close_price is not None else "Unavailable"
-            except (TypeError, ValueError):
-                close_text = "Unavailable"
-            msg = (
-                "🆕 AMT NEW PROFILE / STATE INITIALIZATION\n\n"
-                f"Profile: {curr_profile}\n"
-                f"Initial confirmed state: {initial_state}\n"
-                f"Candle: {first_profile_candle.get('candle_open_time', 'Unavailable')}\n"
-                f"Close: {close_text}"
+        else:
+            event_key = (
+                f"AMT_PROFILE_INITIALIZATION_{curr_profile}_"
+                f"{first_profile_candle.get('candle_close_time')}"
             )
-            payload = {
-                "profile_id": curr_profile,
-                "previous_profile_id": previous_profile,
-                "initial_state": initial_state,
-                "candle_open_time": first_profile_candle.get("candle_open_time"),
-                "candle_close_time": first_profile_candle.get("candle_close_time"),
-                "close_price": close_price,
-            }
-            return {
-                "key": event_key,
-                "type": "AMT_PROFILE_INITIALIZATION",
-                "time": first_profile_candle["candle_close_time"],
-                "msg": msg,
-                "payload": payload,
-            }
+            if not check_event_exists(event_key):
+                initial_state = first_profile_candle.get("confirmed_state") or "STATE_UNAVAILABLE"
+                close_price = first_profile_candle.get("close_price")
+                try:
+                    close_text = f"USD {float(close_price):,.0f}" if close_price is not None else "Unavailable"
+                except (TypeError, ValueError):
+                    close_text = "Unavailable"
+                msg = (
+                    "🆕 AMT NEW PROFILE / STATE INITIALIZATION\n\n"
+                    f"Profile: {curr_profile}\n"
+                    f"Initial confirmed state: {initial_state}\n"
+                    f"Candle: {first_profile_candle.get('candle_open_time', 'Unavailable')}\n"
+                    f"Close: {close_text}"
+                )
+                payload = {
+                    "profile_id": curr_profile,
+                    "previous_profile_id": previous_profile,
+                    "initial_state": initial_state,
+                    "candle_open_time": first_profile_candle.get("candle_open_time"),
+                    "candle_close_time": first_profile_candle.get("candle_close_time"),
+                    "close_price": close_price,
+                }
+                alerts.append({
+                    "key": event_key,
+                    "type": "AMT_PROFILE_INITIALIZATION",
+                    "time": first_profile_candle.get("candle_close_time"),
+                    "msg": msg,
+                    "payload": payload,
+                })
 
-    # Once initialization is already delivered (or no boundary is in the window),
-    # preserve the ordinary latest-candle same-profile transition behavior.
-    prev = rows[1]
-    if prev.get("profile_id") != curr_profile:
-        return None
-    curr_state = curr["confirmed_state"]
-    prev_state = prev["confirmed_state"]
-    if curr_state != prev_state:
-        event_key = f"AMT_STATE_CHANGE_{curr['candle_close_time']}"
+    # Replay every state change inside this profile in chronological order.
+    for previous, current in zip(current_profile_rows, current_profile_rows[1:]):
+        previous_state = previous.get("confirmed_state")
+        current_state = current.get("confirmed_state")
+        if not current_state or current_state == previous_state:
+            continue
+
+        candle_close_time = current.get("candle_close_time")
+        if not candle_close_time:
+            print("AMT transition skipped: candle_close_time is missing.")
+            continue
+
+        event_key = f"AMT_STATE_CHANGE_{candle_close_time}"
         if check_event_exists(event_key):
-            return None
-        raw_price = curr.get("close_price")
+            continue
+
+        raw_price = current.get("close_price")
         try:
             close_price = float(raw_price)
             price_text = f"${close_price:,.0f}"
@@ -232,14 +249,14 @@ def evaluate_amt_transition():
             close_price = None
             price_text = "Unavailable"
 
-        if curr_state == "DISCOVERY_CONFIRMED_BELOW":
+        if current_state == "DISCOVERY_CONFIRMED_BELOW":
             msg = (
                 "🔻 <b>BREAKDOWN CONFIRMED</b>\n"
                 f"<b>Price:</b> {price_text}\n"
                 "<b>What happened:</b> Price broke below the daily value area.\n"
                 "<b>Next Step:</b> Watch for a retest of the VAL. Do not chase the low."
             )
-        elif curr_state == "REENTRY_CONFIRMED":
+        elif current_state == "REENTRY_CONFIRMED":
             msg = (
                 "↩️ <b>FAILED BREAKDOWN (Returned Inside Value)</b>\n"
                 f"<b>Price:</b> {price_text}\n"
@@ -248,17 +265,20 @@ def evaluate_amt_transition():
             )
         else:
             msg = (
-                f"🚨 AMT STRUCTURAL CHANGE\n\n{prev_state} → {curr_state}"
-                f"\nCandle: {curr['candle_open_time']}\nClose: {price_text}"
+                f"🚨 AMT STRUCTURAL CHANGE\n\n{previous_state} → {current_state}"
+                f"\nCandle: {current.get('candle_open_time', 'Unavailable')}\nClose: {price_text}"
             )
-        return {
+
+        alerts.append({
             "key": event_key,
             "type": "AMT_STATE_CHANGE",
-            "time": curr["candle_close_time"],
+            "time": candle_close_time,
             "msg": msg,
-            "payload": curr,
-        }
-    return None
+            "payload": current,
+        })
+
+    return alerts
+
 def parse_utc_timestamp(value):
     if not isinstance(value, str) or not value.strip():
         raise ValueError("timestamp is missing")
@@ -359,11 +379,13 @@ def build_gex_alert(row):
     }
 
 
-def collect_alerts(amt, gex_alerts, oi):
-    """Keep alert types independent; a same-candle AMT and GEX pair both survive."""
+def collect_alerts(amt_alerts, gex_alerts, oi):
+    """Keep every AMT transition and independent GEX/OI alerts in one batch."""
     alerts = []
-    if amt:
-        alerts.append(amt)
+    if isinstance(amt_alerts, list):
+        alerts.extend(amt_alerts)
+    elif amt_alerts:
+        alerts.append(amt_alerts)
     alerts.extend(gex_alerts or [])
     if oi:
         alerts.append(oi)
@@ -566,8 +588,7 @@ def main():
     print("Evaluating alerts...")
     alerts = []
     
-    amt = evaluate_amt_transition()
-    if amt: alerts.append(amt)
+    amt_alerts = evaluate_amt_transition()
     
     try:
         gex_alerts = evaluate_gex_breach()
@@ -578,7 +599,7 @@ def main():
         gex_alerts = []
 
     oi = evaluate_oi_shock()
-    alerts = collect_alerts(amt, gex_alerts, oi)
+    alerts = collect_alerts(amt_alerts, gex_alerts, oi)
     
     if alerts:
         # Persist every event before sending the combined Telegram message. If
