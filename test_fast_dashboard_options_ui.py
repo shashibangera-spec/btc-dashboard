@@ -378,3 +378,34 @@ def test_amt_structure_developing_value_cards_are_ordered_low_to_high():
     expansion = block.index('_ui_card("VA Expansion", va_expansion_value, _va_sub, _va_tone)')
 
     assert val < poc < vah < expansion
+
+
+def test_session_ohlc_history_value_columns_are_ordered_val_poc_vah():
+    import ast
+    import types
+    import pandas as pd
+
+    tree = ast.parse(_source())
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "calculate_session_journey"
+    )
+    module = types.ModuleType("session_journey")
+    module.__dict__.update({
+        "pd": pd,
+        "calculate_tpo": lambda frame: (120.0, 80.0, 100.0),
+    })
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(DASHBOARD), "exec"), module.__dict__)
+
+    start = pd.Timestamp("2026-11-19 05:30:00", tz="Asia/Kolkata")
+    candles = pd.DataFrame([
+        {"Date": start, "ShiftedDate": start, "open": 95.0, "high": 110.0, "low": 90.0, "close": 105.0},
+        {"Date": start + pd.Timedelta(minutes=30), "ShiftedDate": start, "open": 105.0, "high": 115.0, "low": 100.0, "close": 108.0},
+    ])
+
+    result = module.calculate_session_journey(candles, 130.0, 70.0)
+
+    assert list(result.columns)[-3:] == ["VAL", "POC", "VAH"]
+    assert result.loc[0, "VAL"] == 80.0
+    assert result.loc[0, "POC"] == 100.0
+    assert result.loc[0, "VAH"] == 120.0
