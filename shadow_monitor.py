@@ -133,6 +133,8 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
             gap_reset = candle_open - prior_open > CANDLE_INTERVAL + timedelta(seconds=2)
 
         status = "NONE"
+        reported_test_time = active_test_time
+        reported_test_level = active_test_level
         if state_reset or gap_reset:
             if (gap_reset or force_anchor_reset) and not profile_reset and not state_change:
                 status = "INCOMPLETE_GAP"
@@ -227,8 +229,8 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
             "upside_wick_excursion_pct": up_wick / anchor_price * 100.0,
             "poc_distance_atr": abs(close - poc) / atr,
             "val_test_active": active_test,
-            "val_test_started_at": active_test_time.isoformat() if active_test_time else None,
-            "val_test_level": active_test_level,
+            "val_test_started_at": reported_test_time.isoformat() if reported_test_time else None,
+            "val_test_level": reported_test_level,
             "val_test_status": status,
             "val_test_count": test_count,
             "val_rejection_count": rejection_count,
