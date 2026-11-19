@@ -37,6 +37,7 @@ def test_val_episode_starts_once_and_freezes_initial_developing_val():
     result = calculate_shadow_rows(rows)
     assert result[1]["val_test_status"] == "STARTED"
     assert result[1]["val_test_level"] == 98
+    assert result[1]["val_test_started_at"] == (START + timedelta(minutes=60)).isoformat()
     assert result[2]["val_test_status"] == "CONTINUING"
     assert result[2]["val_test_level"] == 98
     assert result[2]["val_test_count"] == 1
@@ -68,6 +69,8 @@ def test_val_episode_is_rejected_only_after_price_stops_retesting_without_closin
     assert result[2]["val_test_active"] is False
     assert result[2]["val_test_count"] == 1
     assert result[2]["val_rejection_count"] == 1
+    assert result[2]["val_test_started_at"] == (START + timedelta(minutes=60)).isoformat()
+    assert result[2]["val_test_level"] == 98
 
 
 def test_val_episode_is_broken_by_completed_close_below_frozen_level():
@@ -82,6 +85,8 @@ def test_val_episode_is_broken_by_completed_close_below_frozen_level():
     assert result[2]["val_test_active"] is False
     assert result[2]["val_test_count"] == 1
     assert result[2]["val_rejection_count"] == 0
+    assert result[2]["val_test_started_at"] == (START + timedelta(minutes=60)).isoformat()
+    assert result[2]["val_test_level"] == 98
 
 
 def test_transition_anchor_resets_only_on_confirmed_state_or_profile_change():
