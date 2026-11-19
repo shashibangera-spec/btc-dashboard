@@ -99,7 +99,43 @@ A daily GEX attribution review is configured for **05:30 IST (Asia/Kolkata)**. I
 - Review new event rows without changing thresholds or interpreting them as trade instructions.
 - The shadow monitor is observed through its database rows; it has no Telegram alert routine.
 
-## 5. Quick reference — where to look
+**Daily report controls:**
+- The report uses a durable watermark based on the ordered tuple `(created_at, id)` to identify events not previously reviewed. It deduplicates rows and advances the watermark only after successful processing; if watermark persistence or processing fails, the report must surface the error rather than claim an empty result or complete coverage.
+- The review is **blind analysis**: it analyses the stored attribution events and does not look up live/current BTC prices, charts, or subsequent market outcomes. It therefore does not assess whether a wall later held or price reacted.
+- Each row is checked for Shapley reconciliation: `gamma_contribution + oi_contribution + spot_contribution` must equal `gex_change` within the configured absolute/relative floating-point tolerance. Null/missing contributions fail the check and are reported as anomalies.
+- The configured daily schedule is not proof that a run completed. Verify the actual run result.
+
+## 5. Deferred Items & Technical Debt
+
+### Deferred: Adverse Auction Warning
+
+We explicitly decided **not** to build an “Adverse Auction Warning” Telegram alert yet. The deterioration shadow monitor remains observation-only and non-alerting while the data accumulates. The metrics must first demonstrate useful, repeatable information across a meaningful sample; no warning threshold, Telegram route, or new alert should be added during this observation phase.
+
+This is separate from the existing AMT Structural Alerts, which communicate confirmed state transitions. A confirmed AMT state can remain unchanged while price deteriorates; that communications gap motivated the research, but it is not by itself evidence that a new alert is warranted.
+
+### ByKaranteli API decision
+
+The paid ByKaranteli historical-data route was abandoned. Its historical endpoint was quoted at **$0.10 per call**, and no paid calls or wallet funding were approved. The project relies on its own forward-testing/observation engine instead of purchasing that historical dataset.
+
+The free ByKaranteli API may remain available as an **optional secondary cross-check** for live GEX-wall information. It is not a core data dependency, does not replace the project’s primary collection pipeline, and should not be treated as a historical backfill source.
+
+### Database migration/bootstrap drift
+
+A forensic comparison found that the live database has migration history and schema objects that are not fully represented by SQL migration files in the GitHub repository. One concrete example is the applied Project Echo/options-derived-metrics migration (live version `20261112110255_add_project_echo_and_options_derived_metrics`), for which a matching SQL file was not present in the repository at the time of the audit. Several foundational table-creation migrations were also absent.
+
+**Known limitation:** the repository's migration directory is not currently a complete, reproducible blank-database bootstrap. Do not assume a fresh database can be created from the checked-in SQL files alone. Before attempting a clean rebuild or new environment, reconcile and restore the missing schema/migration history and validate it against the live catalog. The documentation records this drift; it does not resolve it.
+
+### Three-day raw options retention
+
+The raw `public.options_oi_snapshots` table has a **3-day retention window**. Older records are archived and verified before deletion by the scheduled retention workflow, reducing ongoing database storage use. This is a raw-snapshot storage policy, not a retention policy for all research outputs.
+
+The following event/metric tables are intended to be retained permanently:
+- `public.gex_strike_attribution` — event-level GEX/Shapley attribution history.
+- `public.auction_deterioration_metrics` — completed-candle deterioration and VAL-episode observations.
+
+The archive workflow's configured schedule and retention settings should not be confused with proof that a particular purge ran successfully. Check the workflow run and archive verification logs before asserting that a specific batch was archived or deleted.
+
+## 6. Quick reference — where to look
 
 | Question | Primary source |
 |---|---|
@@ -109,7 +145,7 @@ A daily GEX attribution review is configured for **05:30 IST (Asia/Kolkata)**. I
 | Which GEX wall event occurred and what drove the calculated change? | `gex_strike_attribution` |
 | How did price excursions and VAL-test episodes develop? | `auction_deterioration_metrics` |
 
-## 6. End-of-window review
+## 7. End-of-window review
 
 At the end of 30 days, review the complete sample before proposing any change. Summarize:
 - Number of eligible observations and missing/incomplete records.
