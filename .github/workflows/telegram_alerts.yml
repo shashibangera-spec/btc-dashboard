@@ -20,8 +20,6 @@ concurrency:
 
 jobs:
   evaluate-and-send:
-    # workflow_run fires for every conclusion; only process successful coordinator runs.
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     name: Evaluate Structural Alerts
     runs-on: ubuntu-latest
     timeout-minutes: 5
