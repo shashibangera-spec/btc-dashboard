@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from supabase import create_client
+from gex_attribution import persist_gex_attribution
+from gex_attribution import persist_gex_attribution
 
 BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
 TICKERS_URL = f"{BASE_URL}/v2/tickers"
@@ -564,13 +566,32 @@ def main():
                 derived = build_derived_row(
                     snapshot_id, expiry, successful_rows, expected_count, inserted
                 )
+                derived_saved = False
                 try:
                     client.table("options_derived_snapshots").upsert(
                         derived, on_conflict="snapshot_id,expiry_date"
                     ).execute()
+                    derived_saved = True
                 except Exception as exc:
                     mapping_errors.append(f"Derived metrics insert failed: {exc}")
                     all_errors.append(f"{expiry_label}: derived metrics insert failed: {exc}")
+
+                # Phase 2 research is deliberately non-blocking: an attribution
+                # failure must never fail the primary options collection.
+                if derived_saved and derived.get("metric_status", {}).get("chain") == "OK":
+                    try:
+                        persist_gex_attribution(
+                            client=client,
+                            current_snapshot_id=snapshot_id,
+                            expiry_date=expiry_label,
+                            current_rows=successful_rows,
+                            current_derived=derived,
+                        )
+                    except Exception as attribution_error:
+                        print(
+                            f"GEX attribution skipped for {expiry_label}: {attribution_error}",
+                            file=sys.stderr,
+                        )
                 if mapping_errors:
                     failed_expiries.append({
                         "expiry": expiry_label,
