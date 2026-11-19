@@ -9,11 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 
-from archive_options_snapshots import COLUMNS, merge_rows_by_id, read_existing_archive
+from archive_options_snapshots import COLUMNS, merge_rows_by_id, read_existing_archive, parse_cutoff_utc
 from retention_cron import (
     DEFAULT_RETENTION_DAYS,
     discover_eligible_dates,
     verify_archive_covers_deletion_candidates,
+    parse_utc,
 )
 
 
@@ -311,3 +312,24 @@ def test_retention_delete_empty_partition_does_not_issue_request():
     )
     assert deleted == 0
     assert client.calls == []
+
+
+def test_exporter_parses_timezone_aware_shared_cutoff():
+    cutoff = parse_cutoff_utc("2026-11-16T22:03:53.082612+00:00")
+    assert cutoff.isoformat() == "2026-11-16T22:03:53.082612+00:00"
+
+
+def test_exporter_rejects_naive_shared_cutoff():
+    with pytest.raises(Exception, match="must include a timezone"):
+        parse_cutoff_utc("2026-11-16T22:03:53")
+
+
+def test_retention_parser_normalizes_shared_cutoff_to_utc():
+    cutoff = parse_utc("2026-11-17T03:33:53.082612+05:30")
+    assert cutoff.isoformat() == "2026-11-16T22:03:53.082612+00:00"
+
+
+def test_workflow_passes_same_shared_cutoff_to_export_and_retention():
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/archive-retention.yml").read_text()
+    assert workflow.count('--cutoff-utc "$ARCHIVE_RETENTION_CUTOFF_UTC"') == 2
+    assert "ARCHIVE_RETENTION_CUTOFF_UTC={cutoff}" in workflow
