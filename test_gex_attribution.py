@@ -329,3 +329,21 @@ def test_database_upsert_error_is_caught_by_non_blocking_wrapper():
     query.upsert.assert_called_once()
     logger.assert_called_once()
     assert "database unavailable" in logger.call_args.args[0]
+
+
+
+def test_all_current_side_gex_zero_marks_previous_top3_disappeared():
+    previous = _chain(
+        [(100, 1000, .03), (110, 900, .03), (90, 800, .03)],
+        [(100, 1000, .03), (110, 900, .03), (90, 800, .03)],
+    )
+    current = _chain(
+        [(100, 0, .03), (110, 0, .03), (90, 0, .03)],
+        [(100, 1000, .03), (110, 900, .03), (90, 800, .03)],
+    )
+    rows = build_attribution_rows(**_args(previous, current))
+    disappeared = [
+        r for r in rows
+        if r["option_type"] == "CALL" and r["wall_event_type"] == "DISAPPEARED"
+    ]
+    assert {r["strike_price"] for r in disappeared} == {100, 110, 90}
