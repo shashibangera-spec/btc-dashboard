@@ -190,9 +190,9 @@ Derived metrics include Max Pain, ATM straddle, gross Call/Put GEX concentration
 
 ---
 
-## 30-day Data Collection — Research Targets
+## Research Targets and Methodology Notes
 
-Active feature development is paused during this collection window. The objective is to build a clean, timestamp-aligned sample before considering any directional automation.
+The following sections preserve research hypotheses and proposed evaluation methods. Their presence does not imply that a separate automated study or scheduled job is currently running, nor do they authorize directional automation. Any candidate relationship requires a clean, timestamp-aligned sample and independent empirical validation.
 
 ### Research vector: price compression while Futures OI expands (absorption candidate)
 
