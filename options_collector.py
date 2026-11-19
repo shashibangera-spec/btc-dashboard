@@ -21,8 +21,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from supabase import create_client
-from gex_attribution import persist_gex_attribution
-from gex_attribution import persist_gex_attribution
+from gex_attribution import run_attribution_safely
 
 BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
 TICKERS_URL = f"{BASE_URL}/v2/tickers"
@@ -580,14 +579,16 @@ def main():
                 # failure must never fail the primary options collection.
                 if derived_saved and derived.get("metric_status", {}).get("chain") == "OK":
                     try:
-                        persist_gex_attribution(
+                        run_attribution_safely(
                             client=client,
                             current_snapshot_id=snapshot_id,
                             expiry_date=expiry_label,
                             current_rows=successful_rows,
                             current_derived=derived,
+                            logger=lambda message: print(message, file=sys.stderr),
                         )
                     except Exception as attribution_error:
+                        # Last-resort guard: research attribution must never block collection.
                         print(
                             f"GEX attribution skipped for {expiry_label}: {attribution_error}",
                             file=sys.stderr,
