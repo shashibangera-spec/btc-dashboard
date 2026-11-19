@@ -2,8 +2,8 @@ name: BTC Options Archive and Retention
 
 on:
   schedule:
-    # 02:47 IST (21:17 UTC), shifted away from the top of the hour.
-    - cron: "17 21 * * *"
+    # 06:17 IST (00:47 UTC), shifted away from the top of the hour.
+    - cron: "47 0 * * *"
 
   workflow_dispatch:
 
@@ -52,7 +52,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install "psycopg[binary]" supabase pandas
 
-      # 5. Generate newly eligible archives
+      # 5. Freeze one cutoff for both archive export and retention preflight.
+      - name: Establish shared retention cutoff
+        working-directory: btc-dashboard
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timedelta, timezone
+          import os
+
+          cutoff = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"ARCHIVE_RETENTION_CUTOFF_UTC={cutoff}\\n")
+          print(f"SHARED_RETENTION_CUTOFF_UTC={cutoff}")
+          PY
+
+      # 6. Generate newly eligible archives
       - name: Archive options snapshots
         working-directory: btc-dashboard
         env:
@@ -61,6 +75,7 @@ jobs:
         run: |
           python archive_options_snapshots.py \
             --older-than-days 3 \
+            --cutoff-utc "$ARCHIVE_RETENTION_CUTOFF_UTC" \
             --output ../btc_data_archive
 
       # 6. Publish archives BEFORE database deletion
@@ -97,7 +112,7 @@ jobs:
           # Check if the manifest exists before running retention
           if [ -f ../btc_data_archive/archive_manifest.csv ]; then
             echo "Manifest found. Running retention..."
-            python retention_cron.py --execute --archive-dir ../btc_data_archive
+            python retention_cron.py --execute --cutoff-utc "$ARCHIVE_RETENTION_CUTOFF_UTC" --archive-dir ../btc_data_archive
           else
             echo "No archive manifest found (no data older than 3 days). Skipping retention."
           fi
