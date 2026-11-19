@@ -198,3 +198,116 @@ def test_database_side_discovery_handles_no_eligible_rows():
     )
 
     assert discovered == set()
+
+
+class FakeDeleteQuery:
+    def __init__(self, client):
+        self.client = client
+        self.ids = None
+        self.filters = []
+
+    def delete(self, count=None):
+        self.count_mode = count
+        return self
+
+    def in_(self, column, values):
+        assert column == "id"
+        self.ids = list(values)
+        return self
+
+    def gte(self, column, value):
+        self.filters.append(("gte", column, value))
+        return self
+
+    def lt(self, column, value):
+        self.filters.append(("lt", column, value))
+        return self
+
+    def execute(self):
+        self.client.calls.append(self)
+        if self.client.mismatch_call == len(self.client.calls):
+            return type("Response", (), {"count": len(self.ids) - 1})()
+        return type("Response", (), {"count": len(self.ids)})()
+
+
+class FakeDeleteClient:
+    def __init__(self, mismatch_call=None):
+        self.calls = []
+        self.mismatch_call = mismatch_call
+
+    def table(self, name):
+        assert name == "options_oi_snapshots"
+        return FakeDeleteQuery(self)
+
+
+def test_retention_delete_uses_bounded_id_batches_and_checks_each_count(monkeypatch):
+    from datetime import datetime, timezone
+    from retention_cron import delete_old_rows_for_day
+    import retention_cron
+
+    monkeypatch.setattr(retention_cron, "DELETE_BATCH_SIZE", 2)
+    client = FakeDeleteClient()
+    ids = {f"id-{i:03d}" for i in range(5)}
+    cutoff = datetime(2026, 11, 20, tzinfo=timezone.utc)
+
+    deleted = delete_old_rows_for_day(
+        client=client, day=date(2026, 11, 15), cutoff=cutoff,
+        expected_count=5, expected_ids=ids,
+    )
+
+    assert deleted == 5
+    assert [len(call.ids) for call in client.calls] == [2, 2, 1]
+    assert [call.ids for call in client.calls] == [
+        ["id-000", "id-001"], ["id-002", "id-003"], ["id-004"]
+    ]
+    for call in client.calls:
+        assert ("gte", "collected_at", "2026-11-15T00:00:00+00:00") in call.filters
+        assert ("lt", "collected_at", "2026-11-16T00:00:00+00:00") in call.filters
+        assert ("lt", "collected_at", cutoff.isoformat()) in call.filters
+
+
+def test_retention_delete_stops_on_a_per_batch_count_mismatch(monkeypatch):
+    from datetime import datetime, timezone
+    from retention_cron import delete_old_rows_for_day
+    import retention_cron
+
+    monkeypatch.setattr(retention_cron, "DELETE_BATCH_SIZE", 2)
+    client = FakeDeleteClient(mismatch_call=2)
+    ids = {f"id-{i:03d}" for i in range(5)}
+
+    with pytest.raises(RuntimeError, match="batch 2"):
+        delete_old_rows_for_day(
+            client=client, day=date(2026, 11, 15),
+            cutoff=datetime(2026, 11, 20, tzinfo=timezone.utc),
+            expected_count=5, expected_ids=ids,
+        )
+
+    assert len(client.calls) == 2
+
+
+def test_retention_delete_rejects_preflight_id_count_mismatch():
+    from datetime import datetime, timezone
+    from retention_cron import delete_old_rows_for_day
+
+    client = FakeDeleteClient()
+    with pytest.raises(RuntimeError, match="Verified ID/count mismatch"):
+        delete_old_rows_for_day(
+            client=client, day=date(2026, 11, 15),
+            cutoff=datetime(2026, 11, 20, tzinfo=timezone.utc),
+            expected_count=2, expected_ids={"only-one"},
+        )
+    assert client.calls == []
+
+
+def test_retention_delete_empty_partition_does_not_issue_request():
+    from datetime import datetime, timezone
+    from retention_cron import delete_old_rows_for_day
+
+    client = FakeDeleteClient()
+    deleted = delete_old_rows_for_day(
+        client=client, day=date(2026, 11, 15),
+        cutoff=datetime(2026, 11, 20, tzinfo=timezone.utc),
+        expected_count=0, expected_ids=set(),
+    )
+    assert deleted == 0
+    assert client.calls == []

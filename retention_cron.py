@@ -73,6 +73,7 @@ MANIFEST_COLUMNS = [
 ]
 
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "1000"))
+DELETE_BATCH_SIZE = int(os.getenv("DELETE_BATCH_SIZE", "100"))
 DEFAULT_RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "3"))
 DEFAULT_ARCHIVE_DIR = os.getenv("ARCHIVE_DIR", "btc_data_archive")
 
@@ -502,13 +503,19 @@ def delete_old_rows_for_day(
     expected_ids: set[str],
 ) -> int:
     """
-    Delete only rows in the verified UTC partition whose collected_at
-    is strictly older than the exact cutoff.
+    Delete verified candidates in bounded ID batches.
 
-    The returned PostgREST count must match the pre-delete count.
+    A single date partition can contain tens of thousands of snapshots. Deleting
+    the entire partition in one PostgREST statement can exceed the database
+    statement timeout. Each batch is restricted to preflighted IDs and the
+    original UTC date/cutoff predicates. The exact deleted count is checked
+    after every batch. If a later batch fails, the run stops; a subsequent run
+    safely discovers only the remaining IDs and re-verifies archive coverage.
     """
     if expected_count <= 0:
         return 0
+    if DELETE_BATCH_SIZE < 1:
+        raise RuntimeError("DELETE_BATCH_SIZE must be at least 1.")
     if len(expected_ids) != expected_count:
         raise RuntimeError(
             f"Verified ID/count mismatch for {day}: "
@@ -516,34 +523,51 @@ def delete_old_rows_for_day(
         )
 
     start, end = utc_day_bounds(day)
+    ordered_ids = sorted(expected_ids)
+    total_deleted = 0
 
-    response = (
-        client.table(TABLE_NAME)
-        .delete(count="exact")
-        .gte("collected_at", iso_utc(start))
-        .lt("collected_at", iso_utc(end))
-        .lt("collected_at", iso_utc(cutoff))
-        .execute()
-    )
-
-    deleted_count = response.count
-
-    if deleted_count is None:
-        raise RuntimeError(
-            f"Supabase did not return an exact deletion count for {day}. "
-            "Stop and inspect the database before rerunning."
+    for batch_number, offset in enumerate(
+        range(0, len(ordered_ids), DELETE_BATCH_SIZE), start=1
+    ):
+        batch_ids = ordered_ids[offset : offset + DELETE_BATCH_SIZE]
+        response = (
+            client.table(TABLE_NAME)
+            .delete(count="exact")
+            .in_("id", batch_ids)
+            .gte("collected_at", iso_utc(start))
+            .lt("collected_at", iso_utc(end))
+            .lt("collected_at", iso_utc(cutoff))
+            .execute()
         )
 
-    deleted_count = int(deleted_count)
+        deleted_count = response.count
+        if deleted_count is None:
+            raise RuntimeError(
+                f"Supabase did not return an exact deletion count for "
+                f"{day}, batch {batch_number}. Stop and inspect the database."
+            )
 
-    if deleted_count != expected_count:
-        raise RuntimeError(
-            f"Deletion count mismatch for {day}: "
-            f"pre-delete count={expected_count}, deleted={deleted_count}. "
-            "Stop and inspect the database."
+        deleted_count = int(deleted_count)
+        if deleted_count != len(batch_ids):
+            raise RuntimeError(
+                f"Deletion count mismatch for {day}, batch {batch_number}: "
+                f"expected={len(batch_ids)}, deleted={deleted_count}. "
+                "Stop and inspect the database."
+            )
+
+        total_deleted += deleted_count
+        log.info(
+            "Deleted batch %s for %s: %s rows (cumulative %s/%s).",
+            batch_number, day, deleted_count, total_deleted, expected_count,
         )
 
-    return deleted_count
+    if total_deleted != expected_count:
+        raise RuntimeError(
+            f"Total deletion count mismatch for {day}: "
+            f"expected={expected_count}, deleted={total_deleted}."
+        )
+
+    return total_deleted
 
 
 # ---------------------------------------------------------------------
@@ -581,6 +605,9 @@ def main() -> int:
 
     if PAGE_SIZE < 1:
         parser.error("PAGE_SIZE must be at least 1.")
+
+    if DELETE_BATCH_SIZE < 1:
+        parser.error("DELETE_BATCH_SIZE must be at least 1.")
 
     archive_dir = Path(args.archive_dir).resolve()
     manifest_path = archive_dir / MANIFEST_NAME
