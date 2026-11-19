@@ -62,7 +62,7 @@ jobs:
 
           cutoff = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              env_file.write(f"ARCHIVE_RETENTION_CUTOFF_UTC={cutoff}\\n")
+              env_file.write(f"ARCHIVE_RETENTION_CUTOFF_UTC={cutoff}\n")
           print(f"SHARED_RETENTION_CUTOFF_UTC={cutoff}")
           PY
 
@@ -78,7 +78,7 @@ jobs:
             --cutoff-utc "$ARCHIVE_RETENTION_CUTOFF_UTC" \
             --output ../btc_data_archive
 
-      # 6. Publish archives BEFORE database deletion
+      # 7. Publish archives BEFORE database deletion
       - name: Commit and push archive files
         working-directory: btc_data_archive
         env:
