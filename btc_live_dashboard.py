@@ -788,7 +788,7 @@ def calculate_session_journey(df, prev_vah, prev_val):
             if close > vah: micro_bias = "🟢 Strong Close"
             elif close < val: micro_bias = "🔴 Weak Close"
 
-        sessions.append({"Session": name, "Open": session_data['open'].iloc[0], "High": high, "Low": low, "Close": close, "Macro Bias": macro_bias, "Micro Bias": micro_bias, "POC": poc, "VAH": vah, "VAL": val})
+        sessions.append({"Session": name, "Open": session_data['open'].iloc[0], "High": high, "Low": low, "Close": close, "Macro Bias": macro_bias, "Micro Bias": micro_bias, "VAL": val, "POC": poc, "VAH": vah})
     return pd.DataFrame(sessions)
 
 def generate_state_journal(df, manual_valid, manual_vah, manual_val, manual_poc):
