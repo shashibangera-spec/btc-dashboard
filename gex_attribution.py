@@ -145,12 +145,12 @@ def build_attribution_rows(
     previous_collected_at: str,
     current_collected_at: str,
     threshold_pct: float = GEX_CHANGE_THRESHOLD_PCT,
+    new_exposure_min_pct: float = 2.0,
 ) -> List[Dict[str, Any]]:
-    """Build event-only records for CALL and PUT wall changes.
+    """Emit event rows from the previous/current Top-3 union.
 
-    The comparison set is the union of the previous and current Top-3 strike
-    sets. Full-chain maps are retained in memory only to calculate both sides
-    of a winner-switch margin; no full-chain rows are persisted.
+    NEW_EXPOSURE is measured against 2% of the current #1 wall GEX.
+    DISAPPEARED means a previous Top-3 strike is absent or has zero GEX.
     """
     p_spot, c_spot = _number(previous_spot), _number(current_spot)
     p_mult, c_mult = _number(previous_multiplier), _number(current_multiplier)
@@ -170,26 +170,21 @@ def build_attribution_rows(
         if not previous_top or not current_top:
             continue
 
-        # Union is essential: the old wall can fall out of today's Top-3.
         tracked_union = set(previous_top) | set(current_top)
-        previous_wall = next(iter(previous_top))
-        current_wall = next(iter(current_top))
+        previous_wall, current_wall = next(iter(previous_top)), next(iter(current_top))
+        current_wall_gex = current_top[current_wall]["gex"]
+        new_exposure_floor = current_wall_gex * (new_exposure_min_pct / 100.0)
 
-        event_type = None
-        event_strikes: List[float] = []
-        margin_contributions = None
-        margin_change = None
-        wall_driver = "UNATTRIBUTED"
+        # Event map ensures a strike is persisted once per comparison/side.
+        events: Dict[float, Dict[str, Any]] = {}
 
+        # Wall events retain precedence for the two wall strikes.
         if previous_wall != current_wall:
-            event_type = "WINNER_SWITCH"
-            event_strikes = [previous_wall, current_wall]
-
-            old_p = previous_all.get(previous_wall)
-            old_c = current_all.get(previous_wall)
-            new_p = previous_all.get(current_wall)
-            new_c = current_all.get(current_wall)
-
+            old_p, old_c = previous_all.get(previous_wall), current_all.get(previous_wall)
+            new_p, new_c = previous_all.get(current_wall), current_all.get(current_wall)
+            margin_contributions = None
+            margin_change = None
+            driver = "UNATTRIBUTED"
             if all(value is not None for value in (old_p, old_c, new_p, new_c)):
                 old_components = _shapley(old_p, old_c, p_mult)
                 new_components = _shapley(new_p, new_c, p_mult)
@@ -197,63 +192,66 @@ def build_attribution_rows(
                     factor: new_components[factor] - old_components[factor]
                     for factor in ("gamma", "oi", "spot")
                 }
-                previous_margin = new_p["gex"] - old_p["gex"]
-                current_margin = new_c["gex"] - old_c["gex"]
-                margin_change = current_margin - previous_margin
-                wall_driver = _dominant_driver(margin_contributions)
-            else:
-                wall_driver = "UNATTRIBUTED"
+                margin_change = (new_c["gex"] - old_c["gex"]) - (new_p["gex"] - old_p["gex"])
+                driver = _dominant_driver(margin_contributions)
+            for strike in (previous_wall, current_wall):
+                events[strike] = {
+                    "event": "WINNER_SWITCH",
+                    "margin_contributions": margin_contributions,
+                    "margin_change": margin_change,
+                    "driver": driver,
+                }
         else:
-            previous_wall_values = previous_all.get(previous_wall)
-            current_wall_values = current_all.get(current_wall)
-            if previous_wall_values is None or current_wall_values is None:
-                continue
-            previous_gex = previous_wall_values["gex"]
-            current_gex = current_wall_values["gex"]
-            if abs(previous_gex) <= GEX_EPSILON:
-                continue
-            change_pct = abs(current_gex - previous_gex) / abs(previous_gex) * 100.0
-            if change_pct < threshold_pct:
-                continue
-            event_type = "SIGNIFICANT_MAGNITUDE_CHANGE"
-            event_strikes = [previous_wall]
-            components = _shapley(previous_wall_values, current_wall_values, p_mult)
-            margin_contributions = components
-            margin_change = current_gex - previous_gex
-            wall_driver = _dominant_driver(components)
+            p_wall, c_wall = previous_all.get(previous_wall), current_all.get(current_wall)
+            if p_wall and c_wall and abs(p_wall["gex"]) > GEX_EPSILON:
+                pct = abs(c_wall["gex"] - p_wall["gex"]) / abs(p_wall["gex"]) * 100.0
+                if pct >= threshold_pct:
+                    components = _shapley(p_wall, c_wall, p_mult)
+                    events[previous_wall] = {
+                        "event": "SIGNIFICANT_MAGNITUDE_CHANGE",
+                        "margin_contributions": components,
+                        "margin_change": c_wall["gex"] - p_wall["gex"],
+                        "driver": _dominant_driver(components),
+                    }
 
-        # All persisted strike rows are drawn from the previous/current Top-3 union.
-        event_strikes = [strike for strike in event_strikes if strike in tracked_union]
-        for strike in event_strikes:
-            p_values = previous_all.get(strike)
-            c_values = current_all.get(strike)
-            p_rank = previous_top.get(strike, {}).get("rank")
-            c_rank = current_top.get(strike, {}).get("rank")
+        # Any newly Top-3 strike above the materiality floor is an event,
+        # even when it does not become the #1 wall.
+        for strike, values in current_top.items():
+            if strike not in previous_top and values["gex"] > new_exposure_floor and strike not in events:
+                events[strike] = {
+                    "event": "NEW_EXPOSURE", "margin_contributions": None,
+                    "margin_change": None, "driver": "UNATTRIBUTED",
+                }
+
+        # Previous Top-3 exposure that vanishes or falls to zero is retained.
+        for strike in previous_top:
+            current_values = current_all.get(strike)
+            if (current_values is None or current_values["gex"] <= GEX_EPSILON) and strike not in events:
+                events[strike] = {
+                    "event": "DISAPPEARED", "margin_contributions": None,
+                    "margin_change": None, "driver": "UNATTRIBUTED",
+                }
+
+        for strike, event in events.items():
+            p_values, c_values = previous_all.get(strike), current_all.get(strike)
             components = _row_attribution(p_values, c_values, p_mult)
-            previous_gex = p_values["gex"] if p_values else None
-            current_gex = c_values["gex"] if c_values else None
-            change = (
-                current_gex - previous_gex
-                if previous_gex is not None and current_gex is not None else None
-            )
+            p_gex = p_values["gex"] if p_values else None
+            c_gex = c_values["gex"] if c_values else None
+            change = c_gex - p_gex if p_gex is not None and c_gex is not None else None
             change_pct = (
-                abs(change) / abs(previous_gex) * 100.0
-                if change is not None and abs(previous_gex) > GEX_EPSILON else None
+                abs(change) / abs(p_gex) * 100.0
+                if change is not None and abs(p_gex) > GEX_EPSILON else None
             )
-
-            if components is not None:
-                attribution_status = "OK"
-                individual_driver = _dominant_driver(components)
-            elif p_values is None and c_values is not None:
-                attribution_status = "NEW_EXPOSURE"
-                individual_driver = "UNATTRIBUTED"
-            elif p_values is not None and c_values is None:
-                attribution_status = "DISAPPEARED"
-                individual_driver = "UNATTRIBUTED"
+            if event["event"] == "NEW_EXPOSURE":
+                status = "NEW_EXPOSURE"
+            elif event["event"] == "DISAPPEARED":
+                status = "DISAPPEARED"
+            elif components is not None:
+                status = "OK"
             else:
-                attribution_status = "INSUFFICIENT_DATA"
-                individual_driver = "UNATTRIBUTED"
+                status = "INSUFFICIENT_DATA"
 
+            contributions = components
             output.append({
                 "comparison_id": comparison_id,
                 "previous_snapshot_id": previous_snapshot_id,
@@ -261,11 +259,11 @@ def build_attribution_rows(
                 "expiry_date": expiry_date,
                 "option_type": side,
                 "strike_price": strike,
-                "wall_event_type": event_type,
+                "wall_event_type": event["event"],
                 "previous_wall_strike": previous_wall,
                 "current_wall_strike": current_wall,
-                "previous_top3_rank": p_rank,
-                "current_top3_rank": c_rank,
+                "previous_top3_rank": previous_top.get(strike, {}).get("rank"),
+                "current_top3_rank": current_top.get(strike, {}).get("rank"),
                 "previous_collected_at": previous_collected_at,
                 "current_collected_at": current_collected_at,
                 "gamma_previous": p_values["gamma"] if p_values else None,
@@ -275,30 +273,40 @@ def build_attribution_rows(
                 "spot_previous": p_spot,
                 "spot_current": c_spot,
                 "contract_multiplier": p_mult,
-                "gex_previous": previous_gex,
-                "gex_current": current_gex,
+                "gex_previous": p_gex,
+                "gex_current": c_gex,
                 "gex_change": change,
                 "gex_change_pct": change_pct,
-                "gamma_contribution": components["gamma"] if components else None,
-                "oi_contribution": components["oi"] if components else None,
-                "spot_contribution": components["spot"] if components else None,
-                "wall_margin_change": margin_change,
-                "margin_gamma_contribution": (
-                    margin_contributions["gamma"] if margin_contributions else None
+                "gamma_contribution": contributions["gamma"] if contributions else None,
+                "oi_contribution": contributions["oi"] if contributions else None,
+                "spot_contribution": contributions["spot"] if contributions else None,
+                "wall_margin_change": event["margin_change"],
+                "margin_gamma_contribution": event["margin_contributions"]["gamma"] if event["margin_contributions"] else None,
+                "margin_oi_contribution": event["margin_contributions"]["oi"] if event["margin_contributions"] else None,
+                "margin_spot_contribution": event["margin_contributions"]["spot"] if event["margin_contributions"] else None,
+                "dominant_driver": event["driver"] if event["event"] == "WINNER_SWITCH" else (
+                    _dominant_driver(components) if components else event["driver"]
                 ),
-                "margin_oi_contribution": (
-                    margin_contributions["oi"] if margin_contributions else None
-                ),
-                "margin_spot_contribution": (
-                    margin_contributions["spot"] if margin_contributions else None
-                ),
-                "dominant_driver": wall_driver if event_type == "WINNER_SWITCH" else individual_driver,
-                "attribution_status": attribution_status,
+                "attribution_status": status,
                 "threshold_pct": threshold_pct,
             })
 
     return output
 
+
+def run_attribution_safely(client, current_snapshot_id, expiry_date, current_rows, current_derived, logger=None):
+    """Non-blocking wrapper used by the production collector."""
+    try:
+        return persist_gex_attribution(
+            client, current_snapshot_id, expiry_date, current_rows, current_derived
+        )
+    except Exception as exc:
+        message = f"GEX attribution skipped for {expiry_date}: {exc}"
+        if logger is not None:
+            logger(message)
+        else:
+            print(message)
+        return 0
 
 def _valid_derived(derived: Dict[str, Any]) -> bool:
     status = derived.get("metric_status") or {}
