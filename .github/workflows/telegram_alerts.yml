@@ -1,11 +1,8 @@
 name: BTC High-Signal Telegram Alerts
 
 on:
-  workflow_run:
-    workflows:
-      - BTC Data Collection Coordinator
-    types:
-      - completed
+  schedule:
+    - cron: '3,33 * * * *'
   workflow_dispatch:
     inputs:
       test_mode:
