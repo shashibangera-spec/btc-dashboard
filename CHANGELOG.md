@@ -2,7 +2,7 @@
 
 ### Fixed — Raw options retention DELETE statement timeout
 
-- Replaced one large per-day PostgREST DELETE with bounded, deterministic batches of preflighted snapshot IDs (default 250 IDs per request).
+- Replaced one large per-day PostgREST DELETE with bounded, deterministic batches of preflighted snapshot IDs (default 100 IDs per request).
 - Preserves the exact UTC partition and frozen retention-cutoff predicates on every batch, and verifies the exact deleted count after each request.
 - Stops immediately on any missing/mismatched count. A later run re-discovers only remaining eligible IDs and rechecks archive coverage before continuing.
 - Adds regression tests for batching, per-batch count mismatch, preflight ID/count mismatch and empty partitions.
