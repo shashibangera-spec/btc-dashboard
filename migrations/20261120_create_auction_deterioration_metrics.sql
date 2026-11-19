@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS public.auction_deterioration_metrics (
     val_test_status text NOT NULL DEFAULT 'NONE' CHECK (
         val_test_status IN (
             'NONE', 'STARTED', 'CONTINUING', 'REJECTED',
-            'BROKEN', 'INCOMPLETE_GAP', 'RESET_STATE_CHANGE'
+            'BROKEN', 'INCOMPLETE_GAP', 'RESET_CONTEXT'
         )
     ),
     val_test_count integer NOT NULL DEFAULT 0 CHECK (val_test_count >= 0),
