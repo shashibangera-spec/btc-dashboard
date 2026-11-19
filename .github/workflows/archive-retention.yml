@@ -2,8 +2,8 @@ name: BTC Options Archive and Retention
 
 on:
   schedule:
-    # 06:10 IST (00:40 UTC), after the 05:30 AMT reset and first new-auction candle cycle.
-    - cron: "40 0 * * *"
+    # 18:10 IST (12:40 UTC), 40 minutes after the 17:30 IST options expiry.
+    - cron: "40 12 * * *"
 
   workflow_dispatch:
 
