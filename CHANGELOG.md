@@ -1,3 +1,14 @@
+## 2026-11-19
+
+### Added — Phase 2 event-only GEX wall attribution (review branch)
+
+- Adds per-expiry Top-3 Call/Put GEX ranking and compares the union of previous/current Top-3 strikes.
+- Uses six-order Shapley attribution across exchange-reported Gamma, OI and spot; winner switches are attributed by the change in the new-versus-old wall margin.
+- Persists only winner switches and same-wall GEX magnitude changes at or above the configurable 2% threshold. Unchanged observations are not written.
+- Keeps attribution failures non-blocking for the existing options collector. Requires successful, complete same-expiry snapshots and never fabricates zero values for missing Gamma/OI.
+- Adds a dedicated RLS-protected event table migration and offline regression tests. Migration is not applied to the live database.
+- No archive/TTL cleanup, dashboard, options filter, alert, Pine or trading-rule changes.
+
 ## 2026-11-18
 
 ### Added — isolated IV-surface research methodology (unmerged PR)
