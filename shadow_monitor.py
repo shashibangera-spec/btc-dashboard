@@ -134,7 +134,7 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
 
         status = "NONE"
         if state_reset or gap_reset:
-            if active_test and (gap_reset or force_anchor_reset) and not profile_reset and not state_change:
+            if (gap_reset or force_anchor_reset) and not profile_reset and not state_change:
                 status = "INCOMPLETE_GAP"
             elif anchor_profile is not None:
                 status = "RESET_CONTEXT"
