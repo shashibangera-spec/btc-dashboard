@@ -98,8 +98,8 @@ def test_retention_rejects_duplicate_ids_in_archive(tmp_path):
         )
 
 
-def test_default_retention_is_five_days():
-    assert DEFAULT_RETENTION_DAYS == 5
+def test_default_retention_is_three_days():
+    assert DEFAULT_RETENTION_DAYS == 3
 
 
 
