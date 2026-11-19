@@ -263,14 +263,14 @@ def test_persistence_upserts_comparison_id_and_event_payload():
     saved = persist_gex_attribution(
         client, current_derived["snapshot_id"], "2026-12-25", current, current_derived
     )
-    assert saved == 1
+    assert saved == 2
     upsert_query = client.queries[-1]
     assert upsert_query.table_name == "gex_strike_attribution"
     assert upsert_query.upsert_kwargs["on_conflict"] == (
         "previous_snapshot_id,current_snapshot_id,expiry_date,option_type,strike_price"
     )
     assert upsert_query.payload[0]["comparison_id"]
-    assert upsert_query.payload[0]["wall_event_type"] == "NEW_EXPOSURE"
+    assert {row["wall_event_type"] for row in upsert_query.payload} == {"NEW_EXPOSURE", "DISAPPEARED"}
 
 
 def test_attribution_database_error_is_non_blocking_and_logged():
