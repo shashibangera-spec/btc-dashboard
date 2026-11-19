@@ -73,7 +73,7 @@ MANIFEST_COLUMNS = [
 ]
 
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "1000"))
-DELETE_BATCH_SIZE = int(os.getenv("DELETE_BATCH_SIZE", "250"))
+DELETE_BATCH_SIZE = int(os.getenv("DELETE_BATCH_SIZE", "100"))
 DEFAULT_RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "3"))
 DEFAULT_ARCHIVE_DIR = os.getenv("ARCHIVE_DIR", "btc_data_archive")
 
