@@ -347,3 +347,22 @@ def test_all_current_side_gex_zero_marks_previous_top3_disappeared():
         if r["option_type"] == "CALL" and r["wall_event_type"] == "DISAPPEARED"
     ]
     assert {r["strike_price"] for r in disappeared} == {100, 110, 90}
+
+
+
+def test_dominant_driver_uses_absolute_shapley_impact_for_negative_and_zero_values():
+    from gex_attribution import _dominant_driver
+
+    # A zero OI contribution must not outrank negative Gamma/Spot impacts.
+    contributions = {
+        "gamma": -12.61037874655949,
+        "oi": 0.0,
+        "spot": -23.52682250067346,
+    }
+    assert _dominant_driver(contributions) == "SPOT"
+
+    # All-negative inputs still select the largest absolute impact.
+    assert _dominant_driver({"gamma": -5.0, "oi": -2.0, "spot": -1.0}) == "GAMMA"
+
+    # No measurable contribution remains explicitly unattributed.
+    assert _dominant_driver({"gamma": 0.0, "oi": 0.0, "spot": 0.0}) == "UNATTRIBUTED"
