@@ -25,7 +25,7 @@ Required environment variables:
 
 Optional environment variables:
   ARCHIVE_DIR       Default: btc_data_archive
-  RETENTION_DAYS    Default: 5
+  RETENTION_DAYS    Default: 3
   PAGE_SIZE         Default: 1000
 """
 
@@ -73,7 +73,7 @@ MANIFEST_COLUMNS = [
 ]
 
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "1000"))
-DEFAULT_RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "5"))
+DEFAULT_RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "3"))
 DEFAULT_ARCHIVE_DIR = os.getenv("ARCHIVE_DIR", "btc_data_archive")
 
 LOG_FORMAT = "%(asctime)s UTC | %(levelname)s | %(message)s"
@@ -552,7 +552,7 @@ def delete_old_rows_for_day(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Verify raw-options archives and apply five-day retention."
+        description="Verify raw-options archives and apply three-day retention."
     )
 
     parser.add_argument(
@@ -565,7 +565,7 @@ def main() -> int:
         "--retention-days",
         type=int,
         default=DEFAULT_RETENTION_DAYS,
-        help="Retention window in days. Default comes from RETENTION_DAYS or 5.",
+        help="Retention window in days. Default comes from RETENTION_DAYS or 3.",
     )
 
     parser.add_argument(
