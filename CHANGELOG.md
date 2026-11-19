@@ -1,5 +1,13 @@
 ## 2026-11-20
 
+### Fixed — Archive/retention cutoff race
+
+- Establishes one timezone-aware UTC cutoff once per scheduled workflow run and passes the exact value to both archive export and retention preflight/deletion.
+- Prevents rows collected after the export snapshot from becoming newly eligible merely because the retention worker recalculated the three-day cutoff later.
+- Retains exact archive ID coverage checks and fail-closed behavior for genuinely late-arriving historical rows.
+- Moves the daily archive/retention schedule to 00:47 UTC (06:17 IST); GitHub scheduled start times remain subject to queue delay.
+- Adds regression tests for timezone-aware cutoff parsing and workflow argument wiring. No database schema, retention duration, archive format, collector, dashboard, alert or trading-rule changes.
+
 ### Fixed — Raw options retention DELETE statement timeout
 
 - Replaced one large per-day PostgREST DELETE with bounded, deterministic batches of preflighted snapshot IDs (default 100 IDs per request).
