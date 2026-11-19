@@ -224,26 +224,32 @@ def evaluate_amt_transition():
         event_key = f"AMT_STATE_CHANGE_{curr['candle_close_time']}"
         if check_event_exists(event_key):
             return None
-        close_price = float(curr["close_price"])
+        raw_price = curr.get("close_price")
+        try:
+            close_price = float(raw_price)
+            price_text = f"${close_price:,.0f}"
+        except (TypeError, ValueError):
+            close_price = None
+            price_text = "Unavailable"
 
         if curr_state == "DISCOVERY_CONFIRMED_BELOW":
             msg = (
                 "🔻 <b>BREAKDOWN CONFIRMED</b>\n"
-                f"<b>Price:</b> ${close_price:,.0f}\n"
+                f"<b>Price:</b> {price_text}\n"
                 "<b>What happened:</b> Price broke below the daily value area.\n"
                 "<b>Next Step:</b> Watch for a retest of the VAL. Do not chase the low."
             )
         elif curr_state == "REENTRY_CONFIRMED":
             msg = (
                 "↩️ <b>FAILED BREAKDOWN (Returned Inside Value)</b>\n"
-                f"<b>Price:</b> ${close_price:,.0f}\n"
+                f"<b>Price:</b> {price_text}\n"
                 "<b>What happened:</b> Sellers failed. Price reclaimed the value area.\n"
                 "<b>Next Step:</b> Watch for a pullback to hold above the VAL for a long rotation."
             )
         else:
             msg = (
                 f"🚨 AMT STRUCTURAL CHANGE\n\n{prev_state} → {curr_state}"
-                f"\nCandle: {curr['candle_open_time']}\nClose: USD {close_price:,.0f}"
+                f"\nCandle: {curr['candle_open_time']}\nClose: {price_text}"
             )
         return {
             "key": event_key,
