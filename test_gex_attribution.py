@@ -114,7 +114,7 @@ def test_new_exposure_is_logged_without_becoming_wall():
         [(100, 1000, .03), (110, 900, .03), (90, 800, .03)],
     )
     current = _chain(
-        [(100, 1000, .03), (110, 900, .03), (90, 800, .03), (120, 100, .03)],
+        [(100, 1000, .03), (110, 900, .03), (90, 800, .03), (120, 850, .03)],
         [(100, 1000, .03), (110, 900, .03), (90, 800, .03)],
     )
     rows = build_attribution_rows(**_args(previous, current))
@@ -210,10 +210,13 @@ def test_previous_snapshot_selection_skips_partial_and_incomplete_runs():
     }
     rows = [_row("CALL", 100, 1000, .03), _row("PUT", 100, 1000, .03)]
     client = _MockSupabase([
-        _response([{"snapshot_id": "failed", "completed_at": "3"}]),
-        _response([{"snapshot_id": "partial", "completed_at": "2"}]),
+        # Failed runs are excluded by the status=SUCCESS query; partial SUCCESS
+        # runs remain candidates but are rejected by derived metric_status.
+        _response([
+            {"snapshot_id": "partial", "completed_at": "2"},
+            {"snapshot_id": "valid", "completed_at": "1"},
+        ]),
         _response([partial_derived]),
-        _response([{"snapshot_id": "valid", "completed_at": "1"}]),
         _response([valid_derived]),
         _response(rows),
     ])
