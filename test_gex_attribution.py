@@ -233,7 +233,7 @@ def test_persistence_upserts_comparison_id_and_event_payload():
         [(100, 1000, .03), (110, 900, .03), (90, 800, .03)],
     )
     current = _chain(
-        [(100, 1000, .03), (110, 900, .03), (90, 800, .03), (120, 100, .03)],
+        [(100, 1000, .03), (110, 900, .03), (90, 800, .03), (120, 850, .03)],
         [(100, 1000, .03), (110, 900, .03), (90, 800, .03)],
     )
     prev = {
@@ -244,7 +244,7 @@ def test_persistence_upserts_comparison_id_and_event_payload():
     }
     valid_rows = [
         _row("CALL", 100, 1000, .03), _row("CALL", 110, 900, .03), _row("CALL", 90, 800, .03),
-        _row("CALL", 120, 100, .03),
+        _row("CALL", 120, 850, .03),
         _row("PUT", 100, 1000, .03), _row("PUT", 110, 900, .03), _row("PUT", 90, 800, .03),
     ]
     # _previous_complete_snapshot consumes run, derived and raw-row responses.
@@ -284,5 +284,48 @@ def test_attribution_database_error_is_non_blocking_and_logged():
             client, "current", "2026-12-25", [], {}, logger=logger
         )
     assert result == 0
+    logger.assert_called_once()
+    assert "database unavailable" in logger.call_args.args[0]
+
+
+
+def test_database_upsert_error_is_caught_by_non_blocking_wrapper():
+    from unittest.mock import patch
+
+    previous_rows = _chain(
+        [(100, 1000, .03), (110, 900, .03), (90, 800, .03)],
+        [(100, 1000, .03), (110, 900, .03), (90, 800, .03)],
+    )
+    current_rows = _chain(
+        [(100, 1000, .03), (110, 900, .03), (90, 800, .03), (120, 850, .03)],
+        [(100, 1000, .03), (110, 900, .03), (90, 800, .03)],
+    )
+    previous_derived = {
+        "snapshot_id": "00000000-0000-0000-0000-000000000001",
+        "source_collected_at": "2026-11-19T10:00:00+00:00",
+        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
+        "metric_status": {"chain": "OK", "call_gex": "OK", "put_gex": "OK"},
+    }
+    current_derived = {
+        "snapshot_id": "00000000-0000-0000-0000-000000000002",
+        "source_collected_at": "2026-11-19T10:03:00+00:00",
+        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
+        "metric_status": {"chain": "OK", "call_gex": "OK", "put_gex": "OK"},
+    }
+    client = MagicMock()
+    query = client.table.return_value
+    query.upsert.return_value.execute.side_effect = RuntimeError("database unavailable")
+    logger = MagicMock()
+
+    with patch("gex_attribution._previous_complete_snapshot",
+               return_value=(previous_derived, previous_rows)):
+        result = run_attribution_safely(
+            client, current_derived["snapshot_id"], "2026-12-25",
+            current_rows, current_derived, logger=logger,
+        )
+
+    assert result == 0
+    client.table.assert_called_with("gex_strike_attribution")
+    query.upsert.assert_called_once()
     logger.assert_called_once()
     assert "database unavailable" in logger.call_args.args[0]
