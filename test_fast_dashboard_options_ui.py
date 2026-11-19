@@ -366,6 +366,20 @@ def test_amt_structure_does_not_repeat_last_close_auction_classification():
     assert '], "g4")' in block
 
 
+def test_session_ohlc_history_displays_value_levels_low_to_high():
+    source = _source()
+    start = source.index('with st.expander("Session OHLC history"):')
+    end = source.index('with st.expander("Fast Auction Classification journal"):', start)
+    block = source[start:end]
+
+    assert 'value_columns = ["VAL", "POC", "VAH"]' in block
+    assert "st.dataframe(session_display_df" in block
+    assert "st.dataframe(session_df" not in block
+
+    journey = source[source.index("def calculate_session_journey("):source.index("\ndef generate_state_journal(")]
+    assert '"POC": poc, "VAH": vah, "VAL": val' in journey
+
+
 def test_amt_structure_developing_value_cards_are_ordered_low_to_high():
     source = _source()
     start = source.index('_ui_section("2 · AMT STRUCTURE"')

@@ -1496,7 +1496,13 @@ def _render_dashboard():
     _ui_section("DIAGNOSTICS AND RAW DATA", "expand for full tables")
     with st.expander("Session OHLC history"):
         if not session_df.empty:
-            st.dataframe(session_df, use_container_width=True, hide_index=True)
+            session_display_df = session_df.copy()
+            value_columns = ["VAL", "POC", "VAH"]
+            session_display_df = session_display_df[
+                [column for column in session_display_df.columns if column not in value_columns]
+                + value_columns
+            ]
+            st.dataframe(session_display_df, use_container_width=True, hide_index=True)
         else:
             st.caption("Session history unavailable.")
     
