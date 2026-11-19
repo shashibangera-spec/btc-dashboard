@@ -251,17 +251,21 @@ def evaluate_amt_transition():
 
         if current_state == "DISCOVERY_CONFIRMED_BELOW":
             msg = (
-                "🔻 <b>BREAKDOWN CONFIRMED</b>\n"
+                "🔻 <b>AMT DISCOVERY CONFIRMED BELOW</b>\n"
                 f"<b>Price:</b> {price_text}\n"
-                "<b>What happened:</b> Price broke below the daily value area.\n"
-                "<b>Next Step:</b> Watch for a retest of the VAL. Do not chase the low."
+                "<b>WHAT TO WATCH</b>\n"
+                "Retest of previous VAL; whether price is rejected or accepted back above VAL; "
+                "whether the discovery low remains intact."
+                
             )
         elif current_state == "REENTRY_CONFIRMED":
             msg = (
-                "↩️ <b>FAILED BREAKDOWN (Returned Inside Value)</b>\n"
+                "↩️ <b>AMT RE-ENTRY CONFIRMED</b>\n"
                 f"<b>Price:</b> {price_text}\n"
-                "<b>What happened:</b> Sellers failed. Price reclaimed the value area.\n"
-                "<b>Next Step:</b> Watch for a pullback to hold above the VAL for a long rotation."
+                "<b>WHAT TO WATCH</b>\n"
+                "Does price hold above VAL? Does the market develop acceptance inside value? "
+                "Does a rotation toward POC develop?"
+                
             )
         else:
             msg = (
