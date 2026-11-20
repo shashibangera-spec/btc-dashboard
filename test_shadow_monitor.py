@@ -31,8 +31,8 @@ def candle(index, *, close=100.0, low=99.0, high=101.0, val=98.0,
 def test_val_episode_starts_once_and_freezes_initial_developing_val():
     rows = [
         candle(0, close=101, low=100, val=98),
-        candle(1, close=100, low=97, val=98),
-        candle(2, close=100, low=97.5, val=97),  # Developing VAL moved; episode level stays 98.
+        candle(1, close=98, low=97, val=98),
+        candle(2, close=98, low=97.5, val=97),  # Developing VAL moved; episode level stays 98.
     ]
     result = calculate_shadow_rows(rows)
     assert result[1]["val_test_status"] == "STARTED"
@@ -46,9 +46,9 @@ def test_val_episode_starts_once_and_freezes_initial_developing_val():
 def test_val_episode_continues_while_frozen_level_is_retested():
     rows = [
         candle(0, close=101, low=100, val=98),
-        candle(1, close=100, low=97, val=98),
-        candle(2, close=99.5, low=97.5, val=97.5),
-        candle(3, close=100, low=98, val=97),
+        candle(1, close=98, low=97, val=98),
+        candle(2, close=98, low=97.5, val=97.5),
+        candle(3, close=98, low=98, val=97),
     ]
     result = calculate_shadow_rows(rows)
     assert [r["val_test_status"] for r in result[1:]] == [
@@ -57,11 +57,11 @@ def test_val_episode_continues_while_frozen_level_is_retested():
     assert result[3]["val_test_count"] == 1
 
 
-def test_val_episode_is_rejected_only_after_price_stops_retesting_without_closing_below():
+def test_val_episode_is_rejected_on_retest_candle_that_closes_above_frozen_level():
     rows = [
         candle(0, close=101, low=100, val=98),
-        candle(1, close=100, low=97, val=98),
-        candle(2, close=100, low=98.5, val=97.5),
+        candle(1, close=98, low=97, val=98),
+        candle(2, close=100, low=97.5, val=97.5),
     ]
     result = calculate_shadow_rows(rows)
     assert result[1]["val_test_status"] == "STARTED"
@@ -76,7 +76,7 @@ def test_val_episode_is_rejected_only_after_price_stops_retesting_without_closin
 def test_val_episode_is_broken_by_completed_close_below_frozen_level():
     rows = [
         candle(0, close=101, low=100, val=98),
-        candle(1, close=100, low=97, val=98),
+        candle(1, close=98, low=97, val=98),
         candle(2, close=97.5, low=96, val=97),
     ]
     result = calculate_shadow_rows(rows)
@@ -107,7 +107,7 @@ def test_transition_anchor_resets_only_on_confirmed_state_or_profile_change():
 def test_gap_ends_active_episode_without_counting_it_as_rejected():
     rows = [
         candle(0, close=101, low=100, val=98),
-        candle(1, close=100, low=97, val=98),
+        candle(1, close=98, low=97, val=98),
         candle(3, close=100, low=99, val=98),
     ]
     result = calculate_shadow_rows(rows)
@@ -160,7 +160,7 @@ def test_terminal_episode_keeps_original_val_level_and_started_at():
     rows = [
         candle(0, close=101, low=100, val=98),
         candle(1, close=98, low=97, val=98),
-        candle(2, close=100, low=99, val=97),
+        candle(2, close=100, low=97.5, val=97),
     ]
     result = calculate_shadow_rows(rows)
     assert result[2]["val_test_status"] == "REJECTED"
