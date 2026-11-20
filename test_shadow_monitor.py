@@ -128,3 +128,41 @@ def test_excursions_are_normalized_by_stored_atr_and_poc_distance():
     assert result["downside_wick_excursion_usd"] == 6
     assert result["downside_wick_excursion_atr"] == 3
     assert result["poc_distance_atr"] == 2
+
+def test_immediate_rejected_and_broken_tests_persist_the_tested_val():
+    rejected = calculate_shadow_rows([
+        candle(0, close=101, low=100, val=98),
+        candle(1, close=100, low=97, val=98),
+    ])
+    assert rejected[1]["val_test_status"] == "REJECTED"
+    assert rejected[1]["val_test_level"] == 98
+    assert rejected[1]["val_test_started_at"] is None
+
+    broken = calculate_shadow_rows([
+        candle(0, close=101, low=100, val=98),
+        candle(1, close=97, low=96, val=98),
+    ])
+    assert broken[1]["val_test_status"] == "BROKEN"
+    assert broken[1]["val_test_level"] == 98
+    assert broken[1]["val_test_started_at"] is None
+
+
+def test_duplicate_source_candle_can_increment_val_test_count_only_once():
+    first = candle(0, close=101, low=100, val=98)
+    test_candle = candle(1, close=100, low=97, val=98)
+    result = calculate_shadow_rows([first, test_candle, dict(test_candle)])
+    assert result[1]["val_test_status"] == "REJECTED"
+    assert result[1]["val_test_count"] == 1
+    assert result[2]["val_test_count"] == 1
+
+
+def test_terminal_episode_keeps_original_val_level_and_started_at():
+    rows = [
+        candle(0, close=101, low=100, val=98),
+        candle(1, close=98, low=97, val=98),
+        candle(2, close=100, low=99, val=97),
+    ]
+    result = calculate_shadow_rows(rows)
+    assert result[2]["val_test_status"] == "REJECTED"
+    assert result[2]["val_test_level"] == 98
+    assert result[2]["val_test_started_at"] == (START + timedelta(minutes=60)).isoformat()
