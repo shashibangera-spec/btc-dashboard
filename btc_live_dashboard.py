@@ -790,6 +790,37 @@ def _render_alerts_tab():
         },
     )
 
+    if outbox_ok:
+        with st.expander("Recent Telegram outbox activity (independent delivery log)"):
+            outbox_frame = pd.DataFrame(history.get("outbox", []))
+            if outbox_frame.empty:
+                st.caption("No Telegram outbox records have been returned.")
+            else:
+                outbox_display = outbox_frame.rename(columns={
+                    "event_key": "Event key",
+                    "event_type": "Event",
+                    "event_time": "Event time (UTC)",
+                    "delivery_status": "Delivery",
+                    "attempt_count": "Attempts",
+                    "telegram_message_id": "Telegram message ID",
+                    "created_at": "Outbox created (UTC)",
+                    "sent_at": "Sent at (UTC)",
+                    "last_error": "Last error",
+                })
+                outbox_columns = [
+                    "Event key", "Event", "Event time (UTC)", "Delivery", "Attempts",
+                    "Telegram message ID", "Outbox created (UTC)", "Sent at (UTC)", "Last error",
+                ]
+                st.dataframe(
+                    outbox_display[[column for column in outbox_columns if column in outbox_display.columns]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption(
+                    "This table also includes Telegram-only operational records such as profile-initialization "
+                    "and TEST_ALERT events that do not have a matching system journal row."
+                )
+
     if not filtered.empty:
         selected_id = st.selectbox(
             "Inspect event evidence",
