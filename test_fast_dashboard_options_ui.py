@@ -398,7 +398,6 @@ def test_alerts_tab_reads_canonical_journal_and_private_outbox_separately():
     source = _source()
     assert 'options=["MARKET", "ALERTS"]' in source
     assert 'if dashboard_view == "ALERTS":' in source
-    assert "st.stop()" in source
     assert 'table("system_signal_journal")' in source
     assert 'table("telegram_alert_events")' in source
     assert 'os.environ.get("SUPABASE_SERVICE_ROLE_KEY")' in source
@@ -439,12 +438,12 @@ def test_alerts_tab_is_read_only_and_has_manual_refresh_and_history_filters():
 
 def test_alerts_view_short_circuits_market_data_loading():
     source = _source()
-    dashboard = source[source.index("def _render_dashboard():"):]
+    dashboard = source[source.index("def _render_dashboard():"):source.index("def _render_market_dashboard():")]
     selector = dashboard.index("dashboard_view = st.segmented_control(")
-    market_fetch = dashboard.index("df = fetch_amt_data()")
     alert_render = dashboard.index("_render_alerts_tab()")
-    stop = dashboard.index("st.stop()")
-    assert selector < alert_render < stop < market_fetch
+    market_render = dashboard.index("_render_market_dashboard()")
+    assert selector < alert_render < market_render
+    assert "return" in dashboard[alert_render:market_render]
 
 def test_alert_navigation_is_outside_market_autorefresh_fragment():
     source = _source()
