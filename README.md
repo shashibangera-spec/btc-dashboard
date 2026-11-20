@@ -32,10 +32,11 @@ The live system has four cooperating layers:
       |
       +-- signal_detector.py -> system_signal_journal
       |
-      +-- telegram_alerts.py (independent schedule)
-      |     +-- evaluates AMT transitions and Futures OI shocks
-      |     +-- reads journaled GEX wall breaches
-      |     +-- sends Telegram; records telegram_alert_events
+      +-- Telegram alert evaluator (Coordinator's final reusable workflow stage)
+            +-- evaluates AMT transitions and Futures OI shocks
+            +-- reads journaled GEX wall breaches
+            +-- sends Telegram; records telegram_alert_events
+            +-- manual workflow_dispatch remains available for recovery/testing
       |
       +-- reaction_analyzer.py (daily schedule)
       |     +-- reads system_signal_journal
