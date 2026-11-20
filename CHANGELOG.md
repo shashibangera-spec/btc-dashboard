@@ -1,5 +1,14 @@
 ## 2026-11-20
 
+### Fixed — Alerts view navigation
+
+- Moves the MARKET / ALERTS selector outside the three-minute auto-refresh fragment so navigation receives normal Streamlit reruns.
+- Keeps only the MARKET dashboard inside the auto-refresh fragment; the ALERTS view renders independently without using `st.stop()` to switch views.
+- Adds a regression test for the navigation/fragment boundary.
+- No market calculations, alert detection or delivery, database access, schema, credentials, or production deployment behavior changed.
+
+## 2026-11-20
+
 ### Added — Read-only Alerts history tab
 
 - Added a dedicated ALERTS view alongside the existing MARKET cockpit, preserving the existing market dashboard content and styling.
