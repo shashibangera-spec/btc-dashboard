@@ -840,6 +840,7 @@ def _render_alerts_tab():
                 )
 
 
+
 def _format_options_filter_result(key, result):
     """Format only validated backend output; never recalculate filter logic in the UI."""
     status = result.get("status", "UNAVAILABLE")
@@ -1426,622 +1427,627 @@ def _render_dashboard():
     # ==========================================
     # RENDER UI — SINGLE-PAGE FOUR-LAYER COCKPIT (TERMINAL SKIN)
     # ==========================================
-    market_tab, alerts_tab = st.tabs(["MARKET", "ALERTS"])
-    with market_tab:
-        _render_stamp = datetime.datetime.now(IST_TZ).strftime("%d %b %Y · %H:%M:%S IST")
+    dashboard_view = st.segmented_control(
+        "VIEW",
+        options=["MARKET", "ALERTS"],
+        default="MARKET",
+        label_visibility="collapsed",
+        key="dashboard_view",
+    )
+    if dashboard_view == "ALERTS":
+        _render_alerts_tab()
+        st.stop()
+
+    _render_stamp = datetime.datetime.now(IST_TZ).strftime("%d %b %Y · %H:%M:%S IST")
+    st.markdown(
+        '<div class="topbar"><div>'
+        '<div class="brand"><em>₿</em> BTC TRADING COCKPIT</div>'
+        '<div class="tag">AMT first · current auction behaviour · derivatives as context</div>'
+        '</div>'
+        '<div class="live"><span class="dot"></span>RENDERED ' + _render_stamp + '</div></div>',
+        unsafe_allow_html=True,
+    )
+    
+    previous_ui_state = st.session_state.get("fast_prev_amt_state")
+    previous_ui_name = state_names.get(previous_ui_state) if previous_ui_state is not None else None
+    current_story = current_amt_name
+    auction_story = (
+        previous_ui_name + " → " + current_story
+        if previous_ui_state is not None and previous_ui_state != current_amt_state
+        else current_story
+    )
+    
+    dev_vah_ui = journal_df_check.iloc[-1]["Dev VAH"] if not journal_df_check.empty else np.nan
+    dev_poc_ui = journal_df_check.iloc[-1]["Dev POC"] if not journal_df_check.empty else np.nan
+    dev_val_ui = journal_df_check.iloc[-1]["Dev VAL"] if not journal_df_check.empty else np.nan
+    
+    def signed_distance_text(value, reference):
+        if pd.isna(value) or pd.isna(reference):
+            return "N/A"
+        delta_value = value - reference
+        sign = "+" if delta_value >= 0 else "-"
+        return sign + "$" + format(abs(delta_value), ",.0f")
+    
+    prior_val_distance = signed_distance_text(latest_price, final_val)
+    dev_vah_distance = signed_distance_text(latest_price, dev_vah_ui)
+    
+    wall_options = []
+    if call_gamma_wall is not None:
+        wall_options.append(("Call", float(call_gamma_wall["Strike"])))
+    if put_gamma_wall is not None:
+        wall_options.append(("Put", float(put_gamma_wall["Strike"])))
+    nearest_wall = "N/A"
+    if wall_options:
+        wall_name, wall_price = min(wall_options, key=lambda x: abs(x[1] - latest_price))
+        nearest_wall = "$" + format(wall_price, ",.0f") + " (" + wall_name + ")"
+    
+    
+    # ---------- UI helpers (formatting / HTML only) ----------
+    def _ui_num(value, fmt=",.0f", prefix="$", suffix=""):
+        if value is None or pd.isna(value):
+            return "N/A"
+        return prefix + format(value, fmt) + suffix
+    
+    def _ui_section(title, hint=""):
         st.markdown(
-            '<div class="topbar"><div>'
-            '<div class="brand"><em>₿</em> BTC TRADING COCKPIT</div>'
-            '<div class="tag">AMT first · current auction behaviour · derivatives as context</div>'
+            '<div class="sec"><span class="bar"></span><span class="st">' + title + '</span>'
+            '<span class="hint">' + hint + '</span></div>',
+            unsafe_allow_html=True,
+        )
+    
+    def _ui_hero(label, value, sub="", tone="flat", kind="state"):
+        sub_html = '<div class="s">' + sub + '</div>' if sub else ""
+        return ('<div class="hero t-' + tone + '"><div class="k">' + label + '</div>'
+                '<div class="v ' + kind + '">' + value + '</div>' + sub_html + '</div>')
+    
+    def _ui_card(label, value, sub="", tone="flat", tint=False, small=False):
+        sub_html = '<div class="s">' + sub + '</div>' if sub else ""
+        return ('<div class="card t-' + tone + (' tint' if tint else '') + '"><div class="k">' + label + '</div>'
+                '<div class="v' + (' sm' if small else '') + '">' + value + '</div>' + sub_html + '</div>')
+    
+    def _ui_grid(cards, cls):
+        return '<div class="grid ' + cls + '">' + "".join(cards) + '</div>'
+    
+    # Presentation-only colour mapping for the existing auction state codes.
+    _UI_STATE_TONE = {2: "up", 4: "up", 6: "up", 8: "up", 3: "down", 5: "down", 7: "down", 9: "down"}
+    def _ui_state_tone(code):
+        if code in (0, 1):
+            return "flat"
+        return _UI_STATE_TONE.get(code, "warn")
+    
+    state_tone = _ui_state_tone(current_amt_state)
+    loc_tone = {"Above VAH": "up", "Below VAL": "down", "Inside VA": "warn"}.get(loc, "flat")
+    
+    # ---------- TOP HEADER (3 columns) ----------
+    if loc == "Above VAH":
+        loc_sub = signed_distance_text(latest_price, final_vah) + " vs prior VAH"
+    elif loc == "Below VAL":
+        loc_sub = signed_distance_text(latest_price, final_val) + " vs prior VAL"
+    elif loc == "Inside VA":
+        loc_sub = "Between prior VAL and VAH"
+    else:
+        loc_sub = ""
+    
+    h1, h2, h3 = st.columns([1, 1.5, 1])
+    h1.markdown(_ui_hero("BTC / USDT", _ui_num(latest_price, ",.2f"), "BINANCE · SPOT · 30M", "info", "price"), unsafe_allow_html=True)
+    h2.markdown(_ui_hero("AUCTION (LAST CLOSE)", current_amt_name, "Independent code " + str(current_amt_state), state_tone, "state"), unsafe_allow_html=True)
+    h3.markdown(_ui_hero("LIVE PRICE LOCATION", loc, loc_sub, loc_tone, "state"), unsafe_allow_html=True)
+    
+    # ---------- AUCTION STORY CALLOUT ----------
+    _has_auction_transition = (
+        previous_ui_state is not None and previous_ui_state != current_amt_state
+    )
+    story_html = ""
+    if _has_auction_transition:
+        _story_parts = auction_story.split(" → ")
+        story_html = ('<div class="t"><span class="prev">' + _story_parts[0] + '</span><span class="arr">→</span>'
+                      '<span class="cur">' + _story_parts[1] + '</span></div>')
+    
+    def _ui_chip(label, value):
+        cls = "up" if value.startswith("+") else "down" if value.startswith("-") else ""
+        return ('<span class="chip"><span class="ck">' + label + '</span><span class="cv ' + cls + '">'
+                + value + '</span></span>')
+    
+    st.markdown(
+        '<div class="story t-' + state_tone + '"><div class="k">AUCTION STORY</div>'
+        + story_html
+        + '<div class="chips">'
+        + _ui_chip("Price vs Prior VAL", prior_val_distance)
+        + _ui_chip("Price vs Developing VAH", dev_vah_distance)
+        + _ui_chip("Nearest GEX Wall", nearest_wall)
+        + '</div></div>',
+        unsafe_allow_html=True,
+    )
+    
+    # ---------- WHAT CHANGED — UI ONLY ----------
+    current_ui_snapshot = {
+        "dev_vah": float(dev_vah_ui) if not pd.isna(dev_vah_ui) else None,
+        "dev_poc": float(dev_poc_ui) if not pd.isna(dev_poc_ui) else None,
+        "dev_val": float(dev_val_ui) if not pd.isna(dev_val_ui) else None,
+    }
+    previous_ui_snapshot = st.session_state.get("fast_previous_snapshot")
+    changed_levels = []
+    
+    if previous_ui_snapshot is not None:
+        for label, key in (("DEV VAH", "dev_vah"), ("DEV POC", "dev_poc"), ("DEV VAL", "dev_val")):
+            current_value = current_ui_snapshot.get(key)
+            previous_value = previous_ui_snapshot.get(key)
+            try:
+                current_value = float(current_value) if current_value is not None and not pd.isna(current_value) else None
+                previous_value = float(previous_value) if previous_value is not None and not pd.isna(previous_value) else None
+            except (ValueError, TypeError):
+                current_value = None
+                previous_value = None
+
+            if current_value is not None and previous_value is not None and current_value != previous_value:
+                changed_levels.append((label, current_value, current_value - previous_value))
+
+    if changed_levels:
+        _ui_section("WHAT CHANGED", "Developing value levels changed vs previous rendered snapshot")
+        change_columns = st.columns(len(changed_levels))
+        for column, (label, current_value, delta_value) in zip(change_columns, changed_levels):
+            column.metric(
+                label,
+                "$" + format(current_value, ",.0f"),
+                "$" + format(delta_value, "+,.0f"),
+            )
+    
+    st.session_state["fast_previous_snapshot"] = current_ui_snapshot
+    st.session_state["fast_prev_amt_state"] = current_amt_state
+    
+    # ---------- 1 · PRICE ACTION (prior VA + POC combined into one value ladder) ----------
+    _ui_section("1 · PRICE ACTION", "GEX walls are options-derived reference levels, not guaranteed support or resistance")
+    
+    if pd.isna(final_val) or pd.isna(final_vah):
+        st.markdown(
+            '<div class="panel"><div class="mini">PRIOR VALUE AREA</div>'
+            '<div class="card t-flat"><div class="v">N/A</div></div></div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        _lo = min(final_val, latest_price) if latest_price > 0 else final_val
+        _hi = max(final_vah, latest_price) if latest_price > 0 else final_vah
+        _pad = max((_hi - _lo) * 0.12, 1.0)
+        _lo -= _pad; _hi += _pad
+        _span = _hi - _lo
+    
+        def _ui_pos(x):
+            return max(0.0, min(100.0, (x - _lo) / _span * 100.0))
+    
+        _p_val, _p_vah = _ui_pos(final_val), _ui_pos(final_vah)
+        _poc_html = (
+            '<div class="edge poc" style="left:calc(' + format(_ui_pos(final_poc), ".2f") + '% - 1px)"></div>'
+            if not pd.isna(final_poc) else ""
+        )
+        _pin_html = (
+            '<div class="pin t-' + loc_tone + '" style="left:' + format(_ui_pos(latest_price), ".2f") + '%">'
+            '<span class="pl">CMP ' + _ui_num(latest_price, ",.0f") + '</span><i></i></div>'
+            if latest_price > 0 else ""
+        )
+        st.markdown(
+            '<div class="panel">'
+            '<div class="mini">PRIOR VALUE AREA · VAL → POC → VAH</div>'
+            '<div class="lad"><div class="track"></div>'
+            '<div class="band" style="left:' + format(_p_val, ".2f") + '%;width:' + format(_p_vah - _p_val, ".2f") + '%"></div>'
+            '<div class="edge val" style="left:calc(' + format(_p_val, ".2f") + '% - 1px)"></div>'
+            '<div class="edge vah" style="left:calc(' + format(_p_vah, ".2f") + '% - 1px)"></div>'
+            + _poc_html + _pin_html +
             '</div>'
-            '<div class="live"><span class="dot"></span>RENDERED ' + _render_stamp + '</div></div>',
+            '<div class="nums">'
+            '<div class="n t-down"><div class="k">Prior VAL</div><div class="v">' + _ui_num(final_val) + '</div></div>'
+            '<div class="n t-warn"><div class="k">Prior POC</div><div class="v">' + _ui_num(final_poc) + '</div></div>'
+            '<div class="n t-up"><div class="k">Prior VAH</div><div class="v">' + _ui_num(final_vah) + '</div></div>'
+            '<div class="n t-flat"><div class="k">VA Width</div><div class="v">' + _ui_num(prior_va_width) + '</div></div>'
+            '</div></div>',
             unsafe_allow_html=True,
         )
-        
-        previous_ui_state = st.session_state.get("fast_prev_amt_state")
-        previous_ui_name = state_names.get(previous_ui_state) if previous_ui_state is not None else None
-        current_story = current_amt_name
-        auction_story = (
-            previous_ui_name + " → " + current_story
-            if previous_ui_state is not None and previous_ui_state != current_amt_state
-            else current_story
-        )
-        
-        dev_vah_ui = journal_df_check.iloc[-1]["Dev VAH"] if not journal_df_check.empty else np.nan
-        dev_poc_ui = journal_df_check.iloc[-1]["Dev POC"] if not journal_df_check.empty else np.nan
-        dev_val_ui = journal_df_check.iloc[-1]["Dev VAL"] if not journal_df_check.empty else np.nan
-        
-        def signed_distance_text(value, reference):
-            if pd.isna(value) or pd.isna(reference):
-                return "N/A"
-            delta_value = value - reference
-            sign = "+" if delta_value >= 0 else "-"
-            return sign + "$" + format(abs(delta_value), ",.0f")
-        
-        prior_val_distance = signed_distance_text(latest_price, final_val)
-        dev_vah_distance = signed_distance_text(latest_price, dev_vah_ui)
-        
-        wall_options = []
-        if call_gamma_wall is not None:
-            wall_options.append(("Call", float(call_gamma_wall["Strike"])))
-        if put_gamma_wall is not None:
-            wall_options.append(("Put", float(put_gamma_wall["Strike"])))
-        nearest_wall = "N/A"
-        if wall_options:
-            wall_name, wall_price = min(wall_options, key=lambda x: abs(x[1] - latest_price))
-            nearest_wall = "$" + format(wall_price, ",.0f") + " (" + wall_name + ")"
-        
-        
-        # ---------- UI helpers (formatting / HTML only) ----------
-        def _ui_num(value, fmt=",.0f", prefix="$", suffix=""):
-            if value is None or pd.isna(value):
-                return "N/A"
-            return prefix + format(value, fmt) + suffix
-        
-        def _ui_section(title, hint=""):
-            st.markdown(
-                '<div class="sec"><span class="bar"></span><span class="st">' + title + '</span>'
-                '<span class="hint">' + hint + '</span></div>',
-                unsafe_allow_html=True,
-            )
-        
-        def _ui_hero(label, value, sub="", tone="flat", kind="state"):
-            sub_html = '<div class="s">' + sub + '</div>' if sub else ""
-            return ('<div class="hero t-' + tone + '"><div class="k">' + label + '</div>'
-                    '<div class="v ' + kind + '">' + value + '</div>' + sub_html + '</div>')
-        
-        def _ui_card(label, value, sub="", tone="flat", tint=False, small=False):
-            sub_html = '<div class="s">' + sub + '</div>' if sub else ""
-            return ('<div class="card t-' + tone + (' tint' if tint else '') + '"><div class="k">' + label + '</div>'
-                    '<div class="v' + (' sm' if small else '') + '">' + value + '</div>' + sub_html + '</div>')
-        
-        def _ui_grid(cards, cls):
-            return '<div class="grid ' + cls + '">' + "".join(cards) + '</div>'
-        
-        # Presentation-only colour mapping for the existing auction state codes.
-        _UI_STATE_TONE = {2: "up", 4: "up", 6: "up", 8: "up", 3: "down", 5: "down", 7: "down", 9: "down"}
-        def _ui_state_tone(code):
-            if code in (0, 1):
-                return "flat"
-            return _UI_STATE_TONE.get(code, "warn")
-        
-        state_tone = _ui_state_tone(current_amt_state)
-        loc_tone = {"Above VAH": "up", "Below VAL": "down", "Inside VA": "warn"}.get(loc, "flat")
-        
-        # ---------- TOP HEADER (3 columns) ----------
-        if loc == "Above VAH":
-            loc_sub = signed_distance_text(latest_price, final_vah) + " vs prior VAH"
-        elif loc == "Below VAL":
-            loc_sub = signed_distance_text(latest_price, final_val) + " vs prior VAL"
-        elif loc == "Inside VA":
-            loc_sub = "Between prior VAL and VAH"
-        else:
-            loc_sub = ""
-        
-        h1, h2, h3 = st.columns([1, 1.5, 1])
-        h1.markdown(_ui_hero("BTC / USDT", _ui_num(latest_price, ",.2f"), "BINANCE · SPOT · 30M", "info", "price"), unsafe_allow_html=True)
-        h2.markdown(_ui_hero("AUCTION (LAST CLOSE)", current_amt_name, "Independent code " + str(current_amt_state), state_tone, "state"), unsafe_allow_html=True)
-        h3.markdown(_ui_hero("LIVE PRICE LOCATION", loc, loc_sub, loc_tone, "state"), unsafe_allow_html=True)
-        
-        # ---------- AUCTION STORY CALLOUT ----------
-        _has_auction_transition = (
-            previous_ui_state is not None and previous_ui_state != current_amt_state
-        )
-        story_html = ""
-        if _has_auction_transition:
-            _story_parts = auction_story.split(" → ")
-            story_html = ('<div class="t"><span class="prev">' + _story_parts[0] + '</span><span class="arr">→</span>'
-                          '<span class="cur">' + _story_parts[1] + '</span></div>')
-        
-        def _ui_chip(label, value):
-            cls = "up" if value.startswith("+") else "down" if value.startswith("-") else ""
-            return ('<span class="chip"><span class="ck">' + label + '</span><span class="cv ' + cls + '">'
-                    + value + '</span></span>')
-        
-        st.markdown(
-            '<div class="story t-' + state_tone + '"><div class="k">AUCTION STORY</div>'
-            + story_html
-            + '<div class="chips">'
-            + _ui_chip("Price vs Prior VAL", prior_val_distance)
-            + _ui_chip("Price vs Developing VAH", dev_vah_distance)
-            + _ui_chip("Nearest GEX Wall", nearest_wall)
-            + '</div></div>',
-            unsafe_allow_html=True,
-        )
-        
-        # ---------- WHAT CHANGED — UI ONLY ----------
-        current_ui_snapshot = {
-            "dev_vah": float(dev_vah_ui) if not pd.isna(dev_vah_ui) else None,
-            "dev_poc": float(dev_poc_ui) if not pd.isna(dev_poc_ui) else None,
-            "dev_val": float(dev_val_ui) if not pd.isna(dev_val_ui) else None,
-        }
-        previous_ui_snapshot = st.session_state.get("fast_previous_snapshot")
-        changed_levels = []
-        
-        if previous_ui_snapshot is not None:
-            for label, key in (("DEV VAH", "dev_vah"), ("DEV POC", "dev_poc"), ("DEV VAL", "dev_val")):
-                current_value = current_ui_snapshot.get(key)
-                previous_value = previous_ui_snapshot.get(key)
-                try:
-                    current_value = float(current_value) if current_value is not None and not pd.isna(current_value) else None
-                    previous_value = float(previous_value) if previous_value is not None and not pd.isna(previous_value) else None
-                except (ValueError, TypeError):
-                    current_value = None
-                    previous_value = None
     
-                if current_value is not None and previous_value is not None and current_value != previous_value:
-                    changed_levels.append((label, current_value, current_value - previous_value))
+    # ---------- 2 · AMT STRUCTURE ----------
+    _ui_section("2 · AMT STRUCTURE", "Classification basis: completed 30-minute candles")
     
-        if changed_levels:
-            _ui_section("WHAT CHANGED", "Developing value levels changed vs previous rendered snapshot")
-            change_columns = st.columns(len(changed_levels))
-            for column, (label, current_value, delta_value) in zip(change_columns, changed_levels):
-                column.metric(
-                    label,
-                    "$" + format(current_value, ",.0f"),
-                    "$" + format(delta_value, "+,.0f"),
-                )
-        
-        st.session_state["fast_previous_snapshot"] = current_ui_snapshot
-        st.session_state["fast_prev_amt_state"] = current_amt_state
-        
-        # ---------- 1 · PRICE ACTION (prior VA + POC combined into one value ladder) ----------
-        _ui_section("1 · PRICE ACTION", "GEX walls are options-derived reference levels, not guaranteed support or resistance")
-        
-        if pd.isna(final_val) or pd.isna(final_vah):
-            st.markdown(
-                '<div class="panel"><div class="mini">PRIOR VALUE AREA</div>'
-                '<div class="card t-flat"><div class="v">N/A</div></div></div>',
-                unsafe_allow_html=True,
-            )
+    prior_width = final_vah - final_val
+    current_width = provisional_vah - provisional_val
+    delta = current_width - prior_width
+    if any(pd.isna(value) for value in [prior_width, current_width, delta]):
+        va_expansion_value = "N/A"
+        va_expansion_label = None
+    elif delta > 0:
+        va_expansion_value = "+$" + format(delta, ",.0f")
+        if provisional_val < final_val:
+            va_expansion_label = "Downward"
+        elif provisional_vah > final_vah:
+            va_expansion_label = "Upward"
         else:
-            _lo = min(final_val, latest_price) if latest_price > 0 else final_val
-            _hi = max(final_vah, latest_price) if latest_price > 0 else final_vah
-            _pad = max((_hi - _lo) * 0.12, 1.0)
-            _lo -= _pad; _hi += _pad
-            _span = _hi - _lo
-        
-            def _ui_pos(x):
-                return max(0.0, min(100.0, (x - _lo) / _span * 100.0))
-        
-            _p_val, _p_vah = _ui_pos(final_val), _ui_pos(final_vah)
-            _poc_html = (
-                '<div class="edge poc" style="left:calc(' + format(_ui_pos(final_poc), ".2f") + '% - 1px)"></div>'
-                if not pd.isna(final_poc) else ""
-            )
-            _pin_html = (
-                '<div class="pin t-' + loc_tone + '" style="left:' + format(_ui_pos(latest_price), ".2f") + '%">'
-                '<span class="pl">CMP ' + _ui_num(latest_price, ",.0f") + '</span><i></i></div>'
-                if latest_price > 0 else ""
-            )
-            st.markdown(
-                '<div class="panel">'
-                '<div class="mini">PRIOR VALUE AREA · VAL → POC → VAH</div>'
-                '<div class="lad"><div class="track"></div>'
-                '<div class="band" style="left:' + format(_p_val, ".2f") + '%;width:' + format(_p_vah - _p_val, ".2f") + '%"></div>'
-                '<div class="edge val" style="left:calc(' + format(_p_val, ".2f") + '% - 1px)"></div>'
-                '<div class="edge vah" style="left:calc(' + format(_p_vah, ".2f") + '% - 1px)"></div>'
-                + _poc_html + _pin_html +
-                '</div>'
-                '<div class="nums">'
-                '<div class="n t-down"><div class="k">Prior VAL</div><div class="v">' + _ui_num(final_val) + '</div></div>'
-                '<div class="n t-warn"><div class="k">Prior POC</div><div class="v">' + _ui_num(final_poc) + '</div></div>'
-                '<div class="n t-up"><div class="k">Prior VAH</div><div class="v">' + _ui_num(final_vah) + '</div></div>'
-                '<div class="n t-flat"><div class="k">VA Width</div><div class="v">' + _ui_num(prior_va_width) + '</div></div>'
-                '</div></div>',
-                unsafe_allow_html=True,
-            )
-        
-        # ---------- 2 · AMT STRUCTURE ----------
-        _ui_section("2 · AMT STRUCTURE", "Classification basis: completed 30-minute candles")
-        
-        prior_width = final_vah - final_val
-        current_width = provisional_vah - provisional_val
-        delta = current_width - prior_width
-        if any(pd.isna(value) for value in [prior_width, current_width, delta]):
-            va_expansion_value = "N/A"
             va_expansion_label = None
-        elif delta > 0:
-            va_expansion_value = "+$" + format(delta, ",.0f")
-            if provisional_val < final_val:
-                va_expansion_label = "Downward"
-            elif provisional_vah > final_vah:
-                va_expansion_label = "Upward"
-            else:
-                va_expansion_label = None
-        else:
-            va_expansion_value = "Contained"
-            va_expansion_label = None
-        
-        if va_expansion_label == "Downward":
-            _va_sub, _va_tone = "▼ Downward", "down"
-        elif va_expansion_label == "Upward":
-            _va_sub, _va_tone = "▲ Upward", "up"
-        else:
-            _va_sub, _va_tone = "", "flat"
-        
-        st.markdown(
-            _ui_grid([
-                _ui_card("Developing VAL", _ui_num(dev_val_ui), tone="down"),
-                _ui_card("Developing POC", _ui_num(dev_poc_ui), tone="warn"),
-                _ui_card("Developing VAH", _ui_num(dev_vah_ui), tone="up"),
-                _ui_card("VA Expansion", va_expansion_value, _va_sub, _va_tone),
-            ], "g4"),
-            unsafe_allow_html=True,
-        )
-        st.markdown('<div class="foot">Independent dashboard classification; not a prediction or a replacement for the locked Pine AMT reference.</div>', unsafe_allow_html=True)
+    else:
+        va_expansion_value = "Contained"
+        va_expansion_label = None
     
-        # ---------- FUTURES OI CONTEXT — descriptive only ----------
-        oi_context = fetch_futures_oi_context()
-        st.markdown("**Futures OI Context**")
-        oi_context_cols = st.columns(4)
-        if oi_context.get("status") == "OK":
-            oi_context_cols[0].metric("Aggregate OI", "$" + format(oi_context["oi_usd"] / 1e6, ".2f") + "M")
-            oi_change = oi_context.get("change_pct")
-            oi_context_cols[1].metric("OI Change", f"{oi_change:+.2f}%" if oi_change is not None else "N/A",
-                oi_context.get("direction", "N/A") if oi_change is not None else "No comparable baseline", delta_color="off")
-            oi_context_cols[2].metric("Price Location", oi_context.get("price_location", "LOCATION_UNAVAILABLE"))
-            oi_context_cols[3].metric("Confirmed AMT State", oi_context.get("amt_state", "AMT_STATE_UNAVAILABLE"))
-            interval = oi_context.get("interval_minutes")
-            interval_text = f"{interval:.1f}m comparison" if interval is not None else "No matched 25–35m baseline"
-            st.caption("As-of aggregate OI observation · " + interval_text
-                + " · Coverage: " + ", ".join(oi_context.get("coverage", []))
-                + " · " + str(oi_context.get("observed_at", "timestamp unavailable"))
-                + " · Context only; no directional trading signal has been validated.")
+    if va_expansion_label == "Downward":
+        _va_sub, _va_tone = "▼ Downward", "down"
+    elif va_expansion_label == "Upward":
+        _va_sub, _va_tone = "▲ Upward", "up"
+    else:
+        _va_sub, _va_tone = "", "flat"
+    
+    st.markdown(
+        _ui_grid([
+            _ui_card("Developing VAL", _ui_num(dev_val_ui), tone="down"),
+            _ui_card("Developing POC", _ui_num(dev_poc_ui), tone="warn"),
+            _ui_card("Developing VAH", _ui_num(dev_vah_ui), tone="up"),
+            _ui_card("VA Expansion", va_expansion_value, _va_sub, _va_tone),
+        ], "g4"),
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="foot">Independent dashboard classification; not a prediction or a replacement for the locked Pine AMT reference.</div>', unsafe_allow_html=True)
+
+    # ---------- FUTURES OI CONTEXT — descriptive only ----------
+    oi_context = fetch_futures_oi_context()
+    st.markdown("**Futures OI Context**")
+    oi_context_cols = st.columns(4)
+    if oi_context.get("status") == "OK":
+        oi_context_cols[0].metric("Aggregate OI", "$" + format(oi_context["oi_usd"] / 1e6, ".2f") + "M")
+        oi_change = oi_context.get("change_pct")
+        oi_context_cols[1].metric("OI Change", f"{oi_change:+.2f}%" if oi_change is not None else "N/A",
+            oi_context.get("direction", "N/A") if oi_change is not None else "No comparable baseline", delta_color="off")
+        oi_context_cols[2].metric("Price Location", oi_context.get("price_location", "LOCATION_UNAVAILABLE"))
+        oi_context_cols[3].metric("Confirmed AMT State", oi_context.get("amt_state", "AMT_STATE_UNAVAILABLE"))
+        interval = oi_context.get("interval_minutes")
+        interval_text = f"{interval:.1f}m comparison" if interval is not None else "No matched 25–35m baseline"
+        st.caption("As-of aggregate OI observation · " + interval_text
+            + " · Coverage: " + ", ".join(oi_context.get("coverage", []))
+            + " · " + str(oi_context.get("observed_at", "timestamp unavailable"))
+            + " · Context only; no directional trading signal has been validated.")
+    else:
+        for column, label in zip(oi_context_cols, ("Aggregate OI", "OI Change", "Price Location", "Confirmed AMT State")):
+            column.metric(label, "N/A")
+        st.caption("Futures OI context unavailable; no values are inferred or zero-filled.")
+    
+    with st.expander("Prior value reference and provisional / forming profile"):
+        x1, x2, x3 = st.columns(3)
+        x1.metric("Prior VAH", "$" + format(final_vah, ",.0f") if not pd.isna(final_vah) else "N/A")
+        x2.metric("Prior POC", "$" + format(final_poc, ",.0f") if not pd.isna(final_poc) else "N/A")
+        x3.metric("Prior VAL", "$" + format(final_val, ",.0f") if not pd.isna(final_val) else "N/A")
+        st.markdown("**Provisional / forming profile**")
+        y1, y2, y3 = st.columns(3)
+        y1.metric("Provisional VAH", "$" + format(provisional_vah, ",.0f") if not pd.isna(provisional_vah) else "N/A")
+        y2.metric("Provisional POC", "$" + format(provisional_poc, ",.0f") if not pd.isna(provisional_poc) else "N/A")
+        y3.metric("Provisional VAL", "$" + format(provisional_val, ",.0f") if not pd.isna(provisional_val) else "N/A")
+        st.caption("Includes the currently forming 30-minute candle; informational only and excluded from completed-candle classification.")
+    
+    # ---------- 3 · CONTEXT ----------
+    _ui_section("3 · CONTEXT", "Options · Futures · nearest-strike open interest")
+    
+    ctx_left, ctx_right = st.columns([1.6, 1])
+    
+    with ctx_left:
+        # Visual map of the ten strikes nearest to spot, using the existing
+        # nearest-expiry chain and USD open interest only.
+        if raw_chain_df is not None and not raw_chain_df.empty and latest_price > 0:
+            gex_view = raw_chain_df.copy()
+            gex_view["Strike"] = pd.to_numeric(gex_view["Strike"], errors="coerce")
+            gex_view["OI_USD"] = pd.to_numeric(gex_view["OI_USD"], errors="coerce")
+            gex_view = gex_view.dropna(subset=["Strike", "OI_USD"])
+            nearest_strikes = (
+                gex_view[["Strike"]].drop_duplicates()
+                .assign(Distance=lambda frame: (frame["Strike"] - latest_price).abs())
+                .nsmallest(10, "Distance")["Strike"]
+                .tolist()
+            )
+            chart_data = gex_view[gex_view["Strike"].isin(nearest_strikes)].copy()
+            if not chart_data.empty:
+                call_data = chart_data[chart_data["Type"] == "Call"].set_index("Strike")["OI_USD"]
+                put_data = chart_data[chart_data["Type"] == "Put"].set_index("Strike")["OI_USD"]
+                strikes_for_chart = sorted(nearest_strikes)
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    name="Call OI",
+                    y=strikes_for_chart,
+                    x=[float(call_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
+                    orientation="h",
+                    marker=dict(color="#00E676", line=dict(width=0)),
+                    hovertemplate="Strike: $%{y:,.0f}<br>Call OI: $%{x:.2f}M<extra></extra>",
+                ))
+                fig.add_trace(go.Bar(
+                    name="Put OI",
+                    y=strikes_for_chart,
+                    x=[float(put_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
+                    orientation="h",
+                    marker=dict(color="#FF5252", line=dict(width=0)),
+                    hovertemplate="Strike: $%{y:,.0f}<br>Put OI: $%{x:.2f}M<extra></extra>",
+                ))
+                fig.add_hline(
+                    y=latest_price,
+                    line_dash="dash",
+                    line_color="#FFD600",
+                    line_width=2.5,
+                    annotation_text="CMP $" + format(latest_price, ",.0f"),
+                    annotation_position="top right",
+                    annotation_font=dict(color="#0E1117", size=12, family="JetBrains Mono, Menlo, Consolas, monospace"),
+                    annotation_bgcolor="#FFD600",
+                    annotation_borderpad=3,
+                )
+                fig.update_layout(
+                    template="plotly_dark",
+                    barmode="group",
+                    bargap=0.28,
+                    bargroupgap=0.06,
+                    height=400,
+                    margin=dict(l=10, r=20, t=40, b=10),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#C9D1D9", family="Inter, -apple-system, Segoe UI, sans-serif", size=12),
+                    title=dict(text="OPEN INTEREST BY STRIKE · NEAREST 10", x=0.0, xanchor="left",
+                               font=dict(size=11, color="#8B96A5")),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                                font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
+                    hoverlabel=dict(bgcolor="#1A1E24", bordercolor="#2A313A", font=dict(color="#E6EDF3")),
+                    xaxis=dict(title=dict(text="Open Interest (USD millions)", font=dict(size=11, color="#8B96A5")),
+                               gridcolor="rgba(255,255,255,0.06)", zeroline=False,
+                               linecolor="rgba(255,255,255,0.10)"),
+                    yaxis=dict(title=dict(text="Strike (USD)", font=dict(size=11, color="#8B96A5")),
+                               tickmode="array", tickvals=strikes_for_chart, ticktext=["$" + format(s_, ",.0f") for s_ in strikes_for_chart],
+                               gridcolor="rgba(255,255,255,0.06)", linecolor="rgba(255,255,255,0.10)",
+                               tickfont=dict(family="JetBrains Mono, Menlo, Consolas, monospace", size=11)),
+                )
+                st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+            else:
+                st.caption("No valid strike / open-interest rows available for the chart.")
         else:
-            for column, label in zip(oi_context_cols, ("Aggregate OI", "OI Change", "Price Location", "Confirmed AMT State")):
-                column.metric(label, "N/A")
-            st.caption("Futures OI context unavailable; no values are inferred or zero-filled.")
-        
-        with st.expander("Prior value reference and provisional / forming profile"):
-            x1, x2, x3 = st.columns(3)
-            x1.metric("Prior VAH", "$" + format(final_vah, ",.0f") if not pd.isna(final_vah) else "N/A")
-            x2.metric("Prior POC", "$" + format(final_poc, ",.0f") if not pd.isna(final_poc) else "N/A")
-            x3.metric("Prior VAL", "$" + format(final_val, ",.0f") if not pd.isna(final_val) else "N/A")
-            st.markdown("**Provisional / forming profile**")
-            y1, y2, y3 = st.columns(3)
-            y1.metric("Provisional VAH", "$" + format(provisional_vah, ",.0f") if not pd.isna(provisional_vah) else "N/A")
-            y2.metric("Provisional POC", "$" + format(provisional_poc, ",.0f") if not pd.isna(provisional_poc) else "N/A")
-            y3.metric("Provisional VAL", "$" + format(provisional_val, ",.0f") if not pd.isna(provisional_val) else "N/A")
-            st.caption("Includes the currently forming 30-minute candle; informational only and excluded from completed-candle classification.")
-        
-        # ---------- 3 · CONTEXT ----------
-        _ui_section("3 · CONTEXT", "Options · Futures · nearest-strike open interest")
-        
-        ctx_left, ctx_right = st.columns([1.6, 1])
-        
-        with ctx_left:
-            # Visual map of the ten strikes nearest to spot, using the existing
-            # nearest-expiry chain and USD open interest only.
-            if raw_chain_df is not None and not raw_chain_df.empty and latest_price > 0:
-                gex_view = raw_chain_df.copy()
-                gex_view["Strike"] = pd.to_numeric(gex_view["Strike"], errors="coerce")
-                gex_view["OI_USD"] = pd.to_numeric(gex_view["OI_USD"], errors="coerce")
-                gex_view = gex_view.dropna(subset=["Strike", "OI_USD"])
-                nearest_strikes = (
-                    gex_view[["Strike"]].drop_duplicates()
-                    .assign(Distance=lambda frame: (frame["Strike"] - latest_price).abs())
-                    .nsmallest(10, "Distance")["Strike"]
-                    .tolist()
-                )
-                chart_data = gex_view[gex_view["Strike"].isin(nearest_strikes)].copy()
-                if not chart_data.empty:
-                    call_data = chart_data[chart_data["Type"] == "Call"].set_index("Strike")["OI_USD"]
-                    put_data = chart_data[chart_data["Type"] == "Put"].set_index("Strike")["OI_USD"]
-                    strikes_for_chart = sorted(nearest_strikes)
-                    fig = go.Figure()
-                    fig.add_trace(go.Bar(
-                        name="Call OI",
-                        y=strikes_for_chart,
-                        x=[float(call_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
-                        orientation="h",
-                        marker=dict(color="#00E676", line=dict(width=0)),
-                        hovertemplate="Strike: $%{y:,.0f}<br>Call OI: $%{x:.2f}M<extra></extra>",
-                    ))
-                    fig.add_trace(go.Bar(
-                        name="Put OI",
-                        y=strikes_for_chart,
-                        x=[float(put_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
-                        orientation="h",
-                        marker=dict(color="#FF5252", line=dict(width=0)),
-                        hovertemplate="Strike: $%{y:,.0f}<br>Put OI: $%{x:.2f}M<extra></extra>",
-                    ))
-                    fig.add_hline(
-                        y=latest_price,
-                        line_dash="dash",
-                        line_color="#FFD600",
-                        line_width=2.5,
-                        annotation_text="CMP $" + format(latest_price, ",.0f"),
-                        annotation_position="top right",
-                        annotation_font=dict(color="#0E1117", size=12, family="JetBrains Mono, Menlo, Consolas, monospace"),
-                        annotation_bgcolor="#FFD600",
-                        annotation_borderpad=3,
-                    )
-                    fig.update_layout(
-                        template="plotly_dark",
-                        barmode="group",
-                        bargap=0.28,
-                        bargroupgap=0.06,
-                        height=400,
-                        margin=dict(l=10, r=20, t=40, b=10),
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        plot_bgcolor="rgba(0,0,0,0)",
-                        font=dict(color="#C9D1D9", family="Inter, -apple-system, Segoe UI, sans-serif", size=12),
-                        title=dict(text="OPEN INTEREST BY STRIKE · NEAREST 10", x=0.0, xanchor="left",
-                                   font=dict(size=11, color="#8B96A5")),
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                                    font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
-                        hoverlabel=dict(bgcolor="#1A1E24", bordercolor="#2A313A", font=dict(color="#E6EDF3")),
-                        xaxis=dict(title=dict(text="Open Interest (USD millions)", font=dict(size=11, color="#8B96A5")),
-                                   gridcolor="rgba(255,255,255,0.06)", zeroline=False,
-                                   linecolor="rgba(255,255,255,0.10)"),
-                        yaxis=dict(title=dict(text="Strike (USD)", font=dict(size=11, color="#8B96A5")),
-                                   tickmode="array", tickvals=strikes_for_chart, ticktext=["$" + format(s_, ",.0f") for s_ in strikes_for_chart],
-                                   gridcolor="rgba(255,255,255,0.06)", linecolor="rgba(255,255,255,0.10)",
-                                   tickfont=dict(family="JetBrains Mono, Menlo, Consolas, monospace", size=11)),
-                    )
-                    st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
-                else:
-                    st.caption("No valid strike / open-interest rows available for the chart.")
-            else:
-                st.caption("Options chain unavailable; nearest-strike OI chart cannot be displayed.")
-        
-        with ctx_right:
-            st.markdown('<div class="mini">OPTIONS' + ((" · EXPIRY " + str(loaded_expiry)) if loaded_expiry else "") + '</div>', unsafe_allow_html=True)
-            if not options_df.empty and atm_row is not None:
-                st.markdown(
-                    _ui_grid([
-                        _ui_card("Max Pain", _ui_num(true_max_pain)),
-                        _ui_card("Local OI PCR · ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A", tone="info"),
-                        _ui_card("Call GEX Wall", call_strike_text, tone="up", tint=True),
-                        _ui_card("Put GEX Wall", put_strike_text, tone="down", tint=True),
-                    ], "g2"),
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.info("Options context unavailable or ATM quote validation did not pass. Missing values are not treated as zero.")
-        
-            st.markdown('<div class="mini" style="margin-top:8px">FUTURES</div>', unsafe_allow_html=True)
-            basis_status = "Discount" if sp_prem is not None and sp_prem < 0 else "Premium" if sp_prem is not None and sp_prem > 0 else "Unavailable"
-            _basis_tone = {"Discount": "down", "Premium": "up"}.get(basis_status, "flat")
+            st.caption("Options chain unavailable; nearest-strike OI chart cannot be displayed.")
+    
+    with ctx_right:
+        st.markdown('<div class="mini">OPTIONS' + ((" · EXPIRY " + str(loaded_expiry)) if loaded_expiry else "") + '</div>', unsafe_allow_html=True)
+        if not options_df.empty and atm_row is not None:
             st.markdown(
                 _ui_grid([
-                    _ui_card("Delta OI", "$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A"),
-                    _ui_card("Perp Basis", format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A", basis_status, _basis_tone),
+                    _ui_card("Max Pain", _ui_num(true_max_pain)),
+                    _ui_card("Local OI PCR · ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A", tone="info"),
+                    _ui_card("Call GEX Wall", call_strike_text, tone="up", tint=True),
+                    _ui_card("Put GEX Wall", put_strike_text, tone="down", tint=True),
                 ], "g2"),
                 unsafe_allow_html=True,
             )
+        else:
+            st.info("Options context unavailable or ATM quote validation did not pass. Missing values are not treated as zero.")
     
-        
-        st.markdown('<div class="foot">Futures OI and basis are context, not directional signals. OI direction is unavailable without a comparable prior observation.</div>', unsafe_allow_html=True)
-        
-        render_options_filter_panel(options_filter_results)
-        
-        _ui_section("DIAGNOSTICS AND RAW DATA", "expand for full tables")
-        with st.expander("Session OHLC history"):
-            if not session_df.empty:
-                session_display_df = session_df.copy()
-                value_columns = ["VAL", "POC", "VAH"]
-                session_display_df = session_display_df[
-                    [column for column in session_display_df.columns if column not in value_columns]
-                    + value_columns
-                ]
-                st.dataframe(session_display_df, use_container_width=True, hide_index=True)
-            else:
-                st.caption("Session history unavailable.")
-        
-        with st.expander("Fast Auction Classification journal"):
-            st.caption("Independent dashboard classification; completed candles only.")
-            if not journal_df_check.empty:
-                st.dataframe(journal_df_check, use_container_width=True, hide_index=True)
-            else:
-                st.caption("Classification journal unavailable.")
-        
-        with st.expander("Options OI clusters"):
-            st.markdown("#### Top 3 Strikes by OI")
-            st.caption("Largest individual Call and Put OI concentrations within ±15% of spot. OI is shown in USD value; distance is measured from current spot.")
-            if raw_chain_df is not None and not raw_chain_df.empty and latest_price > 0:
-                top_band = raw_chain_df.copy()
-                top_band["Strike"] = pd.to_numeric(top_band["Strike"], errors="coerce")
-                top_band["OI_USD"] = pd.to_numeric(top_band["OI_USD"], errors="coerce")
-                top_band["OI_Contracts"] = pd.to_numeric(
-                    top_band["OI_Contracts"], errors="coerce"
-                )
-                top_band = top_band[
-                    top_band["Strike"].between(latest_price * 0.85, latest_price * 1.15)
-                    & top_band["OI_USD"].notna()
-                    & (top_band["OI_USD"] > 0)
-                ].copy()
-                top_band["Distance ($)"] = top_band["Strike"] - latest_price
-                top_band["Distance (%)"] = (top_band["Distance ($)"] / latest_price) * 100
-                top_cols = st.columns(2)
-                for col, opt_type, heading in [
-                    (top_cols[0], "Call", "Top 3 Calls"),
-                    (top_cols[1], "Put", "Top 3 Puts"),
-                ]:
-                    with col:
-                        st.markdown(f"**{heading}**")
-                        top_rows = top_band[top_band["Type"] == opt_type].nlargest(3, "OI_USD")[
-                            ["Strike", "OI_USD", "OI_Contracts", "Distance ($)", "Distance (%)"]
-                        ].copy()
-                        top_rows = top_rows.sort_values(
-                            "Strike",
-                            ascending=(opt_type == "Put"),
-                        )
-                        if not top_rows.empty:
-                            top_rows["OI_USD"] = top_rows["OI_USD"] / 1e6
-                            st.dataframe(
-                                top_rows,
-                                column_config={
-                                    "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
-                                    "OI_USD": st.column_config.NumberColumn("OI (USD M)", format="$%.2fM"),
-                                    "OI_Contracts": st.column_config.NumberColumn(
-                                        "OI (Contracts)", format="%.0f"
-                                    ),
-                                    "Distance ($)": st.column_config.NumberColumn("Distance ($)", format="$%+.0f"),
-                                    "Distance (%)": st.column_config.NumberColumn("Distance (%)", format="%+.2f%%"),
-                                },
-                                use_container_width=True,
-                                hide_index=True,
-                            )
-                        else:
-                            st.caption("No qualifying strikes in the ±15% band.")
-            else:
-                st.caption("Raw options chain unavailable; Top 3 ranking cannot be calculated.")
-        
-        with st.expander("Raw options chain — nearest strikes"):
-            if not filtered_options.empty:
-                display_df = filtered_options.copy()
-                display_df["Strike"] = pd.to_numeric(display_df["Strike"], errors="coerce")
-                display_df["Dist_to_Spot"] = display_df["Strike"] - latest_price
-                # Keep the signed distance readable while marking the ATM strike explicitly.
-                display_df["Dist_to_Spot"] = display_df["Dist_to_Spot"].map(
-                    lambda distance: "N/A" if pd.isna(distance) else "$" + format(distance, "+.0f")
-                )
-                if pd.notna(atm_strike):
-                    display_df.loc[
-                        display_df["Strike"] == float(atm_strike), "Dist_to_Spot"
-                    ] = "ATM"
-                display_df["Call_OI_M"] = display_df["OI_USD_Call"] / 1e6
-                display_df["Put_OI_M"] = display_df["OI_USD_Put"] / 1e6
-        
-                dev_vah = float(provisional_vah) if pd.notna(provisional_vah) else np.nan
-                dev_val = float(provisional_val) if pd.notna(provisional_val) else np.nan
-                dev_poc = float(provisional_poc) if pd.notna(provisional_poc) else np.nan
-                strike_values = display_df["Strike"]
-        
-                amt_conditions = [
-                    strike_values > dev_vah,
-                    strike_values < dev_val,
-                    (strike_values - dev_poc).abs() <= 50,
-                ]
-                amt_labels = ["Above Value", "Below Value", "At Dev POC"]
-                display_df["AMT Location"] = np.select(
-                    amt_conditions,
-                    amt_labels,
-                    default="Inside Value",
-                )
-        
-                display_df = display_df.sort_values(
-                    by="Strike",
-                    ascending=False,
-                    kind="stable",
-                    na_position="last",
-                )
-                display_df = display_df[
-                    ["Mark_Call", "Call_OI_M", "Volume_Call", "IV_Call", "Strike",
-                     "Dist_to_Spot", "AMT Location", "IV_Put", "Volume_Put", "Put_OI_M", "Mark_Put"]
-                ]
-        
-                atm_call_iv = (
-                    pd.to_numeric(atm_row.get("IV_Call"), errors="coerce")
-                    if atm_row is not None else np.nan
-                )
-                atm_put_iv = (
-                    pd.to_numeric(atm_row.get("IV_Put"), errors="coerce")
-                    if atm_row is not None else np.nan
-                )
-        
-                def highlight_amt_gex_and_relative_iv(row):
-                    styles = pd.Series("", index=row.index, dtype="object")
-                    strike = pd.to_numeric(row["Strike"], errors="coerce")
-        
-                    if pd.notna(strike) and pd.notna(dev_poc) and abs(strike - dev_poc) <= 50:
-                        styles.loc[:] = "background-color: #6A1B9A; color: white; font-weight: bold"
-        
-                    # ATM strike overrides the purple AMT POC row on the Strike cell.
-                    # GEX wall styling below remains highest priority for that cell.
-                    if pd.notna(strike) and pd.notna(atm_strike) and strike == float(atm_strike):
-                        styles.loc["Strike"] = "background-color: #1E88E5; color: white; font-weight: bold"
-        
-                    if call_gamma_wall is not None and pd.notna(strike) and strike == float(call_gamma_wall["Strike"]):
-                        styles.loc["Strike"] = "background-color: #2E7D32; color: white; font-weight: bold"
-                    if put_gamma_wall is not None and pd.notna(strike) and strike == float(put_gamma_wall["Strike"]):
-                        styles.loc["Strike"] = "background-color: #C62828; color: white; font-weight: bold"
-        
-                    call_iv = pd.to_numeric(row["IV_Call"], errors="coerce")
-                    if pd.notna(call_iv) and pd.notna(atm_call_iv):
-                        call_iv_diff = call_iv - atm_call_iv
-                        if call_iv_diff > 5:
-                            styles.loc["IV_Call"] = "background-color: #C62828; color: white"
-                        elif call_iv_diff < -5:
-                            styles.loc["IV_Call"] = "background-color: #2E7D32; color: white"
-        
-                    put_iv = pd.to_numeric(row["IV_Put"], errors="coerce")
-                    if pd.notna(put_iv) and pd.notna(atm_put_iv):
-                        put_iv_diff = put_iv - atm_put_iv
-                        if put_iv_diff > 5:
-                            styles.loc["IV_Put"] = "background-color: #C62828; color: white"
-                        elif put_iv_diff < -5:
-                            styles.loc["IV_Put"] = "background-color: #2E7D32; color: white"
-        
-                    return styles
-        
-                raw_options_config = {
-                    "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
-                    "Dist_to_Spot": st.column_config.TextColumn("Dist to Spot"),
-                    "Mark_Call": st.column_config.NumberColumn("Mark_Call", format="$%.2f"),
-                    "Mark_Put": st.column_config.NumberColumn("Mark_Put", format="$%.2f"),
-                    "Call_OI_M": st.column_config.NumberColumn("Call_OI_M", format="$%.2fM"),
-                    "Put_OI_M": st.column_config.NumberColumn("Put_OI_M", format="$%.2fM"),
-                    "Volume_Call": st.column_config.NumberColumn("Volume_Call", format="%.0f"),
-                    "Volume_Put": st.column_config.NumberColumn("Volume_Put", format="%.0f"),
-                    "IV_Call": st.column_config.NumberColumn("IV_Call", format="%.1f%%"),
-                    "IV_Put": st.column_config.NumberColumn("IV_Put", format="%.1f%%"),
-                }
-                st.caption("Relative IV vs ATM · Red: more than +5 vol points · Green: less than -5 vol points · Neutral: within ±5. Call and Put are compared with their own ATM IV. This is a relative-skew reference, not an expensive/cheap signal.")
-                st.dataframe(
-                    display_df.style.apply(highlight_amt_gex_and_relative_iv, axis=1),
-                    column_config=raw_options_config,
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.caption("Raw options chain unavailable.")
-        
-        with st.expander("Copy dashboard snapshot"):
-            snapshot_text = """
-        === BTC TRADING COCKPIT SNAPSHOT ===
-        Time: {time} IST
-        Price: {price}
-        Location: {location}
-        Fast Auction Classification: {state} (Independent Code {code})
-        Prior VAH / POC / VAL: {vah} / {poc} / {val}
-        Developing VAH / POC / VAL: {dev_vah} / {dev_poc} / {dev_val}
-        Options expiry: {expiry}
-        ATM Straddle: {straddle}
-        Max Pain: {max_pain}
-        Call GEX Wall: {call_wall}
-        Put GEX Wall: {put_wall}
-        Local OI PCR (Contracts ±10% spot): {pcr}
-        Delta Futures OI: {oi}
-        Perp Basis: {basis}
-        OI Direction: Unavailable without comparable prior observation
-        """.format(
-                time=datetime.datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S"),
-                price="$" + format(latest_price, ",.2f"), location=loc, state=current_amt_name, code=current_amt_state,
-                vah=final_vah, poc=final_poc, val=final_val,
-                dev_vah=dev_vah_ui, dev_poc=dev_poc_ui, dev_val=dev_val_ui,
-                expiry=loaded_expiry,
-                straddle="$" + format(straddle_price, ",.2f") if straddle_valid else "N/A",
-                max_pain="$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A",
-                call_wall=call_strike_text if not options_df.empty and atm_row is not None else "N/A",
-                put_wall=put_strike_text if not options_df.empty and atm_row is not None else "N/A",
-                pcr=format(pcr, ".2f") if not pd.isna(pcr) else "N/A",
-                oi="$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A",
-                basis=format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A",
-            )
-            st.code(snapshot_text, language="text")
-        
-        
+        st.markdown('<div class="mini" style="margin-top:8px">FUTURES</div>', unsafe_allow_html=True)
+        basis_status = "Discount" if sp_prem is not None and sp_prem < 0 else "Premium" if sp_prem is not None and sp_prem > 0 else "Unavailable"
+        _basis_tone = {"Discount": "down", "Premium": "up"}.get(basis_status, "flat")
         st.markdown(
-            '<div class="foot">' + "Source status — Binance candles: " + ("available" if not df.empty else "unavailable") + " · Delta futures: " + ("available" if oi_usd is not None else "unavailable") + " · Delta options: " + ("available" if not options_df.empty else "unavailable") + '</div>',
+            _ui_grid([
+                _ui_card("Delta OI", "$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A"),
+                _ui_card("Perp Basis", format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A", basis_status, _basis_tone),
+            ], "g2"),
             unsafe_allow_html=True,
         )
-    
 
-    with alerts_tab:
-        _render_alerts_tab()
+    
+    st.markdown('<div class="foot">Futures OI and basis are context, not directional signals. OI direction is unavailable without a comparable prior observation.</div>', unsafe_allow_html=True)
+    
+    render_options_filter_panel(options_filter_results)
+    
+    _ui_section("DIAGNOSTICS AND RAW DATA", "expand for full tables")
+    with st.expander("Session OHLC history"):
+        if not session_df.empty:
+            session_display_df = session_df.copy()
+            value_columns = ["VAL", "POC", "VAH"]
+            session_display_df = session_display_df[
+                [column for column in session_display_df.columns if column not in value_columns]
+                + value_columns
+            ]
+            st.dataframe(session_display_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Session history unavailable.")
+    
+    with st.expander("Fast Auction Classification journal"):
+        st.caption("Independent dashboard classification; completed candles only.")
+        if not journal_df_check.empty:
+            st.dataframe(journal_df_check, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Classification journal unavailable.")
+    
+    with st.expander("Options OI clusters"):
+        st.markdown("#### Top 3 Strikes by OI")
+        st.caption("Largest individual Call and Put OI concentrations within ±15% of spot. OI is shown in USD value; distance is measured from current spot.")
+        if raw_chain_df is not None and not raw_chain_df.empty and latest_price > 0:
+            top_band = raw_chain_df.copy()
+            top_band["Strike"] = pd.to_numeric(top_band["Strike"], errors="coerce")
+            top_band["OI_USD"] = pd.to_numeric(top_band["OI_USD"], errors="coerce")
+            top_band["OI_Contracts"] = pd.to_numeric(
+                top_band["OI_Contracts"], errors="coerce"
+            )
+            top_band = top_band[
+                top_band["Strike"].between(latest_price * 0.85, latest_price * 1.15)
+                & top_band["OI_USD"].notna()
+                & (top_band["OI_USD"] > 0)
+            ].copy()
+            top_band["Distance ($)"] = top_band["Strike"] - latest_price
+            top_band["Distance (%)"] = (top_band["Distance ($)"] / latest_price) * 100
+            top_cols = st.columns(2)
+            for col, opt_type, heading in [
+                (top_cols[0], "Call", "Top 3 Calls"),
+                (top_cols[1], "Put", "Top 3 Puts"),
+            ]:
+                with col:
+                    st.markdown(f"**{heading}**")
+                    top_rows = top_band[top_band["Type"] == opt_type].nlargest(3, "OI_USD")[
+                        ["Strike", "OI_USD", "OI_Contracts", "Distance ($)", "Distance (%)"]
+                    ].copy()
+                    top_rows = top_rows.sort_values(
+                        "Strike",
+                        ascending=(opt_type == "Put"),
+                    )
+                    if not top_rows.empty:
+                        top_rows["OI_USD"] = top_rows["OI_USD"] / 1e6
+                        st.dataframe(
+                            top_rows,
+                            column_config={
+                                "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
+                                "OI_USD": st.column_config.NumberColumn("OI (USD M)", format="$%.2fM"),
+                                "OI_Contracts": st.column_config.NumberColumn(
+                                    "OI (Contracts)", format="%.0f"
+                                ),
+                                "Distance ($)": st.column_config.NumberColumn("Distance ($)", format="$%+.0f"),
+                                "Distance (%)": st.column_config.NumberColumn("Distance (%)", format="%+.2f%%"),
+                            },
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    else:
+                        st.caption("No qualifying strikes in the ±15% band.")
+        else:
+            st.caption("Raw options chain unavailable; Top 3 ranking cannot be calculated.")
+    
+    with st.expander("Raw options chain — nearest strikes"):
+        if not filtered_options.empty:
+            display_df = filtered_options.copy()
+            display_df["Strike"] = pd.to_numeric(display_df["Strike"], errors="coerce")
+            display_df["Dist_to_Spot"] = display_df["Strike"] - latest_price
+            # Keep the signed distance readable while marking the ATM strike explicitly.
+            display_df["Dist_to_Spot"] = display_df["Dist_to_Spot"].map(
+                lambda distance: "N/A" if pd.isna(distance) else "$" + format(distance, "+.0f")
+            )
+            if pd.notna(atm_strike):
+                display_df.loc[
+                    display_df["Strike"] == float(atm_strike), "Dist_to_Spot"
+                ] = "ATM"
+            display_df["Call_OI_M"] = display_df["OI_USD_Call"] / 1e6
+            display_df["Put_OI_M"] = display_df["OI_USD_Put"] / 1e6
+    
+            dev_vah = float(provisional_vah) if pd.notna(provisional_vah) else np.nan
+            dev_val = float(provisional_val) if pd.notna(provisional_val) else np.nan
+            dev_poc = float(provisional_poc) if pd.notna(provisional_poc) else np.nan
+            strike_values = display_df["Strike"]
+    
+            amt_conditions = [
+                strike_values > dev_vah,
+                strike_values < dev_val,
+                (strike_values - dev_poc).abs() <= 50,
+            ]
+            amt_labels = ["Above Value", "Below Value", "At Dev POC"]
+            display_df["AMT Location"] = np.select(
+                amt_conditions,
+                amt_labels,
+                default="Inside Value",
+            )
+    
+            display_df = display_df.sort_values(
+                by="Strike",
+                ascending=False,
+                kind="stable",
+                na_position="last",
+            )
+            display_df = display_df[
+                ["Mark_Call", "Call_OI_M", "Volume_Call", "IV_Call", "Strike",
+                 "Dist_to_Spot", "AMT Location", "IV_Put", "Volume_Put", "Put_OI_M", "Mark_Put"]
+            ]
+    
+            atm_call_iv = (
+                pd.to_numeric(atm_row.get("IV_Call"), errors="coerce")
+                if atm_row is not None else np.nan
+            )
+            atm_put_iv = (
+                pd.to_numeric(atm_row.get("IV_Put"), errors="coerce")
+                if atm_row is not None else np.nan
+            )
+    
+            def highlight_amt_gex_and_relative_iv(row):
+                styles = pd.Series("", index=row.index, dtype="object")
+                strike = pd.to_numeric(row["Strike"], errors="coerce")
+    
+                if pd.notna(strike) and pd.notna(dev_poc) and abs(strike - dev_poc) <= 50:
+                    styles.loc[:] = "background-color: #6A1B9A; color: white; font-weight: bold"
+    
+                # ATM strike overrides the purple AMT POC row on the Strike cell.
+                # GEX wall styling below remains highest priority for that cell.
+                if pd.notna(strike) and pd.notna(atm_strike) and strike == float(atm_strike):
+                    styles.loc["Strike"] = "background-color: #1E88E5; color: white; font-weight: bold"
+    
+                if call_gamma_wall is not None and pd.notna(strike) and strike == float(call_gamma_wall["Strike"]):
+                    styles.loc["Strike"] = "background-color: #2E7D32; color: white; font-weight: bold"
+                if put_gamma_wall is not None and pd.notna(strike) and strike == float(put_gamma_wall["Strike"]):
+                    styles.loc["Strike"] = "background-color: #C62828; color: white; font-weight: bold"
+    
+                call_iv = pd.to_numeric(row["IV_Call"], errors="coerce")
+                if pd.notna(call_iv) and pd.notna(atm_call_iv):
+                    call_iv_diff = call_iv - atm_call_iv
+                    if call_iv_diff > 5:
+                        styles.loc["IV_Call"] = "background-color: #C62828; color: white"
+                    elif call_iv_diff < -5:
+                        styles.loc["IV_Call"] = "background-color: #2E7D32; color: white"
+    
+                put_iv = pd.to_numeric(row["IV_Put"], errors="coerce")
+                if pd.notna(put_iv) and pd.notna(atm_put_iv):
+                    put_iv_diff = put_iv - atm_put_iv
+                    if put_iv_diff > 5:
+                        styles.loc["IV_Put"] = "background-color: #C62828; color: white"
+                    elif put_iv_diff < -5:
+                        styles.loc["IV_Put"] = "background-color: #2E7D32; color: white"
+    
+                return styles
+    
+            raw_options_config = {
+                "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
+                "Dist_to_Spot": st.column_config.TextColumn("Dist to Spot"),
+                "Mark_Call": st.column_config.NumberColumn("Mark_Call", format="$%.2f"),
+                "Mark_Put": st.column_config.NumberColumn("Mark_Put", format="$%.2f"),
+                "Call_OI_M": st.column_config.NumberColumn("Call_OI_M", format="$%.2fM"),
+                "Put_OI_M": st.column_config.NumberColumn("Put_OI_M", format="$%.2fM"),
+                "Volume_Call": st.column_config.NumberColumn("Volume_Call", format="%.0f"),
+                "Volume_Put": st.column_config.NumberColumn("Volume_Put", format="%.0f"),
+                "IV_Call": st.column_config.NumberColumn("IV_Call", format="%.1f%%"),
+                "IV_Put": st.column_config.NumberColumn("IV_Put", format="%.1f%%"),
+            }
+            st.caption("Relative IV vs ATM · Red: more than +5 vol points · Green: less than -5 vol points · Neutral: within ±5. Call and Put are compared with their own ATM IV. This is a relative-skew reference, not an expensive/cheap signal.")
+            st.dataframe(
+                display_df.style.apply(highlight_amt_gex_and_relative_iv, axis=1),
+                column_config=raw_options_config,
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("Raw options chain unavailable.")
+    
+    with st.expander("Copy dashboard snapshot"):
+        snapshot_text = """
+    === BTC TRADING COCKPIT SNAPSHOT ===
+    Time: {time} IST
+    Price: {price}
+    Location: {location}
+    Fast Auction Classification: {state} (Independent Code {code})
+    Prior VAH / POC / VAL: {vah} / {poc} / {val}
+    Developing VAH / POC / VAL: {dev_vah} / {dev_poc} / {dev_val}
+    Options expiry: {expiry}
+    ATM Straddle: {straddle}
+    Max Pain: {max_pain}
+    Call GEX Wall: {call_wall}
+    Put GEX Wall: {put_wall}
+    Local OI PCR (Contracts ±10% spot): {pcr}
+    Delta Futures OI: {oi}
+    Perp Basis: {basis}
+    OI Direction: Unavailable without comparable prior observation
+    """.format(
+            time=datetime.datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            price="$" + format(latest_price, ",.2f"), location=loc, state=current_amt_name, code=current_amt_state,
+            vah=final_vah, poc=final_poc, val=final_val,
+            dev_vah=dev_vah_ui, dev_poc=dev_poc_ui, dev_val=dev_val_ui,
+            expiry=loaded_expiry,
+            straddle="$" + format(straddle_price, ",.2f") if straddle_valid else "N/A",
+            max_pain="$" + format(true_max_pain, ",.0f") if not pd.isna(true_max_pain) else "N/A",
+            call_wall=call_strike_text if not options_df.empty and atm_row is not None else "N/A",
+            put_wall=put_strike_text if not options_df.empty and atm_row is not None else "N/A",
+            pcr=format(pcr, ".2f") if not pd.isna(pcr) else "N/A",
+            oi="$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A",
+            basis=format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A",
+        )
+        st.code(snapshot_text, language="text")
+    
+    
+    st.markdown(
+        '<div class="foot">' + "Source status — Binance candles: " + ("available" if not df.empty else "unavailable") + " · Delta futures: " + ("available" if oi_usd is not None else "unavailable") + " · Delta options: " + ("available" if not options_df.empty else "unavailable") + '</div>',
+        unsafe_allow_html=True,
+    )
 
 _render_dashboard()
 
