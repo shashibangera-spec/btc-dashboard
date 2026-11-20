@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from supabase import create_client
 
-CALCULATION_VERSION = "shadow-v1.0"
+CALCULATION_VERSION = "shadow-v1.1"
 EXCHANGE = "BINANCE"
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "30"
@@ -175,6 +175,8 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
                     status = "BROKEN"
                     active_test_time = None
                     active_test_level = None
+                    reported_test_time = None
+                    reported_test_level = None
                 elif low <= active_test_level and close > active_test_level:
                     # Rejection is recorded on the actual test candle, not inferred
                     # from a later candle that simply stops revisiting the level.
@@ -183,6 +185,8 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
                     rejection_count += 1
                     active_test_time = None
                     active_test_level = None
+                    reported_test_time = None
+                    reported_test_level = None
                 elif low <= active_test_level:
                     status = "CONTINUING"
                 else:
