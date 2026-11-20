@@ -1,5 +1,13 @@
 ## 2026-11-20
 
+### Changed — Daily raw-options archive/retention schedule moved to 18:17 IST
+
+- Moves the scheduled GitHub Actions run from 06:17 IST (00:47 UTC) to 18:17 IST (12:47 UTC), using cron `47 12 * * *`.
+- Keeps the rolling three-day (72-hour) retention cutoff, shared archive/retention cutoff, archive-first sequence, integrity checks, exact snapshot-ID reconciliation, and the existing target table unchanged.
+- Updates README, database inventory, and observation guide to match the active workflow schedule. Earlier schedule entries below are retained as historical change records.
+- No database, schema, collector, archive format, dashboard, alert, Pine or trading-rule changes.
+
+
 ### Changed — Event-driven Telegram alert evaluation
 
 - Converts `.github/workflows/telegram_alerts.yml` into a reusable workflow via `workflow_call`, while retaining manual `workflow_dispatch` for testing and recovery.
