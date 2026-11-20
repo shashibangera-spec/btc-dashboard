@@ -1,19 +1,26 @@
 name: BTC High-Signal Telegram Alerts
 
 on:
-  schedule:
-    - cron: '3,33 * * * *'
+  workflow_call:
+    inputs:
+      test_mode:
+        description: "Send a test Telegram message"
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       test_mode:
         description: "Send a test Telegram message"
         required: false
-        default: "false"
+        default: false
         type: boolean
 
 permissions:
   contents: read
 
+# This fixed group is shared by reusable Coordinator calls and manual runs.
+# Queue overlapping evaluations instead of cancelling an active delivery.
 concurrency:
   group: btc-telegram-alerts
   cancel-in-progress: false
@@ -44,5 +51,5 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TEST_MODE: ${{ inputs.test_mode || 'false' }}
+          TEST_MODE: ${{ inputs.test_mode }}
         run: python telegram_alerts.py

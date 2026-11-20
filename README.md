@@ -10,7 +10,7 @@ The live system has four cooperating layers:
 
 1. **Collection and persistence** — AMT, Futures and Options collectors write to Supabase PostgreSQL.
 2. **Research calculations** — Options filters, GEX wall attribution, AMT deterioration shadow metrics and post-event reaction analysis operate on stored observations.
-3. **Event detection and delivery** — the signal detector writes research events to the system journal; a separate scheduled Telegram process evaluates structural alerts and records delivery state in an outbox.
+3. **Event detection and delivery** — the signal detector writes research events to the system journal; the Coordinator then invokes the reusable Telegram evaluator as its final stage, recording delivery state in an outbox.
 4. **Observation interfaces** — fast and research Streamlit dashboards read stored data and shared calculation modules.
 
     GitHub Actions
@@ -53,9 +53,9 @@ The live system has four cooperating layers:
 ### Scheduling facts from the repository
 
 - .github/workflows/coordinator.yml has **workflow_dispatch only**. It has no GitHub Actions cron schedule. Any external scheduler that invokes it is outside this repository and cannot be verified from repository contents.
-- The Coordinator runs AMT, Futures and Options sequentially, then runs the signal detector only when all three collector jobs succeed. Its concurrency group prevents overlapping coordinator runs.
+- The Coordinator runs AMT, Futures and Options sequentially, then runs the signal detector only when all three collector jobs succeed. The reusable Telegram workflow runs only after signal detection succeeds. Its shared non-cancelling concurrency group serializes Coordinator-triggered and manual alert evaluations.
 - .github/workflows/amt_collector.yml runs amt_collector.py, then shadow_monitor.py. The shadow step has continue-on-error: true; shadow-monitor failure must not fail the AMT collection job.
-- .github/workflows/telegram_alerts.yml runs at minutes 3 and 33 of every hour, independently of Coordinator completion. It can also be manually dispatched for a test message.
+- .github/workflows/telegram_alerts.yml is reusable through workflow_call and remains manually dispatchable for recovery/testing. It has no independent cron; normal evaluation is the Coordinator's final stage.
 - .github/workflows/reaction-analyzer.yml runs daily at 07:00 UTC (12:30 IST).
 - .github/workflows/archive-retention.yml runs daily at 19:10 UTC (00:40 IST). It archives options data older than three days, verifies the archive before deletion, and then runs database size checks and VACUUM (VERBOSE, ANALYZE) on options_oi_snapshots.
 
@@ -90,7 +90,7 @@ Schedules are repository configuration, not proof that a particular run succeede
 ### Event journal, Telegram and reaction analysis
 
 - signal_detector.py evaluates completed AMT candles, aggregate Futures OI and successful Options-derived data. It writes qualifying events to system_signal_journal: AMT_STATE_CHANGE, GEX_WALL_BREACH, OI_SHOCK and VALUE_MIGRATION.
-- telegram_alerts.py runs independently. It evaluates AMT transitions and OI shocks, consumes journaled GEX wall-breach events, and uses telegram_alert_events as a delivery outbox with deduplication and retry/audit fields. Telegram delivery is not the same thing as the research event journal.
+- telegram_alerts.py is invoked by the reusable Telegram workflow after successful collection and signal detection. It evaluates AMT transitions and OI shocks, consumes journaled GEX wall-breach events, and uses telegram_alert_events as a delivery outbox with deduplication and retry/audit fields. Manual workflow dispatch remains available for recovery/testing. Telegram delivery is not the same thing as the research event journal.
 - The notifier's accepted outbox event types are AMT_STATE_CHANGE, AMT_PROFILE_INITIALIZATION, GEX_WALL_BREACH, OI_SHOCK and TEST_ALERT. TEST_ALERT is for explicit connectivity testing, not a market signal.
 - reaction_analyzer.py creates versioned, non-directional reaction measurements for journal events. The current stored method is reaction-v1.1, using Delta BTCUSD perpetual 30-minute candles and an eight-candle/four-hour observation window. These measurements are not trade returns or validated signal performance.
 
