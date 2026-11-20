@@ -2,11 +2,11 @@
 
 ### Added — Read-only Alerts history tab
 
-- Added a dedicated ALERTS tab alongside the existing MARKET cockpit, preserving the existing market dashboard content and styling.
-- Displays canonical events from \`system_signal_journal\`, with history-window, event-type and delivery-status filters, manual refresh, and expandable event evidence.
+- Added a dedicated ALERTS view alongside the existing MARKET cockpit, preserving the existing market dashboard content and styling.
+- Displays canonical events from `system_signal_journal`, with history-window, event-type and delivery-status filters, manual refresh, and expandable event evidence.
 - Reconciles GEX wall-breach notifications using the journal row identity; reconciles AMT state changes and OI shocks using exact event-type and UTC event-time matches. Ambiguous and missing matches are explicitly labelled rather than guessed.
-- Displays the private \`telegram_alert_events\` outbox separately, including operational-only records such as profile initialization and TEST_ALERT.
-- Reads the journal using the anonymous key when available and reads the private outbox only with a server-side \`SUPABASE_SERVICE_ROLE_KEY\`. No credential is sent to browser code; no RLS, grants, schema, collector, detector, Telegram sender, retry, alert or AMT logic is changed.
+- Displays the private `telegram_alert_events` outbox separately, including operational-only records such as profile initialization and TEST_ALERT.
+- Reads the journal using the anonymous key when available and reads the private outbox only with a server-side `SUPABASE_SERVICE_ROLE_KEY`. No credential is sent to browser code; no RLS, grants, schema, collector, detector, Telegram sender, retry, alert or AMT logic is changed.
 - Adds offline regression tests for access separation, matching rules, unavailable/ambiguous states, research-only classification and read-only behavior.
 - The view is capped at 300 journal rows and 500 outbox rows per refresh; it does not run a background polling loop. Reopening the app reloads persisted records from Supabase.
 - No database or production deployment changes.
