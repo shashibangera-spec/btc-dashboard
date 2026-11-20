@@ -813,7 +813,7 @@ def calculate_session_journey(df, prev_vah, prev_val):
             elif close < val: micro_bias = "🔴 Weak Close"
 
         sessions.append({
-            "Session": "Prior US Overnight (01:30-05:30)",
+            "Session": "Prior US Overnight (01:30–05:30)",
             "Open": prior_overnight_data['open'].iloc[0],
             "High": high,
             "Low": low,
