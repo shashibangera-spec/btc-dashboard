@@ -127,13 +127,13 @@ A forensic comparison found that the live database has migration history and sch
 
 ### Three-day raw options retention
 
-The raw `public.options_oi_snapshots` table has a **3-day retention window**. Older records are archived and verified before deletion by the scheduled retention workflow, reducing ongoing database storage use. This is a raw-snapshot storage policy, not a retention policy for all research outputs.
+The raw `public.options_oi_snapshots` table has a **rolling 3-day (72-hour) retention window**. The archive/retention workflow is scheduled daily at **18:17 IST (12:47 UTC; cron `47 12 * * *`)**. GitHub may delay the actual start because scheduled workflows are queue-dependent. Older records are archived to the separate private `btc-data-archive` repository and verified before deletion. This is a raw-snapshot storage policy, not a retention policy for all research outputs.
 
 The following event/metric tables are intended to be retained permanently:
 - `public.gex_strike_attribution` — event-level GEX/Shapley attribution history.
 - `public.auction_deterioration_metrics` — completed-candle deterioration and VAL-episode observations.
 
-The archive workflow's configured schedule and retention settings should not be confused with proof that a particular purge ran successfully. Check the workflow run and archive verification logs before asserting that a specific batch was archived or deleted.
+The configured 18:17 IST schedule and three-day retention setting should not be confused with proof that a particular purge ran successfully. Check the workflow run and archive verification logs before asserting that a specific batch was archived or deleted.
 
 ## 6. Quick reference — where to look
 
