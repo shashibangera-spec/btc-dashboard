@@ -1324,8 +1324,8 @@ def fetch_delta_options():
 # ==========================================
 # CALCULATION & PROCESSING
 # ==========================================
-@st.fragment(run_every="3m")
 def _render_dashboard():
+    """Keep navigation outside the auto-refreshing market fragment."""
     dashboard_view = st.segmented_control(
         "VIEW",
         options=["MARKET", "ALERTS"],
@@ -1335,8 +1335,13 @@ def _render_dashboard():
     )
     if dashboard_view == "ALERTS":
         _render_alerts_tab()
-        st.stop()
+        return
 
+    _render_market_dashboard()
+
+
+@st.fragment(run_every="3m")
+def _render_market_dashboard():
     df = fetch_amt_data()
     
     completed_df = df[df['IsClosed']].copy() if not df.empty else pd.DataFrame()
