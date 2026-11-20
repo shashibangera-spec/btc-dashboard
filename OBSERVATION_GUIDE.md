@@ -191,3 +191,37 @@ Add new dated decision entries rather than rewriting history. Correct factual er
 **Decision:** Retain both lenses for future comparisons. Use View A to preserve independent interpretation and View B to classify evidence consistently. Compare their conclusions against subsequently observed outcomes only through a separately timestamped outcome review, avoiding hindsight contamination of the attribution review.
 
 **Implementation outcome:** No thresholds, formulas, state rules, alert conditions, collectors, database objects, trading rules or production code were changed. No new alert is authorized by this comparison. Keep the observation freeze in force. Revisit only after a meaningful sample has accumulated, including untested walls, rejected and broken VAL episodes, non-confirmations, missing data and version boundaries.
+
+### 2026-11-21 — Documentation sync audit (repository and live database)
+
+**Scope:** Git history on `main` from 2026-11-14 06:45 UTC through 2026-11-20 19:06 UTC: 377 commits. The comparison covered the net file changes from the parent of the first in-window commit to current `main`. This entry records material additions/fixes; routine formatting and test-only commits are omitted.
+
+**Code changes not previously captured in this guide:**
+
+- Integrated the Pine v7.2.2 AMT state engine into the dashboard. Added a sequential collection coordinator and a signal detector that journals completed-candle AMT/GEX/Futures-OI events using as-of context and stale-data guards; Telegram delivery is an event/outbox stage with retry and deduplication handling.
+- Added Phase 2 event-only GEX wall migration attribution in `gex_attribution.py` and `gex_strike_attribution`; records meaningful wall events and Shapley Gamma/OI/Spot contributions, not unchanged full-chain snapshots.
+- Added the versioned Market Reaction Analyzer (`reaction-v1.1`). It reads journal events and measures non-directional reactions using Delta Exchange India BTCUSD 30m candles: eight contiguous completed candles strictly after the event, within the four-hour window; the source journal is read-only. Results are stored in `signal_reaction_analysis`.
+- Added read-only empirical IV/AMT Layer 4 analysis and historical IV-surface research tooling. The Layer 4 script consumes reconciled CSV input and uses SELECT-only Supabase access; it does not write to the database or import production code.
+- Hardened options research data integrity: canonical snapshot-pinned inputs, matched-contract OI comparability, explicit missing-versus-zero handling, and descriptive (not directional) IV/taker metrics.
+- Added the Prior US Overnight session history row and aligned its Macro Bias to the preceding AMT cycle. Added a read-only Alerts history tab; subsequent commits adjusted its navigation callbacks.
+- Shadow monitor advanced to `shadow-v1.2`: immediate REJECTED/BROKEN outcomes retain the tested VAL, resolved episodes retain frozen level/start metadata, duplicate source candles are counted once per deterministic pass, and a calculation-version mismatch triggers a full available-history rebuild. The Nov 20 rebuild was verified in the live database; the 09:29 row has count 5 and the 09:59 REJECTED row has count 6 with `val_test_level = 61575.0`, both on `shadow-v1.2`.
+- Raw options retention is a rolling 72-hour policy with shared cutoff handling and bounded deletion batches; the current scheduled time is 18:17 IST (12:47 UTC).
+
+**Live Supabase schema snapshot (project `btc-live-db`, schema `public`, queried 2026-11-21):** Ten base tables were present. All ten had RLS enabled; none had FORCE ROW LEVEL SECURITY enabled. Exact row counts at query time:
+
+| Table | Rows |
+|---|---:|
+| `amt_snapshots` | 470 |
+| `auction_deterioration_metrics` | 423 |
+| `futures_oi_snapshots` | 2,099 |
+| `gex_strike_attribution` | 949 |
+| `options_collection_runs` | 430 |
+| `options_derived_snapshots` | 3,061 |
+| `options_oi_snapshots` | 101,209 |
+| `signal_reaction_analysis` | 37 |
+| `system_signal_journal` | 39 |
+| `telegram_alert_events` | 28 |
+
+The live catalog confirmed the current columns for all ten tables. `signal_reaction_analysis` is a material table not previously described in this guide; it stores the linked signal, analysis version, event/measurement window, post-event prices and excursions, candle coverage, status, source and timestamps. See `DATABASE.md` for the detailed schema reference. Row counts are point-in-time values and will change with collection, analysis and retention.
+
+**Decision / implementation outcome:** Add the missing research-pipeline, event-journal, reaction-analysis, UI/session and `shadow-v1.2` facts to this decision history. The database audit was read-only; no schema, data, RLS policy, collector or workflow was changed. No new market anomaly or predictive relationship was established by this documentation/code/schema audit.
