@@ -1,5 +1,14 @@
 ## 2026-11-20
 
+### Diagnostic — Button-based Alerts navigation
+
+- Replaces the unresponsive MARKET / ALERTS radio selector with two native Streamlit buttons whose callbacks update the existing `dashboard_view` session-state value.
+- Keeps the selector outside the MARKET auto-refresh fragment and preserves the existing MARKET and ALERTS render paths.
+- This is a diagnostic interaction test; it does not change market calculations, alert detection or delivery, database access, schema, credentials, collectors, or Pine logic.
+- PR is intended for review only. Do not merge or deploy until explicitly approved.
+
+## 2026-11-20
+
 ### Fixed — Alerts selector interaction
 
 - Replaced the MARKET / ALERTS `st.segmented_control` with Streamlit's native horizontal `st.radio` control while retaining the existing view-routing and fragment boundaries.
