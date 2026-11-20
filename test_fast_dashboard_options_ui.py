@@ -445,3 +445,29 @@ def test_alerts_view_short_circuits_market_data_loading():
     alert_render = dashboard.index("_render_alerts_tab()")
     stop = dashboard.index("st.stop()")
     assert selector < alert_render < stop < market_fetch
+
+def test_alert_navigation_is_outside_market_autorefresh_fragment():
+    source = _source()
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    navigation = functions["_render_dashboard"]
+    market = functions["_render_market_dashboard"]
+
+    assert not navigation.decorator_list
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "st"
+        and node.func.attr == "fragment"
+        for node in market.decorator_list
+    )
+    assert "st.stop()" not in ast.get_source_segment(source, navigation)
+    navigation_source = ast.get_source_segment(source, navigation)
+    assert '_render_alerts_tab()' in navigation_source
+    assert '_render_market_dashboard()' in navigation_source
+
