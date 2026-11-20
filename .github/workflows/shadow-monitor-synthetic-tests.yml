@@ -1,0 +1,38 @@
+name: Shadow Monitor Synthetic Tests
+
+on:
+  push:
+    branches:
+      - fix/shadow-monitor-auction-logic
+    paths:
+      - "shadow_monitor.py"
+      - "tests/test_shadow_monitor_synthetic.py"
+      - ".github/workflows/shadow-monitor-synthetic-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-tests:
+    name: shadow-v1.1 focused regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout branch under test
+        uses: actions/checkout@v4
+        with:
+          ref: fix/shadow-monitor-auction-logic
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install only the import dependency
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "supabase>=2.0.0"
+
+      - name: Run six synthetic tests (no database access)
+        run: python -m unittest -v tests.test_shadow_monitor_synthetic
