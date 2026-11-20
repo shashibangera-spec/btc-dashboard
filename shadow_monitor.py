@@ -102,6 +102,8 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
     active_test_level = None
     test_count = 0
     rejection_count = 0
+    # Replayed duplicate source rows cannot count the same profile/candle twice.
+    counted_test_candles: set[Tuple[str, str, str, str, str]] = set()
 
     for row in rows:
         valid, reason = _valid_source(row)
@@ -175,8 +177,6 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
                     status = "BROKEN"
                     active_test_time = None
                     active_test_level = None
-                    reported_test_time = None
-                    reported_test_level = None
                 elif low <= active_test_level and close > active_test_level:
                     # Rejection is recorded on the actual test candle, not inferred
                     # from a later candle that simply stops revisiting the level.
@@ -185,8 +185,6 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
                     rejection_count += 1
                     active_test_time = None
                     active_test_level = None
-                    reported_test_time = None
-                    reported_test_level = None
                 elif low <= active_test_level:
                     status = "CONTINUING"
                 else:
@@ -196,8 +194,6 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
                     status = "NONE"
                     active_test_time = None
                     active_test_level = None
-                    reported_test_time = None
-                    reported_test_level = None
             elif previous_valid is not None:
                 previous_close = _number(previous_valid.get("close_price"))
                 previous_val = _number(previous_valid.get("developing_val"))
@@ -207,12 +203,23 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
                     and previous_close > previous_val
                     and low <= val
                 ):
-                    test_count += 1
+                    candle_key = (
+                        str(row.get("exchange") or EXCHANGE),
+                        str(row.get("symbol") or SYMBOL),
+                        str(row.get("timeframe") or TIMEFRAME),
+                        profile_id,
+                        candle_close.isoformat(),
+                    )
+                    if candle_key not in counted_test_candles:
+                        counted_test_candles.add(candle_key)
+                        test_count += 1
                     if close > val:
-                        # The test candle itself touched VAL and closed back above.
+                        # Immediate outcomes retain the level tested by this candle.
+                        reported_test_level = val
                         status = "REJECTED"
                         rejection_count += 1
                     elif close < val:
+                        reported_test_level = val
                         status = "BROKEN"
                     else:
                         # A close exactly on VAL remains open for the next candle
@@ -295,6 +302,25 @@ def fetch_source_rows(client) -> List[Dict[str, Any]]:
     return collected
 
 
+def has_calculation_version_mismatch(
+    client, earliest_close: datetime, latest_close: datetime
+) -> bool:
+    """Check whether the current source window contains rows from another formula version."""
+    response = (
+        client.table("auction_deterioration_metrics")
+        .select("calculation_version")
+        .eq("exchange", EXCHANGE)
+        .eq("symbol", SYMBOL)
+        .eq("timeframe", TIMEFRAME)
+        .gte("candle_close_time", earliest_close.isoformat())
+        .lte("candle_close_time", latest_close.isoformat())
+        .neq("calculation_version", CALCULATION_VERSION)
+        .limit(1)
+        .execute()
+    )
+    return bool(response.data)
+
+
 def latest_persisted_close(client) -> Optional[datetime]:
     response = (
         client.table("auction_deterioration_metrics")
@@ -339,15 +365,21 @@ def main() -> int:
             return 0
         calculated = calculate_shadow_rows(source_rows)
         latest = latest_persisted_close(client)
-        pending = [
+        source_closes = [_timestamp(row["candle_close_time"]) for row in source_rows]
+        version_mismatch = has_calculation_version_mismatch(
+            client, min(source_closes), max(source_closes)
+        )
+        # A formula-version change invalidates downstream historical metrics.
+        # Rebuild the full source window rather than mixing versioned histories.
+        pending = calculated if latest is None or version_mismatch else [
             row for row in calculated
-            if latest is None or _timestamp(row["candle_close_time"]) >= latest
+            if _timestamp(row["candle_close_time"]) >= latest
         ]
         written = persist_rows(client, pending)
         print(
             f"Shadow monitor complete: source_rows={len(source_rows)}, "
             f"valid_metric_rows={len(calculated)}, pending_rows={len(pending)}, upserted={written}, "
-            f"version={CALCULATION_VERSION}"
+            f"version={CALCULATION_VERSION}, full_rebuild={version_mismatch}"
         )
         return 0
     except Exception as exc:
