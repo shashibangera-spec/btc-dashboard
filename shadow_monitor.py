@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from supabase import create_client
 
-CALCULATION_VERSION = "shadow-v1.1"
+CALCULATION_VERSION = "shadow-v1.2"
 EXCHANGE = "BINANCE"
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "30"
