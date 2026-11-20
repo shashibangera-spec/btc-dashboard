@@ -1,3 +1,13 @@
+## 2026-11-21
+
+### Fixed — Auction Deterioration Shadow Monitor VAL metadata and version rebuild
+
+- Preserve the tested VAL level for immediate REJECTED and BROKEN outcomes and retain the frozen level/start timestamp when an active episode reaches a terminal state.
+- Added a per-source-candle identity guard so a duplicated/replayed source row cannot increment val_test_count twice in one full-history calculation.
+- Added a calculation-version consistency check over the available source-history window. When stored rows use a different calculation version, the monitor upserts a full-history rebuild rather than mixing old and new formula outputs. Formula changes must bump CALCULATION_VERSION; the next run then rebuilds the affected history.
+- Added offline regression coverage for immediate terminal metadata, preservation of active-episode metadata, and duplicate-candle count protection.
+- No database schema, source collector, production AMT logic, alerts, dashboard UI or trading rules changed.
+
 ## 2026-11-20
 
 ### Diagnostic — Button-based Alerts navigation
