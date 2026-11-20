@@ -775,8 +775,8 @@ def calculate_session_journey(df, prev_vah, prev_val):
     ].sort_values('Date')
 
     if not prior_overnight_data.empty:
-        reference_start = cycle_start - pd.Timedelta(hours=24)
-        reference_end = overnight_start
+        reference_start = cycle_start - pd.Timedelta(hours=48)
+        reference_end = cycle_start - pd.Timedelta(hours=24)
         reference_data = df[
             (df['Date'] >= reference_start) & (df['Date'] < reference_end)
         ].sort_values('Date')
