@@ -765,7 +765,66 @@ def calculate_session_journey(df, prev_vah, prev_val):
     us_cash_end = cycle_start + pd.Timedelta(hours=20)
     cycle_end = cycle_start + pd.Timedelta(hours=24)
     sessions = []
-    
+
+    # The overnight segment immediately before this AMT cycle belongs to the
+    # prior cycle: [01:30, 05:30) IST. Its Macro Bias reference is the complete
+    # AMT cycle immediately preceding that overnight segment.
+    overnight_start = cycle_start - pd.Timedelta(hours=4)
+    prior_overnight_data = df[
+        (df['Date'] >= overnight_start) & (df['Date'] < cycle_start)
+    ].sort_values('Date')
+
+    if not prior_overnight_data.empty:
+        reference_start = cycle_start - pd.Timedelta(hours=48)
+        reference_end = cycle_start - pd.Timedelta(hours=24)
+        reference_data = df[
+            (df['Date'] >= reference_start) & (df['Date'] < reference_end)
+        ].sort_values('Date')
+        expected_reference_dates = pd.date_range(
+            start=reference_start, periods=48, freq="30min"
+        )
+        reference_dates = pd.DatetimeIndex(reference_data['Date'])
+        reference_complete = (
+            len(reference_data) == 48
+            and reference_dates.is_unique
+            and reference_dates.equals(expected_reference_dates)
+        )
+
+        prior_vah = prior_val = np.nan
+        if reference_complete:
+            prior_vah, prior_val, _ = calculate_tpo(reference_data)
+
+        vah, val, poc = calculate_tpo(prior_overnight_data)
+        close = prior_overnight_data['close'].iloc[-1]
+        high = prior_overnight_data['high'].max()
+        low = prior_overnight_data['low'].min()
+
+        macro_bias = "N/A"
+        if reference_complete and not pd.isna(prior_vah) and not pd.isna(prior_val):
+            macro_bias = "⚪ Inside Prior Value"
+            if close > prior_vah: macro_bias = "🟢 Bullish (Above Prior VAH)"
+            elif close < prior_val: macro_bias = "🔴 Bearish (Below Prior VAL)"
+            elif high > prior_vah and close < prior_vah: macro_bias = "⚠️ Bull Trap"
+            elif low < prior_val and close > prior_val: macro_bias = "⚠️ Bear Trap"
+
+        micro_bias = "⚪ Balanced (Inside Value)"
+        if not pd.isna(vah) and not pd.isna(val):
+            if close > vah: micro_bias = "🟢 Strong Close"
+            elif close < val: micro_bias = "🔴 Weak Close"
+
+        sessions.append({
+            "Session": "Prior US Overnight (01:30–05:30)",
+            "Open": prior_overnight_data['open'].iloc[0],
+            "High": high,
+            "Low": low,
+            "Close": close,
+            "Macro Bias": macro_bias,
+            "Micro Bias": micro_bias,
+            "POC": poc,
+            "VAH": vah,
+            "VAL": val,
+        })
+
     for name, session_data in [
         ("Asia (05:30-13:30)", df[(df['Date'] >= cycle_start) & (df['Date'] < asia_end)]),
         ("Europe (13:30-17:30)", df[(df['Date'] >= asia_end) & (df['Date'] < europe_end)]),
