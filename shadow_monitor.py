@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from supabase import create_client
 
-CALCULATION_VERSION = "shadow-v1.0"
+CALCULATION_VERSION = "shadow-v1.1"
 EXCHANGE = "BINANCE"
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "30"
@@ -92,6 +92,7 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
     anchor_state = None
     anchor_time = None
     anchor_price = None
+    anchor_atr = None
     min_close = max_close = min_low = max_high = None
     previous_valid = None
     force_anchor_reset = False
@@ -140,17 +141,21 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
                 status = "INCOMPLETE_GAP"
             elif anchor_profile is not None:
                 status = "RESET_CONTEXT"
-            if profile_reset:
+            if profile_reset or state_change:
                 test_count = 0
                 rejection_count = 0
             active_test = False
             active_test_time = None
             active_test_level = None
+            # Reset rows must not carry metadata from the episode just cleared.
+            reported_test_time = None
+            reported_test_level = None
 
             anchor_profile = profile_id
             anchor_state = state
             anchor_time = candle_close
             anchor_price = close
+            anchor_atr = atr
             min_close = max_close = close
             min_low = low
             max_high = high
@@ -170,14 +175,29 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
                     status = "BROKEN"
                     active_test_time = None
                     active_test_level = None
-                elif low <= active_test_level:
-                    status = "CONTINUING"
-                else:
+                    reported_test_time = None
+                    reported_test_level = None
+                elif low <= active_test_level and close > active_test_level:
+                    # Rejection is recorded on the actual test candle, not inferred
+                    # from a later candle that simply stops revisiting the level.
                     active_test = False
                     status = "REJECTED"
                     rejection_count += 1
                     active_test_time = None
                     active_test_level = None
+                    reported_test_time = None
+                    reported_test_level = None
+                elif low <= active_test_level:
+                    status = "CONTINUING"
+                else:
+                    # The episode ended without a wick rejection or a confirmed
+                    # break. NONE is the existing schema-approved neutral status.
+                    active_test = False
+                    status = "NONE"
+                    active_test_time = None
+                    active_test_level = None
+                    reported_test_time = None
+                    reported_test_level = None
             elif previous_valid is not None:
                 previous_close = _number(previous_valid.get("close_price"))
                 previous_val = _number(previous_valid.get("developing_val"))
@@ -186,15 +206,23 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
                     and previous_val is not None
                     and previous_close > previous_val
                     and low <= val
-                    and close > val
                 ):
-                    active_test = True
-                    active_test_time = candle_close
-                    active_test_level = val
-                    reported_test_time = candle_close
-                    reported_test_level = val
                     test_count += 1
-                    status = "STARTED"
+                    if close > val:
+                        # The test candle itself touched VAL and closed back above.
+                        status = "REJECTED"
+                        rejection_count += 1
+                    elif close < val:
+                        status = "BROKEN"
+                    else:
+                        # A close exactly on VAL remains open for the next candle
+                        # to resolve as continuing, rejected, broken, or neutral.
+                        active_test = True
+                        active_test_time = candle_close
+                        active_test_level = val
+                        reported_test_time = candle_close
+                        reported_test_level = val
+                        status = "STARTED"
 
         down_close = max(0.0, anchor_price - min_close)
         up_close = max(0.0, max_close - anchor_price)
@@ -221,10 +249,10 @@ def calculate_shadow_rows(source_rows: Iterable[Dict[str, Any]]) -> List[Dict[st
             "upside_close_excursion_usd": up_close,
             "downside_wick_excursion_usd": down_wick,
             "upside_wick_excursion_usd": up_wick,
-            "downside_close_excursion_atr": down_close / atr,
-            "upside_close_excursion_atr": up_close / atr,
-            "downside_wick_excursion_atr": down_wick / atr,
-            "upside_wick_excursion_atr": up_wick / atr,
+            "downside_close_excursion_atr": down_close / anchor_atr,
+            "upside_close_excursion_atr": up_close / anchor_atr,
+            "downside_wick_excursion_atr": down_wick / anchor_atr,
+            "upside_wick_excursion_atr": up_wick / anchor_atr,
             "downside_close_excursion_pct": down_close / anchor_price * 100.0,
             "upside_close_excursion_pct": up_close / anchor_price * 100.0,
             "downside_wick_excursion_pct": down_wick / anchor_price * 100.0,
