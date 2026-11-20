@@ -439,7 +439,7 @@ def test_alerts_tab_is_read_only_and_has_manual_refresh_and_history_filters():
 def test_alerts_view_short_circuits_market_data_loading():
     source = _source()
     dashboard = source[source.index("def _render_dashboard():"):source.index("def _render_market_dashboard():")]
-    selector = dashboard.index("dashboard_view = st.segmented_control(")
+    selector = dashboard.index("dashboard_view = st.radio(")
     alert_render = dashboard.index("_render_alerts_tab()")
     market_render = dashboard.index("_render_market_dashboard()")
     assert selector < alert_render < market_render
@@ -465,6 +465,10 @@ def test_alert_navigation_is_outside_market_autorefresh_fragment():
         and node.func.attr == "fragment"
         for node in market.decorator_list
     )
+    navigation_source = ast.get_source_segment(source, navigation)
+    assert "st.radio(" in navigation_source
+    assert "horizontal=True" in navigation_source
+    assert "st.segmented_control(" not in navigation_source
     assert "st.stop()" not in ast.get_source_segment(source, navigation)
     navigation_source = ast.get_source_segment(source, navigation)
     assert '_render_alerts_tab()' in navigation_source

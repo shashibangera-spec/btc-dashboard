@@ -1,5 +1,13 @@
 ## 2026-11-20
 
+### Fixed — Alerts selector interaction
+
+- Replaced the MARKET / ALERTS `st.segmented_control` with Streamlit's native horizontal `st.radio` control while retaining the existing view-routing and fragment boundaries.
+- Added regression assertions for the radio selector and its horizontal layout.
+- No market calculations, alert detection or delivery, database access, schema, credentials, collectors, or deployment configuration changed.
+
+## 2026-11-20
+
 ### Fixed — Alerts view navigation
 
 - Moves the MARKET / ALERTS selector outside the three-minute auto-refresh fragment so navigation receives normal Streamlit reruns.

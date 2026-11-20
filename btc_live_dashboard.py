@@ -1326,10 +1326,11 @@ def fetch_delta_options():
 # ==========================================
 def _render_dashboard():
     """Keep navigation outside the auto-refreshing market fragment."""
-    dashboard_view = st.segmented_control(
+    dashboard_view = st.radio(
         "VIEW",
         options=["MARKET", "ALERTS"],
-        default="MARKET",
+        index=0,
+        horizontal=True,
         label_visibility="collapsed",
         key="dashboard_view",
     )
