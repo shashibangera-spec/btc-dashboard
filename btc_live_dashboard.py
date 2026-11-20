@@ -729,6 +729,12 @@ def _render_alerts_tab():
             "Severity": event.get("severity"),
             "Price": event.get("price"),
             "AMT state": event.get("amt_state"),
+            "Developing POC": event.get("dev_poc"),
+            "Developing VAH": event.get("dev_vah"),
+            "Developing VAL": event.get("dev_val"),
+            "Call wall": event.get("call_wall"),
+            "Put wall": event.get("put_wall"),
+            "OI USD": event.get("oi_usd"),
             "Delivery": delivery_status,
             "Attempts": delivery.get("attempt_count") if delivery else None,
             "Telegram message ID": delivery.get("telegram_message_id") if delivery else None,
@@ -775,7 +781,8 @@ def _render_alerts_tab():
     )
     display_columns = [
         "Journal ID", "Detected (IST)", "Event time (IST)", "Event", "Severity",
-        "Price", "AMT state", "Delivery", "Attempts", "Telegram message ID",
+        "Price", "AMT state", "Developing POC", "Developing VAH", "Developing VAL",
+        "Call wall", "Put wall", "OI USD", "Delivery", "Attempts", "Telegram message ID",
         "Sent at (IST)", "Last error",
     ]
     st.dataframe(
@@ -784,6 +791,12 @@ def _render_alerts_tab():
         hide_index=True,
         column_config={
             "Price": st.column_config.NumberColumn("Price", format="$%,.2f"),
+            "Developing POC": st.column_config.NumberColumn("Developing POC", format="$%,.0f"),
+            "Developing VAH": st.column_config.NumberColumn("Developing VAH", format="$%,.0f"),
+            "Developing VAL": st.column_config.NumberColumn("Developing VAL", format="$%,.0f"),
+            "Call wall": st.column_config.NumberColumn("Call wall", format="$%,.0f"),
+            "Put wall": st.column_config.NumberColumn("Put wall", format="$%,.0f"),
+            "OI USD": st.column_config.NumberColumn("OI USD", format="$%,.0f"),
             "Detected (IST)": st.column_config.DatetimeColumn("Detected (IST)", format="DD MMM YYYY, HH:mm:ss"),
             "Event time (IST)": st.column_config.DatetimeColumn("Event time (IST)", format="DD MMM YYYY, HH:mm:ss"),
             "Sent at (IST)": st.column_config.DatetimeColumn("Sent at (IST)", format="DD MMM YYYY, HH:mm:ss"),
