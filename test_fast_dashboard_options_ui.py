@@ -396,7 +396,9 @@ def test_amt_structure_developing_value_cards_are_ordered_low_to_high():
 
 def test_alerts_tab_reads_canonical_journal_and_private_outbox_separately():
     source = _source()
-    assert 'options=["MARKET", "ALERTS"]' in source
+    assert 'st.button(' in source[source.index("def _render_dashboard():"):source.index("def _render_market_dashboard():")]
+    assert 'key="view_market"' in source
+    assert 'key="view_alerts"' in source
     assert 'if dashboard_view == "ALERTS":' in source
     assert 'table("system_signal_journal")' in source
     assert 'table("telegram_alert_events")' in source
@@ -439,13 +441,13 @@ def test_alerts_tab_is_read_only_and_has_manual_refresh_and_history_filters():
 def test_alerts_view_short_circuits_market_data_loading():
     source = _source()
     dashboard = source[source.index("def _render_dashboard():"):source.index("def _render_market_dashboard():")]
-    selector = dashboard.index("dashboard_view = st.radio(")
+    selector = dashboard.index('dashboard_view = st.session_state.get("dashboard_view", "MARKET")')
     alert_render = dashboard.index("_render_alerts_tab()")
     market_render = dashboard.index("_render_market_dashboard()")
     assert selector < alert_render < market_render
     assert "return" in dashboard[alert_render:market_render]
 
-def test_alert_navigation_is_outside_market_autorefresh_fragment():
+def test_alert_navigation_buttons_are_outside_market_autorefresh_fragment():
     source = _source()
     tree = ast.parse(source)
     functions = {
@@ -455,6 +457,7 @@ def test_alert_navigation_is_outside_market_autorefresh_fragment():
     }
     navigation = functions["_render_dashboard"]
     market = functions["_render_market_dashboard"]
+    callback = functions["_set_dashboard_view"]
 
     assert not navigation.decorator_list
     assert any(
@@ -466,11 +469,15 @@ def test_alert_navigation_is_outside_market_autorefresh_fragment():
         for node in market.decorator_list
     )
     navigation_source = ast.get_source_segment(source, navigation)
-    assert "st.radio(" in navigation_source
-    assert "horizontal=True" in navigation_source
-    assert "st.segmented_control(" not in navigation_source
-    assert "st.stop()" not in ast.get_source_segment(source, navigation)
-    navigation_source = ast.get_source_segment(source, navigation)
+    assert 'st.button(' in navigation_source
+    assert 'on_click=_set_dashboard_view' in navigation_source
+    assert 'args=("MARKET",)' in navigation_source
+    assert 'args=("ALERTS",)' in navigation_source
+    assert 'st.radio(' not in navigation_source
+    assert 'st.segmented_control(' not in navigation_source
+    assert 'st.stop()' not in navigation_source
+    callback_source = ast.get_source_segment(source, callback)
+    assert 'st.session_state["dashboard_view"] = view' in callback_source
     assert '_render_alerts_tab()' in navigation_source
     assert '_render_market_dashboard()' in navigation_source
 

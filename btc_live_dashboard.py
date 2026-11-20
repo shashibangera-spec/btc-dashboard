@@ -1324,16 +1324,34 @@ def fetch_delta_options():
 # ==========================================
 # CALCULATION & PROCESSING
 # ==========================================
+def _set_dashboard_view(view):
+    """Update the active dashboard view from a native button callback."""
+    st.session_state["dashboard_view"] = view
+
+
 def _render_dashboard():
-    """Keep navigation outside the auto-refreshing market fragment."""
-    dashboard_view = st.radio(
-        "VIEW",
-        options=["MARKET", "ALERTS"],
-        index=0,
-        horizontal=True,
-        label_visibility="collapsed",
-        key="dashboard_view",
-    )
+    """Diagnostic button navigation outside the auto-refreshing market fragment."""
+    dashboard_view = st.session_state.get("dashboard_view", "MARKET")
+    market_col, alerts_col = st.columns(2)
+    with market_col:
+        st.button(
+            "MARKET",
+            key="view_market",
+            type="primary" if dashboard_view == "MARKET" else "secondary",
+            on_click=_set_dashboard_view,
+            args=("MARKET",),
+            use_container_width=True,
+        )
+    with alerts_col:
+        st.button(
+            "ALERTS",
+            key="view_alerts",
+            type="primary" if dashboard_view == "ALERTS" else "secondary",
+            on_click=_set_dashboard_view,
+            args=("ALERTS",),
+            use_container_width=True,
+        )
+
     if dashboard_view == "ALERTS":
         _render_alerts_tab()
         return
