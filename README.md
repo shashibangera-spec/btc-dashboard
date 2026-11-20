@@ -58,7 +58,7 @@ The live system has four cooperating layers:
 - .github/workflows/amt_collector.yml runs amt_collector.py, then shadow_monitor.py. The shadow step has continue-on-error: true; shadow-monitor failure must not fail the AMT collection job.
 - .github/workflows/telegram_alerts.yml is reusable through workflow_call and remains manually dispatchable for recovery/testing. It has no independent cron; normal evaluation is the Coordinator's final stage.
 - .github/workflows/reaction-analyzer.yml runs daily at 07:00 UTC (12:30 IST).
-- .github/workflows/archive-retention.yml runs daily at 19:10 UTC (00:40 IST). It archives options data older than three days, verifies the archive before deletion, and then runs database size checks and VACUUM (VERBOSE, ANALYZE) on options_oi_snapshots.
+- .github/workflows/archive-retention.yml is scheduled daily at 12:47 UTC (18:17 IST). GitHub may delay the actual start because scheduled workflows are queue-dependent. It archives raw options data older than the rolling three-day cutoff, verifies the archive before deletion, and then runs database size checks and VACUUM (VERBOSE, ANALYZE) on options_oi_snapshots.
 
 Schedules are repository configuration, not proof that a particular run succeeded. Check the corresponding GitHub Actions run and logs.
 
@@ -104,7 +104,7 @@ Schedules are repository configuration, not proof that a particular run succeede
 ## Archive and retention
 
 - archive_options_snapshots.py exports historical raw options rows to the separate btc-data-archive repository and maintains an archive manifest.
-- retention_cron.py targets only public.options_oi_snapshots. Its default retention is three days. Deletion requires --execute; the workflow runs it only after archive verification and exact archive-to-database candidate reconciliation.
+- retention_cron.py targets only public.options_oi_snapshots. Its default retention is three days (a rolling 72-hour cutoff, not calendar-day buckets). The scheduled workflow runs daily at 18:17 IST (12:47 UTC); GitHub queue delays can shift the observed start. Deletion requires --execute and occurs only after archive verification and exact archive-to-database candidate reconciliation.
 - The retention workflow does not target gex_strike_attribution, AMT, Futures, derived Options, signal journal, reaction analysis, Telegram outbox or shadow metrics.
 - Routine VACUUM (VERBOSE, ANALYZE) follows retention; it does not guarantee that the physical database file or billed storage immediately shrinks.
 

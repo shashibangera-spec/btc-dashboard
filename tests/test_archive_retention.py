@@ -333,3 +333,5 @@ def test_workflow_passes_same_shared_cutoff_to_export_and_retention():
     workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/archive-retention.yml").read_text()
     assert workflow.count('--cutoff-utc "$ARCHIVE_RETENTION_CUTOFF_UTC"') == 2
     assert "ARCHIVE_RETENTION_CUTOFF_UTC={cutoff}" in workflow
+    assert 'cron: "47 12 * * *"' in workflow
+    assert "18:17 IST (12:47 UTC)" in workflow

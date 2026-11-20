@@ -2,8 +2,8 @@ name: BTC Options Archive and Retention
 
 on:
   schedule:
-    # 06:17 IST (00:47 UTC), shifted away from the top of the hour.
-    - cron: "47 0 * * *"
+    # 18:17 IST (12:47 UTC), shifted away from the top of the hour.
+    - cron: "47 12 * * *"
 
   workflow_dispatch:
 

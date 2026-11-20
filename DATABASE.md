@@ -231,7 +231,8 @@ The live catalog, not this document or a migration filename alone, is authoritat
 ## 6. Retention and archive boundary
 
 - The retention target is only public.options_oi_snapshots.
-- The workflow passes --older-than-days 3 to archive_options_snapshots.py.
+- The workflow passes --older-than-days 3 to archive_options_snapshots.py and freezes one shared UTC cutoff at run start: current UTC time minus 72 hours.
+- The scheduled GitHub Actions run is configured for 18:17 IST daily (12:47 UTC; cron `47 12 * * *`). Actual starts can be delayed by GitHub Actions scheduling/queue behavior.
 - retention_cron.py defaults to three days (overridable through RETENTION_DAYS / --retention-days) and requires --execute for deletion.
 - Before deleting, the script validates the archive manifest, checks archive integrity and checksum, and reconciles archived IDs against the exact database deletion candidates. A failed preflight aborts deletion for the run.
 - The GitHub workflow publishes the archive to the separate private btc-data-archive repository before running retention.
