@@ -61,7 +61,7 @@ class PriorUSOvernightSessionTests(unittest.TestCase):
         helpers, frame, cycle_start = _fixture()
         sessions = helpers.calculate_session_journey(frame, np.nan, np.nan)
 
-        self.assertEqual(sessions.iloc[0]["Session"], "Prior US Overnight (01:30-05:30)")
+        self.assertEqual(sessions.iloc[0]["Session"], "Prior US Overnight (01:30–05:30)")
         overnight = sessions.iloc[0]
         self.assertEqual(overnight["Open"], 2010.0)
         self.assertEqual(overnight["High"], 2100.0)
@@ -94,7 +94,7 @@ class PriorUSOvernightSessionTests(unittest.TestCase):
         frame = frame[frame["Date"] != missing_reference_time].reset_index(drop=True)
 
         sessions = helpers.calculate_session_journey(frame, np.nan, np.nan)
-        self.assertEqual(sessions.iloc[0]["Session"], "Prior US Overnight (01:30-05:30)")
+        self.assertEqual(sessions.iloc[0]["Session"], "Prior US Overnight (01:30–05:30)")
         self.assertEqual(sessions.iloc[0]["Macro Bias"], "N/A")
 
     def test_overnight_micro_bias_uses_its_own_value_profile(self):
