@@ -435,3 +435,13 @@ def test_alerts_tab_is_read_only_and_has_manual_refresh_and_history_filters():
     assert ".update(" not in alerts
     assert ".delete(" not in alerts
     assert "Recent Telegram outbox activity" in alerts
+
+
+def test_alerts_view_short_circuits_market_data_loading():
+    source = _source()
+    dashboard = source[source.index("def _render_dashboard():"):]
+    selector = dashboard.index("dashboard_view = st.segmented_control(")
+    market_fetch = dashboard.index("df = fetch_amt_data()")
+    alert_render = dashboard.index("_render_alerts_tab()")
+    stop = dashboard.index("st.stop()")
+    assert selector < alert_render < stop < market_fetch
