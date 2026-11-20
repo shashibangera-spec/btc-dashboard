@@ -168,3 +168,26 @@ This guide is a permanent, evolving record of the project's research protocol an
 3. **Archive, don't erase.** When a tool, integration, hypothesis, or data source is abandoned (including the ByKaranteli paid historical API route), move its description and decision rationale into a clearly labelled **Deprecated** subsection or section. Preserve why it was retired and any replacement/cross-check arrangement; do not silently remove the historical record.
 
 Add new dated decision entries rather than rewriting history. Correct factual errors transparently, retain superseded decisions with their dates and rationale, and distinguish observed evidence, interpretation, and approved implementation. This keeps the repository's research and development history auditable over time.
+
+
+### 2026-11-20 — Unconstrained vs guide-constrained blind analysis
+
+**Purpose:** Establish a baseline comparison to assess whether the observation protocol improves the consistency and usefulness of market interpretation. This is a documentation/research decision only; it does not validate either hypothesis or authorize implementation changes.
+
+**Sample and method:** One BTC observation review using the same available Supabase market snapshot and observation records from 20 November 2026. Two readings were compared:
+
+- **View A — unconstrained:** The initial database-first interpretation, completed before consulting this guide. It considered AMT, options positioning, futures context and the available shadow-monitor observations, without applying the guide's explicit classification protocol.
+- **View B — guide-constrained:** A second interpretation of the same evidence after consulting this guide, applying its distinctions between confirmed/developing AMT state, GEX event types and attribution meaning, and VAL-test episodes.
+
+**Observed comparison:**
+
+1. **AMT:** Both views retained the distinction between weak structure relative to prior value and the improving immediate auction within developing value. The guide made the separation between confirmed and developing state more explicit and reduced the risk of treating a developing-value recovery as a confirmed structural reversal.
+2. **GEX:** View A highlighted notable wall migration and component contributions. View B added the event taxonomy (WINNER_SWITCH, SIGNIFICANT_MAGNITUDE_CHANGE, NEW_EXPOSURE, DISAPPEARED) and clarified that dominant_driver = OI is a mathematical attribution, not evidence of trader identity, intent, or a support/resistance outcome.
+3. **Auction deterioration:** View A treated the observed rejection count and close/wick excursions as supporting context. View B emphasized episode-level classification, frozen VAL references, completed-candle sequencing, monitoring-context resets and the need to compare subsequent confirmed AMT outcomes. The observed shadow-v1.0 / shadow-v1.1 version boundary was identified as a comparability limitation.
+4. **Research discipline:** View B more explicitly separated observation from inference, required contrary examples, and avoided treating temporal association as predictive validity.
+
+**Interpretation:** The guide improved the structure, repeatability and evidentiary discipline of this single review. It did not demonstrate improved predictive accuracy, prove either research hypothesis, or establish that the guide's present logic is optimal. The sample is one review, not a validation sample. View A remains useful as an independent unconstrained market-reading lens; View B remains the protocol-constrained research lens.
+
+**Decision:** Retain both lenses for future comparisons. Use View A to preserve independent interpretation and View B to classify evidence consistently. Compare their conclusions against subsequently observed outcomes only through a separately timestamped outcome review, avoiding hindsight contamination of the attribution review.
+
+**Implementation outcome:** No thresholds, formulas, state rules, alert conditions, collectors, database objects, trading rules or production code were changed. No new alert is authorized by this comparison. Keep the observation freeze in force. Revisit only after a meaningful sample has accumulated, including untested walls, rejected and broken VAL episodes, non-confirmations, missing data and version boundaries.
