@@ -35,4 +35,4 @@ jobs:
           python -m pip install "supabase>=2.0.0"
 
       - name: Run six synthetic tests (no database access)
-        run: python -m unittest -v tests.test_shadow_monitor_synthetic
+        run: python -m unittest discover -s tests -p 'test_shadow_monitor_synthetic.py' -v
