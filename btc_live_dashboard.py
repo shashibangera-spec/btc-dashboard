@@ -1326,6 +1326,17 @@ def fetch_delta_options():
 # ==========================================
 @st.fragment(run_every="3m")
 def _render_dashboard():
+    dashboard_view = st.segmented_control(
+        "VIEW",
+        options=["MARKET", "ALERTS"],
+        default="MARKET",
+        label_visibility="collapsed",
+        key="dashboard_view",
+    )
+    if dashboard_view == "ALERTS":
+        _render_alerts_tab()
+        st.stop()
+
     df = fetch_amt_data()
     
     completed_df = df[df['IsClosed']].copy() if not df.empty else pd.DataFrame()
@@ -1440,17 +1451,6 @@ def _render_dashboard():
     # ==========================================
     # RENDER UI — SINGLE-PAGE FOUR-LAYER COCKPIT (TERMINAL SKIN)
     # ==========================================
-    dashboard_view = st.segmented_control(
-        "VIEW",
-        options=["MARKET", "ALERTS"],
-        default="MARKET",
-        label_visibility="collapsed",
-        key="dashboard_view",
-    )
-    if dashboard_view == "ALERTS":
-        _render_alerts_tab()
-        st.stop()
-
     _render_stamp = datetime.datetime.now(IST_TZ).strftime("%d %b %Y · %H:%M:%S IST")
     st.markdown(
         '<div class="topbar"><div>'
