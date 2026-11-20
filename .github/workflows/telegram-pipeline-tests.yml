@@ -1,0 +1,44 @@
+name: Telegram Event-Driven Pipeline Tests
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/coordinator.yml"
+      - ".github/workflows/telegram_alerts.yml"
+      - ".github/workflows/telegram-pipeline-tests.yml"
+      - "tests/test_telegram_workflow_pipeline.py"
+      - "README.md"
+      - "CHANGELOG.md"
+  push:
+    branches:
+      - feature/telegram-event-driven-pipeline
+    paths:
+      - ".github/workflows/coordinator.yml"
+      - ".github/workflows/telegram_alerts.yml"
+      - ".github/workflows/telegram-pipeline-tests.yml"
+      - "tests/test_telegram_workflow_pipeline.py"
+      - "README.md"
+      - "CHANGELOG.md"
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-contract-tests:
+    name: Validate Telegram workflow contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout branch under test
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install "PyYAML>=6.0"
+
+      - name: Run workflow contract regression tests
+        run: python -m unittest discover -s tests -p "test_telegram_workflow_pipeline.py" -v

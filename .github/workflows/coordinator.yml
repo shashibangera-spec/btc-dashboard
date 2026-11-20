@@ -3,8 +3,8 @@ name: BTC Data Collection Coordinator
 on:
   workflow_dispatch:
 
-# Prevent overlapping collection cycles. A queued manual/cron run waits for
-# the active cycle rather than cancelling it.
+# Prevent overlapping collection cycles. The external dispatcher remains
+# responsible for starting this workflow; do not add a second schedule here.
 concurrency:
   group: btc-data-collection-coordinator
   cancel-in-progress: false
@@ -57,3 +57,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python signal_detector.py
+
+  telegram-alerts:
+    name: Evaluate and deliver Telegram alerts
+    needs: detect-signals
+    uses: ./.github/workflows/telegram_alerts.yml
+    with:
+      test_mode: false
+    secrets: inherit

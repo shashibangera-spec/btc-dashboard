@@ -1,5 +1,15 @@
 ## 2026-11-20
 
+### Changed — Event-driven Telegram alert evaluation
+
+- Converts `.github/workflows/telegram_alerts.yml` into a reusable workflow via `workflow_call`, while retaining manual `workflow_dispatch` for testing and recovery.
+- Removes the independent Telegram cron. The Coordinator invokes Telegram evaluation only after AMT, Futures OI, Options OI and signal detection all succeed.
+- Preserves the shared non-cancelling `btc-telegram-alerts` concurrency group so reusable and manual evaluations do not overlap.
+- Adds offline workflow-contract regression tests and a focused GitHub Actions validation workflow.
+- Leaves the external Coordinator dispatcher, collector workflows, `telegram_alerts.py`, `signal_detector.py`, database schema and outbox unchanged. No production alert logic or market rules changed.
+
+## 2026-11-20
+
 ### Fixed — Archive/retention cutoff race
 
 - Establishes one timezone-aware UTC cutoff once per scheduled workflow run and passes the exact value to both archive export and retention preflight/deletion.
