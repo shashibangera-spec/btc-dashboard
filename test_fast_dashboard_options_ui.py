@@ -392,3 +392,56 @@ def test_amt_structure_developing_value_cards_are_ordered_low_to_high():
     expansion = block.index('_ui_card("VA Expansion", va_expansion_value, _va_sub, _va_tone)')
 
     assert val < poc < vah < expansion
+
+
+def test_alerts_tab_reads_canonical_journal_and_private_outbox_separately():
+    source = _source()
+    assert 'options=["MARKET", "ALERTS"]' in source
+    assert 'if dashboard_view == "ALERTS":' in source
+    assert "st.stop()" in source
+    assert 'table("system_signal_journal")' in source
+    assert 'table("telegram_alert_events")' in source
+    assert 'os.environ.get("SUPABASE_SERVICE_ROLE_KEY")' in source
+    assert 'outbox_client = create_client(supabase_url, service_key)' in source
+    assert 'journal_client = create_client(supabase_url, journal_key)' in source
+    assert "SERVER_SIDE_SERVICE_ROLE_KEY_NOT_CONFIGURED" in source
+
+
+def test_alerts_tab_never_treats_research_only_events_as_failed_telegram_alerts():
+    source = _source()
+    assert '"VALUE_MIGRATION"' not in source[source.index("def _match_alert_delivery"):source.index("def _render_alerts_tab")]
+    assert '"NOT TELEGRAM-ELIGIBLE"' in source
+    assert '"DELIVERY LOG UNAVAILABLE"' in source
+    assert '"NO OUTBOX RECORD"' in source
+    assert "AMBIGUOUS MATCH" in source
+
+
+def test_alerts_tab_matches_gex_by_journal_identity_and_other_events_by_timestamp():
+    source = _source()
+    matcher = source[source.index("def _match_alert_delivery"):source.index("def _render_alerts_tab")]
+    assert "SYSTEM_SIGNAL_GEX_WALL_BREACH_" in matcher
+    assert 'row.get("event_type") == event_type' in matcher
+    assert 'outbox_time == journal_time' in matcher
+
+
+def test_alerts_tab_is_read_only_and_has_manual_refresh_and_history_filters():
+    source = _source()
+    alerts = source[source.index("def _render_alerts_tab"):source.index("def _format_options_filter_result")]
+    assert "fetch_alert_history.clear()" in alerts
+    assert "History window" in alerts
+    assert "Event type" in alerts
+    assert "Delivery status" in alerts
+    assert ".insert(" not in alerts
+    assert ".update(" not in alerts
+    assert ".delete(" not in alerts
+    assert "Recent Telegram outbox activity" in alerts
+
+
+def test_alerts_view_short_circuits_market_data_loading():
+    source = _source()
+    dashboard = source[source.index("def _render_dashboard():"):]
+    selector = dashboard.index("dashboard_view = st.segmented_control(")
+    market_fetch = dashboard.index("df = fetch_amt_data()")
+    alert_render = dashboard.index("_render_alerts_tab()")
+    stop = dashboard.index("st.stop()")
+    assert selector < alert_render < stop < market_fetch

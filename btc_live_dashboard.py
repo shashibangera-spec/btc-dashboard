@@ -577,6 +577,283 @@ def fetch_options_filter_results():
         }
 
 
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_alert_history():
+    """Read the canonical signal journal and private Telegram outbox for the Alerts tab."""
+    result = {
+        "journal": [],
+        "outbox": [],
+        "journal_status": "UNAVAILABLE",
+        "outbox_status": "UNAVAILABLE",
+        "journal_reason": None,
+        "outbox_reason": None,
+    }
+    supabase_url = os.environ.get("SUPABASE_URL")
+    anon_key = os.environ.get("SUPABASE_ANON_KEY")
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not supabase_url:
+        result["journal_reason"] = "MISSING_SUPABASE_URL"
+        result["outbox_reason"] = "MISSING_SUPABASE_URL"
+        return result
+
+    journal_key = anon_key or service_key
+    if not journal_key:
+        result["journal_reason"] = "MISSING_SUPABASE_ANON_KEY"
+    else:
+        try:
+            journal_client = create_client(supabase_url, journal_key)
+            response = (
+                journal_client.table("system_signal_journal")
+                .select(
+                    "id,event_timestamp,event_type,event_key,severity,price,amt_state,"
+                    "dev_poc,dev_vah,dev_val,call_wall,put_wall,oi_usd,event_details,detected_at"
+                )
+                .order("detected_at", desc=True)
+                .limit(300)
+                .execute()
+            )
+            result["journal"] = response.data or []
+            result["journal_status"] = "OK"
+        except Exception as exc:
+            logging.getLogger(__name__).exception(
+                "Alerts tab journal read failed: exception_type=%s", type(exc).__name__
+            )
+            result["journal_reason"] = type(exc).__name__
+
+    # The outbox has no anonymous SELECT policy. Never fall back to the anon key.
+    if not service_key:
+        result["outbox_reason"] = "SERVER_SIDE_SERVICE_ROLE_KEY_NOT_CONFIGURED"
+    else:
+        try:
+            outbox_client = create_client(supabase_url, service_key)
+            response = (
+                outbox_client.table("telegram_alert_events")
+                .select(
+                    "event_key,event_type,event_time,delivery_status,telegram_message_id,"
+                    "attempt_count,last_error,created_at,sent_at"
+                )
+                .order("created_at", desc=True)
+                .limit(500)
+                .execute()
+            )
+            result["outbox"] = response.data or []
+            result["outbox_status"] = "OK"
+        except Exception as exc:
+            logging.getLogger(__name__).exception(
+                "Alerts tab Telegram outbox read failed: exception_type=%s", type(exc).__name__
+            )
+            result["outbox_reason"] = type(exc).__name__
+
+    return result
+
+
+def _match_alert_delivery(journal_row, outbox_rows, outbox_available=True):
+    """Match only by canonical identity; never infer delivery from a missing row."""
+    if journal_row.get("event_type") not in {
+        "AMT_STATE_CHANGE", "GEX_WALL_BREACH", "OI_SHOCK"
+    }:
+        return None, "NOT TELEGRAM-ELIGIBLE"
+
+    if not outbox_available:
+        return None, "DELIVERY LOG UNAVAILABLE"
+
+    event_type = journal_row.get("event_type")
+    matches = []
+    if event_type == "GEX_WALL_BREACH":
+        expected_key = f"SYSTEM_SIGNAL_GEX_WALL_BREACH_{journal_row.get('id')}"
+        matches = [row for row in outbox_rows if row.get("event_key") == expected_key]
+    else:
+        journal_time = pd.to_datetime(
+            journal_row.get("event_timestamp"), utc=True, errors="coerce"
+        )
+        if pd.notna(journal_time):
+            for row in outbox_rows:
+                outbox_time = pd.to_datetime(
+                    row.get("event_time"), utc=True, errors="coerce"
+                )
+                if row.get("event_type") == event_type and pd.notna(outbox_time) and outbox_time == journal_time:
+                    matches.append(row)
+
+    if len(matches) == 1:
+        return matches[0], str(matches[0].get("delivery_status") or "STATUS UNKNOWN").upper()
+    if len(matches) > 1:
+        return None, "AMBIGUOUS MATCH"
+    return None, "NO OUTBOX RECORD"
+
+
+def _render_alerts_tab():
+    """Render read-only journal history with private Telegram delivery reconciliation."""
+    st.markdown("## ALERT HISTORY")
+    st.caption(
+        "Canonical detections come from the signal journal. Telegram delivery is reconciled "
+        "separately from the private outbox; a missing outbox row is not treated as a failed send."
+    )
+    if st.button("↻ Refresh alert history", key="refresh_alert_history"):
+        fetch_alert_history.clear()
+
+    with st.spinner("Loading recorded events..."):
+        history = fetch_alert_history()
+
+    journal_ok = history.get("journal_status") == "OK"
+    outbox_ok = history.get("outbox_status") == "OK"
+    status_cols = st.columns(3)
+    status_cols[0].metric("Journal", "AVAILABLE" if journal_ok else "UNAVAILABLE")
+    status_cols[1].metric("Telegram log", "AVAILABLE" if outbox_ok else "UNAVAILABLE")
+    status_cols[2].metric("Journal events loaded", len(history.get("journal", [])))
+
+    if not journal_ok:
+        st.error("Signal journal could not be read: " + str(history.get("journal_reason") or "UNKNOWN"))
+        st.caption("No event history is inferred when the canonical journal is unavailable.")
+        return
+
+    if not outbox_ok:
+        st.warning(
+            "Telegram delivery details are unavailable. The journal remains visible, "
+            "but delivery status will not be guessed. "
+            + str(history.get("outbox_reason") or "")
+        )
+
+    outbox_rows = history.get("outbox", [])
+    rows = []
+    for event in history.get("journal", []):
+        delivery, delivery_status = _match_alert_delivery(
+            event, outbox_rows, outbox_available=outbox_ok
+        )
+        rows.append({
+            "Journal ID": event.get("id"),
+            "Detected (IST)": event.get("detected_at"),
+            "Event time (IST)": event.get("event_timestamp"),
+            "Event": event.get("event_type"),
+            "Severity": event.get("severity"),
+            "Price": event.get("price"),
+            "AMT state": event.get("amt_state"),
+            "Developing POC": event.get("dev_poc"),
+            "Developing VAH": event.get("dev_vah"),
+            "Developing VAL": event.get("dev_val"),
+            "Call wall": event.get("call_wall"),
+            "Put wall": event.get("put_wall"),
+            "OI USD": event.get("oi_usd"),
+            "Delivery": delivery_status,
+            "Attempts": delivery.get("attempt_count") if delivery else None,
+            "Telegram message ID": delivery.get("telegram_message_id") if delivery else None,
+            "Sent at (IST)": delivery.get("sent_at") if delivery else None,
+            "Last error": delivery.get("last_error") if delivery else None,
+            "Event details": event.get("event_details"),
+        })
+
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        st.info("No signal-journal events have been recorded yet.")
+        return
+
+    for column in ("Detected (IST)", "Event time (IST)", "Sent at (IST)"):
+        frame[column] = pd.to_datetime(frame[column], utc=True, errors="coerce").dt.tz_convert("Asia/Kolkata")
+
+    lookback = st.selectbox(
+        "History window",
+        ["24 hours", "3 days", "7 days", "30 days", "90 days", "All loaded"],
+        index=3,
+        key="alerts_history_window",
+    )
+    event_types = ["All"] + sorted(frame["Event"].dropna().astype(str).unique().tolist())
+    selected_type = st.selectbox("Event type", event_types, key="alerts_event_type")
+    delivery_types = ["All"] + sorted(frame["Delivery"].dropna().astype(str).unique().tolist())
+    selected_delivery = st.selectbox("Delivery status", delivery_types, key="alerts_delivery_status")
+
+    filtered = frame.copy()
+    if lookback != "All loaded":
+        hours = {
+            "24 hours": 24, "3 days": 72, "7 days": 168,
+            "30 days": 720, "90 days": 2160,
+        }[lookback]
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=hours)
+        filtered = filtered[filtered["Detected (IST)"] >= cutoff]
+    if selected_type != "All":
+        filtered = filtered[filtered["Event"] == selected_type]
+    if selected_delivery != "All":
+        filtered = filtered[filtered["Delivery"] == selected_delivery]
+
+    st.caption(
+        f"Showing {len(filtered)} of {len(frame)} loaded journal events. "
+        "The query is capped at the latest 300 journal rows and 500 outbox rows."
+    )
+    display_columns = [
+        "Journal ID", "Detected (IST)", "Event time (IST)", "Event", "Severity",
+        "Price", "AMT state", "Developing POC", "Developing VAH", "Developing VAL",
+        "Call wall", "Put wall", "OI USD", "Delivery", "Attempts", "Telegram message ID",
+        "Sent at (IST)", "Last error",
+    ]
+    st.dataframe(
+        filtered[display_columns],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Price": st.column_config.NumberColumn("Price", format="$%,.2f"),
+            "Developing POC": st.column_config.NumberColumn("Developing POC", format="$%,.0f"),
+            "Developing VAH": st.column_config.NumberColumn("Developing VAH", format="$%,.0f"),
+            "Developing VAL": st.column_config.NumberColumn("Developing VAL", format="$%,.0f"),
+            "Call wall": st.column_config.NumberColumn("Call wall", format="$%,.0f"),
+            "Put wall": st.column_config.NumberColumn("Put wall", format="$%,.0f"),
+            "OI USD": st.column_config.NumberColumn("OI USD", format="$%,.0f"),
+            "Detected (IST)": st.column_config.DatetimeColumn("Detected (IST)", format="DD MMM YYYY, HH:mm:ss"),
+            "Event time (IST)": st.column_config.DatetimeColumn("Event time (IST)", format="DD MMM YYYY, HH:mm:ss"),
+            "Sent at (IST)": st.column_config.DatetimeColumn("Sent at (IST)", format="DD MMM YYYY, HH:mm:ss"),
+        },
+    )
+
+    if outbox_ok:
+        with st.expander("Recent Telegram outbox activity (independent delivery log)"):
+            outbox_frame = pd.DataFrame(history.get("outbox", []))
+            if outbox_frame.empty:
+                st.caption("No Telegram outbox records have been returned.")
+            else:
+                outbox_display = outbox_frame.rename(columns={
+                    "event_key": "Event key",
+                    "event_type": "Event",
+                    "event_time": "Event time (UTC)",
+                    "delivery_status": "Delivery",
+                    "attempt_count": "Attempts",
+                    "telegram_message_id": "Telegram message ID",
+                    "created_at": "Outbox created (UTC)",
+                    "sent_at": "Sent at (UTC)",
+                    "last_error": "Last error",
+                })
+                outbox_columns = [
+                    "Event key", "Event", "Event time (UTC)", "Delivery", "Attempts",
+                    "Telegram message ID", "Outbox created (UTC)", "Sent at (UTC)", "Last error",
+                ]
+                st.dataframe(
+                    outbox_display[[column for column in outbox_columns if column in outbox_display.columns]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.caption(
+                    "This table also includes Telegram-only operational records such as profile-initialization "
+                    "and TEST_ALERT events that do not have a matching system journal row."
+                )
+
+    if not filtered.empty:
+        selected_id = st.selectbox(
+            "Inspect event evidence",
+            filtered["Journal ID"].astype(str).tolist(),
+            key="alerts_event_detail_id",
+        )
+        selected = filtered[filtered["Journal ID"].astype(str) == selected_id].iloc[0]
+        with st.expander("Selected event details and delivery error"):
+            details = selected.get("Event details")
+            st.json(details if isinstance(details, (dict, list)) else {})
+            if selected.get("Last error"):
+                st.error(str(selected.get("Last error")))
+            elif selected.get("Delivery") == "NO OUTBOX RECORD":
+                st.caption(
+                    "No matching outbox record was found for this Telegram-eligible event. "
+                    "This is not proof that Telegram did not receive a message."
+                )
+
+
+
 def _format_options_filter_result(key, result):
     """Format only validated backend output; never recalculate filter logic in the UI."""
     status = result.get("status", "UNAVAILABLE")
@@ -1049,6 +1326,17 @@ def fetch_delta_options():
 # ==========================================
 @st.fragment(run_every="3m")
 def _render_dashboard():
+    dashboard_view = st.segmented_control(
+        "VIEW",
+        options=["MARKET", "ALERTS"],
+        default="MARKET",
+        label_visibility="collapsed",
+        key="dashboard_view",
+    )
+    if dashboard_view == "ALERTS":
+        _render_alerts_tab()
+        st.stop()
+
     df = fetch_amt_data()
     
     completed_df = df[df['IsClosed']].copy() if not df.empty else pd.DataFrame()

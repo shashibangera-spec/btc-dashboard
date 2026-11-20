@@ -72,6 +72,7 @@ Schedules are repository configuration, not proof that a particular run succeede
 - The collector's current configuration includes ATR period 21, ATR multiplier 0.50, minimum discovery buffer 50, two discovery closes, one re-entry close and balance-crossing settings. The persisted engine_version is v1.0.
 - shadow_monitor.py is a separate research-only sidecar. It reads AMT snapshots and upserts one metrics row per profile/candle into auction_deterioration_metrics. It tracks symmetric upside/downside close and wick excursions, ATR/percentage normalization, POC distance and frozen Developing-VAL test episodes. It does not create Telegram alerts or modify AMT state.
 - The Streamlit fast dashboard also imports pine_state_machine.py; this is a separate dashboard/state-machine integration and should not be assumed identical to the research_engine.py collector engine.
+- The fast dashboard includes a read-only Alerts view. It reads canonical detections from `system_signal_journal` and reconciles Telegram delivery from the private `telegram_alert_events` outbox using a server-side `SUPABASE_SERVICE_ROLE_KEY`; no public outbox policy is required. The view is historical and refresh-on-demand, not an alert generator.
 
 ### Futures positioning
 
