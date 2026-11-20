@@ -396,7 +396,9 @@ def test_amt_structure_developing_value_cards_are_ordered_low_to_high():
 
 def test_alerts_tab_reads_canonical_journal_and_private_outbox_separately():
     source = _source()
-    assert 'options=["MARKET", "ALERTS"]' in source
+    assert 'st.button(' in source[source.index("def _render_dashboard():"):source.index("def _render_market_dashboard():")]
+    assert 'key="view_market"' in source
+    assert 'key="view_alerts"' in source
     assert 'if dashboard_view == "ALERTS":' in source
     assert 'table("system_signal_journal")' in source
     assert 'table("telegram_alert_events")' in source
@@ -439,7 +441,7 @@ def test_alerts_tab_is_read_only_and_has_manual_refresh_and_history_filters():
 def test_alerts_view_short_circuits_market_data_loading():
     source = _source()
     dashboard = source[source.index("def _render_dashboard():"):source.index("def _render_market_dashboard():")]
-    selector = dashboard.index("dashboard_view = st.radio(")
+    selector = dashboard.index('dashboard_view = st.session_state.get("dashboard_view", "MARKET")')
     alert_render = dashboard.index("_render_alerts_tab()")
     market_render = dashboard.index("_render_market_dashboard()")
     assert selector < alert_render < market_render
