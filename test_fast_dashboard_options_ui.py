@@ -396,7 +396,9 @@ def test_amt_structure_developing_value_cards_are_ordered_low_to_high():
 
 def test_alerts_tab_reads_canonical_journal_and_private_outbox_separately():
     source = _source()
-    assert 'st.tabs(["MARKET", "ALERTS"])' in source
+    assert 'options=["MARKET", "ALERTS"]' in source
+    assert 'if dashboard_view == "ALERTS":' in source
+    assert "st.stop()" in source
     assert 'table("system_signal_journal")' in source
     assert 'table("telegram_alert_events")' in source
     assert 'os.environ.get("SUPABASE_SERVICE_ROLE_KEY")' in source
