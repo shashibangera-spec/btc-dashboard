@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from supabase import create_client
 
 
-VERSION = "signal-detector-v1.0"
+VERSION = "signal-detector-v1.1"
 
 AMT_TABLE = "amt_snapshots"
 FUTURES_TABLE = "futures_oi_snapshots"
@@ -43,7 +43,6 @@ OI_SHOCK_THRESHOLD_PCT = 3.0
 OI_MIN_INTERVAL_MINUTES = 25.0
 OI_MAX_INTERVAL_MINUTES = 35.0
 
-VALUE_MIGRATION_THRESHOLD_USD = 150.0
 CANDLE_INTERVAL_SECONDS = 30 * 60
 CANDLE_INTERVAL_TOLERANCE_SECONDS = 5.0
 
@@ -402,28 +401,8 @@ def detect_latest_amt_events(amt_rows, futures_rows, options_rows):
         if event:
             events.append(event)
 
-    previous_poc = safe_float(previous.get("developing_poc"))
-    current_poc = safe_float(current.get("developing_poc"))
-
-    if previous_poc is not None and current_poc is not None:
-        movement = current_poc - previous_poc
-        if abs(movement) > VALUE_MIGRATION_THRESHOLD_USD:
-            event = build_event_row(
-                "VALUE_MIGRATION",
-                current_close,
-                "DEVELOPING_POC",
-                current,
-                futures_rows,
-                options_rows,
-                {
-                    "previous_poc": previous_poc,
-                    "current_poc": current_poc,
-                    "movement_usd": movement,
-                    "absolute_movement_usd": abs(movement),
-                },
-            )
-            if event:
-                events.append(event)
+    # Developing POC movement is no longer an active journal event.
+    # Historical VALUE_MIGRATION rows remain untouched for research/audit.
 
     return events
 
