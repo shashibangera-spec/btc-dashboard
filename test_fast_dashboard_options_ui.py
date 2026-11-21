@@ -447,6 +447,25 @@ def test_alerts_view_short_circuits_market_data_loading():
     assert selector < alert_render < market_render
     assert "return" in dashboard[alert_render:market_render]
 
+
+def test_dashboard_view_slot_clears_old_view_and_shows_loading_before_market_render():
+    source = _source()
+    dashboard = source[source.index("def _render_dashboard():"):source.index("def _render_market_dashboard():")]
+    market_button = dashboard.index('key="view_market"')
+    alerts_button = dashboard.index('key="view_alerts"')
+    view_slot = dashboard.index("view_slot = st.empty()")
+    slot_container = dashboard.index("with view_slot.container():")
+    alert_render = dashboard.index("_render_alerts_tab()")
+    loading_slot = dashboard.index("loading = st.empty()")
+    loading_caption = dashboard.index('loading.caption("Loading market data…")')
+    market_render = dashboard.index("_render_market_dashboard()")
+    loading_clear = dashboard.index("loading.empty()")
+
+    assert market_button < view_slot
+    assert alerts_button < view_slot
+    assert view_slot < slot_container < alert_render
+    assert alert_render < loading_slot < loading_caption < market_render < loading_clear
+
 def test_alert_navigation_buttons_are_outside_market_autorefresh_fragment():
     source = _source()
     tree = ast.parse(source)
