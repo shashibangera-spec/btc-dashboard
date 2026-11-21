@@ -91,7 +91,7 @@ Schedules are repository configuration, not proof that a particular run succeede
 
 ### Event journal, Telegram and reaction analysis
 
-- signal_detector.py evaluates completed AMT candles, aggregate Futures OI and successful Options-derived data. It writes qualifying events to system_signal_journal: AMT_STATE_CHANGE, GEX_WALL_BREACH, OI_SHOCK and VALUE_MIGRATION.
+- signal_detector.py evaluates completed AMT candles, aggregate Futures OI and successful Options-derived data. It writes qualifying events to system_signal_journal: AMT_STATE_CHANGE, GEX_WALL_BREACH and OI_SHOCK. New VALUE_MIGRATION event generation has been retired; historical rows remain available for research/audit.
 - telegram_alerts.py is invoked by the reusable Telegram workflow after successful collection and signal detection. It evaluates AMT transitions and OI shocks, consumes journaled GEX wall-breach events, and uses telegram_alert_events as a delivery outbox with deduplication and retry/audit fields. Manual workflow dispatch remains available for recovery/testing. Telegram delivery is not the same thing as the research event journal.
 - The notifier's accepted outbox event types are AMT_STATE_CHANGE, AMT_PROFILE_INITIALIZATION, GEX_WALL_BREACH, OI_SHOCK and TEST_ALERT. TEST_ALERT is for explicit connectivity testing, not a market signal.
 - reaction_analyzer.py creates versioned, non-directional reaction measurements for journal events. The current stored method is reaction-v1.1, using Delta BTCUSD perpetual 30-minute candles and an eight-candle/four-hour observation window. These measurements are not trade returns or validated signal performance.
