@@ -1352,11 +1352,16 @@ def _render_dashboard():
             use_container_width=True,
         )
 
-    if dashboard_view == "ALERTS":
-        _render_alerts_tab()
-        return
+    view_slot = st.empty()
+    with view_slot.container():
+        if dashboard_view == "ALERTS":
+            _render_alerts_tab()
+            return
 
-    _render_market_dashboard()
+        loading = st.empty()
+        loading.caption("Loading market data…")
+        _render_market_dashboard()
+        loading.empty()
 
 
 @st.fragment(run_every="3m")
