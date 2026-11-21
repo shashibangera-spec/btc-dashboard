@@ -8,6 +8,13 @@
 - Added offline regression coverage for immediate terminal metadata, preservation of active-episode metadata, and duplicate-candle count protection.
 - No database schema, source collector, production AMT logic, alerts, dashboard UI or trading rules changed.
 
+### Fixed — MARKET / ALERTS view transition feedback
+
+- Added a single Streamlit placeholder slot for the active dashboard view. Switching views replaces the previous view area rather than leaving stale content mixed with the destination.
+- Shows a loading caption before the MARKET fragment renders and clears it after the market view completes.
+- Added a regression assertion for placeholder, ALERTS short-circuit, loading-caption and MARKET-render ordering.
+- No market fetchers, cache TTLs, retry settings, background refreshes, Supabase reads, market calculations, alert logic, database schema, collectors or production deployment changed. This UI feedback change does not shorten upstream fetch duration.
+
 ## 2026-11-20
 
 ### Diagnostic — Button-based Alerts navigation
