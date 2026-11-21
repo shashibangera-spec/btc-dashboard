@@ -1,5 +1,16 @@
 ## 2026-11-21
 
+### Retired — Developing POC Value Migration journal events
+
+- Stops `signal_detector.py` from generating new `VALUE_MIGRATION` events from adjacent-candle Developing POC changes.
+- Preserves all existing `system_signal_journal` history; no historical rows are deleted or rewritten.
+- Leaves AMT state-change, GEX wall-breach and Futures OI-shock detection unchanged.
+- Telegram already rejects `VALUE_MIGRATION` through its existing event-type allowlist, so no Telegram code or outbox constraint change is needed.
+- Bumps the detector version to `signal-detector-v1.1` and adds regression tests proving large POC movement alone no longer creates an event while AMT state transitions still do.
+- No database schema, collector, dashboard, Pine logic or trading-rule changes.
+
+## 2026-11-21
+
 ### Fixed — Auction Deterioration Shadow Monitor VAL metadata and version rebuild
 
 - Preserve the tested VAL level for immediate REJECTED and BROKEN outcomes and retain the frozen level/start timestamp when an active episode reaches a terminal state.
