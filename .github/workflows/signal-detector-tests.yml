@@ -1,0 +1,32 @@
+name: Signal Detector Retirement Tests
+
+on:
+  pull_request:
+    paths:
+      - "signal_detector.py"
+      - "test_signal_detector.py"
+      - ".github/workflows/signal-detector-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "signal_detector.py"
+      - "test_signal_detector.py"
+      - ".github/workflows/signal-detector-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest "supabase>=2.0.0"
+      - name: Run signal detector regression tests
+        run: pytest -q test_signal_detector.py
