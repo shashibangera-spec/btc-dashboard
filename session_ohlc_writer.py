@@ -166,7 +166,7 @@ def validate_and_aggregate(
     result = {
         **base,
         "data_status": status,
-        "candle_count": actual_count,
+        "candle_count": min(actual_count, expected_count),
         "open_price": None,
         "high_price": None,
         "low_price": None,
