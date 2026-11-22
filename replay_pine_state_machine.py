@@ -11,16 +11,16 @@ from datetime import datetime, timedelta, timezone
 from math import ceil, floor
 from pathlib import Path
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
 from pine_state_machine import Candle, PineConfig, PineStateMachine, STATE_NAMES
 
 UTC = timezone.utc
 BAR = timedelta(minutes=30)
-START = datetime(2026, 11, 11, tzinfo=UTC)
+WARMUP_START = datetime(2026, 11, 11, tzinfo=UTC)
+START = datetime(2026, 11, 12, tzinfo=UTC)
 END = datetime(2026, 11, 17, tzinfo=UTC)
+EXPECTED_WARMUP_CANDLES = 48
+EXPECTED_TARGET_CANDLES = 240
+EXPECTED_ARCHIVE_CANDLES = EXPECTED_WARMUP_CANDLES + EXPECTED_TARGET_CANDLES
 
 
 def dt(value):
@@ -57,60 +57,74 @@ def db_rows(start, end):
     return rows
 
 
-def binance_history(last_target):
-    session = requests.Session()
-    retry = Retry(total=4, connect=4, read=4, backoff_factor=0.8,
-                  status_forcelist=(429, 500, 502, 503, 504), allowed_methods=frozenset(["GET"]))
-    session.mount("https://", HTTPAdapter(max_retries=retry))
-    end_ms = int((last_target + BAR - timedelta(milliseconds=1)).timestamp() * 1000)
-    params = {"symbol": "BTCUSDT", "interval": "30m", "endTime": end_ms, "limit": 1000}
-    error = None
-    for host in ("https://api.binance.com", "https://api1.binance.com",
-                 "https://api2.binance.com", "https://data-api.binance.vision"):
-        try:
-            response = session.get(host + "/api/v3/klines", params=params, timeout=20)
-            response.raise_for_status()
-            raw = response.json()
-            candles = [Candle(datetime.fromtimestamp(int(x[0])/1000, UTC),
-                              float(x[1]), float(x[2]), float(x[3]), float(x[4])) for x in raw]
-            candles.sort(key=lambda x: x.open_time)
-            if len(candles) < 500: raise RuntimeError(f"Only {len(candles)} warm-up candles")
-            return candles
-        except Exception as exc:
-            error = exc
-    raise RuntimeError(f"Binance history fetch failed: {error}")
+def archive_history(start, end):
+    """Read the canonical, previously archived Binance spot candles from Supabase."""
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        raise RuntimeError("Set SUPABASE_URL and SUPABASE_ANON_KEY (read-only key preferred).")
+    try:
+        from supabase import create_client
+    except ImportError as exc:
+        raise RuntimeError("Install repository dependencies: pip install -r requirements.txt") from exc
+    client = create_client(url, key)
+    response = (client.table("binance_ohlc_history")
+        .select("exchange,market_type,symbol,interval,open_time,open_price,high_price,low_price,close_price")
+        .eq("exchange", "BINANCE").eq("market_type", "SPOT")
+        .eq("symbol", "BTCUSDT").eq("interval", "30m")
+        .gte("open_time", start.isoformat()).lt("open_time", end.isoformat())
+        .order("open_time").range(0, 999).execute())
+    candles = []
+    for row in response.data or []:
+        candles.append(Candle(dt(row["open_time"]), float(row["open_price"]),
+                              float(row["high_price"]), float(row["low_price"]),
+                              float(row["close_price"])))
+    candles.sort(key=lambda c: c.open_time)
+    return candles
 
 
-def verify_and_join(rows, history, expected_rows=282, expected_gap_fills=1):
+def verify_and_join(rows, history, start=START, end=END,
+                    expected_rows=EXPECTED_TARGET_CANDLES,
+                    expected_archive=EXPECTED_ARCHIVE_CANDLES):
+    """Require exact warm-up + target coverage and exact snapshot/archive parity."""
     if len(rows) != expected_rows:
-        raise RuntimeError(f"Expected {expected_rows} completed snapshots; found {len(rows)}. Reconcile extraction.")
+        raise RuntimeError(f"Expected {expected_rows} completed target snapshots; found {len(rows)}.")
+    if len(history) != expected_archive:
+        raise RuntimeError(f"Expected {expected_archive} archived candles; found {len(history)}.")
     db = {r["time"]: r for r in rows}
     market = {c.open_time: c for c in history}
     if len(db) != len(rows) or len(market) != len(history):
-        raise RuntimeError("Duplicate timestamps found.")
+        raise RuntimeError("Duplicate timestamps found in snapshots or archive.")
+
+    expected_archive_times = []
+    ts = WARMUP_START
+    while ts < end:
+        expected_archive_times.append(ts)
+        ts += BAR
+    actual_archive_times = [c.open_time for c in history]
+    if actual_archive_times != expected_archive_times:
+        raise RuntimeError("Archive does not contain the exact continuous 30m warm-up + target window.")
+
+    expected_target_times = []
+    ts = start
+    while ts < end:
+        expected_target_times.append(ts)
+        ts += BAR
+    if sorted(db) != expected_target_times:
+        raise RuntimeError("Completed amt_snapshots do not exactly cover the 240-candle target window.")
+
     for ts, row in db.items():
         c = market.get(ts)
-        if c is None: raise RuntimeError(f"Snapshot candle absent from Binance: {ts}")
+        if c is None:
+            raise RuntimeError(f"Snapshot candle absent from Binance archive: {ts}")
         values = [float(row[k]) for k in ("open_price", "high_price", "low_price", "close_price")]
         if any(abs(a-b) > 0.005 for a,b in zip(values, (c.open,c.high,c.low,c.close))):
-            raise RuntimeError(f"Supabase/Binance OHLC mismatch at {ts}: {values}")
-    first, last = rows[0]["time"], rows[-1]["time"]
-    expected = []
-    ts = first
-    while ts <= last:
-        expected.append(ts); ts += BAR
-    target = [c for c in history if first <= c.open_time <= last]
-    if [c.open_time for c in target] != expected:
-        raise RuntimeError("Binance target history has a missing 30m interval.")
-    gap_fills = len(set(expected) - set(db))
-    if gap_fills != expected_gap_fills:
-        raise RuntimeError(f"Expected {expected_gap_fills} Binance gap fills; got {gap_fills}.")
-    if sum(c.open_time < first for c in history) < 500:
-        raise RuntimeError("Insufficient warm-up history before the target window.")
-    for a,b in zip(history, history[1:]):
-        if b.open_time-a.open_time != BAR:
-            raise RuntimeError(f"Warm-up gap: {a.open_time} -> {b.open_time}")
-    return history, db, gap_fills
+            raise RuntimeError(f"Supabase snapshot/archive OHLC mismatch at {ts}: {values}")
+
+    warmup_count = sum(c.open_time < start for c in history)
+    if warmup_count != EXPECTED_WARMUP_CANDLES:
+        raise RuntimeError(f"Expected exactly {EXPECTED_WARMUP_CANDLES} warm-up candles; found {warmup_count}.")
+    return history, db, warmup_count
 
 
 def profile(candles, row=50.0, value_pct=.70):
@@ -255,30 +269,31 @@ def legacy_replay(history):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--warmup-start",default=WARMUP_START.isoformat())
     parser.add_argument("--start",default=START.isoformat())
     parser.add_argument("--end-exclusive",default=END.isoformat())
-    parser.add_argument("--expected-db-rows",type=int,default=282)
-    parser.add_argument("--expected-gap-fills",type=int,default=1)
+    parser.add_argument("--expected-db-rows",type=int,default=EXPECTED_TARGET_CANDLES)
+    parser.add_argument("--expected-archive-rows",type=int,default=EXPECTED_ARCHIVE_CANDLES)
     parser.add_argument("--output-dir",default="replay_output")
     args=parser.parse_args()
-    start,end=dt(args.start),dt(args.end_exclusive)
+    warmup_start,start,end=dt(args.warmup_start),dt(args.start),dt(args.end_exclusive)
+    if warmup_start >= start or start >= end or (start-warmup_start) != timedelta(days=1):
+        raise RuntimeError("Expected one full UTC warm-up day immediately before the target window.")
     rows=db_rows(start,end)
-    if len(rows)!=args.expected_db_rows:
-        raise RuntimeError(f"Expected {args.expected_db_rows} rows, found {len(rows)}")
-    history=binance_history(rows[-1]["time"])
-    history,db,gap_fills=verify_and_join(rows,history,args.expected_db_rows,args.expected_gap_fills)
+    history=archive_history(warmup_start,end)
+    history,db,warmup_count=verify_and_join(rows,history,start,end,args.expected_db_rows,args.expected_archive_rows)
     old=legacy_replay(history)
     pine=PineStateMachine(PineConfig()).replay(history)
     pine_by_time={r.open_time:r for r in pine}
-    target=[c for c in history if rows[0]["time"]<=c.open_time<=rows[-1]["time"]]
+    target=[c for c in history if start<=c.open_time<end]
     out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True)
     all_rows=[]; divergences=[]; matrix=defaultdict(Counter)
     for c in target:
         ts=c.open_time; a=old[ts]; b=pine_by_time[ts]
         match=a["legacy_state_code"]==b.state_code
-        source="SUPABASE_SNAPSHOT" if ts in db else "BINANCE_GAP_FILL"
+        source="BINANCE_ARCHIVE_CROSSCHECKED_WITH_AMT_SNAPSHOT"
         row={"candle_open_time_utc":ts.isoformat(),"source":source,
-             "amt_snapshot_id":db[ts]["id"] if ts in db else "",
+             "amt_snapshot_id":db[ts]["id"],
              "open":c.open,"high":c.high,"low":c.low,"close":c.close,
              "db_prior_vah":db[ts].get("prior_vah","") if ts in db else "",
              "db_prior_val":db[ts].get("prior_val","") if ts in db else "",
@@ -302,7 +317,9 @@ def main():
     summary={"reference":"BTC_AMT_Observer_v7.2.2.pine",
              "legacy_source_commit":"2bde6aa4cd900761a1a91132d71368ece678bc2a",
              "database_snapshot_count":len(rows),"target_replay_count":len(all_rows),
-             "binance_gap_fill_count":gap_fills,"warmup_candles":sum(c.open_time<rows[0]["time"] for c in history),
+             "archive_candle_count":len(history),"warmup_candles":warmup_count,
+             "warmup_start_utc":warmup_start.isoformat(),"target_start_utc":start.isoformat(),
+             "target_end_exclusive_utc":end.isoformat(),"archive_source":"public.binance_ohlc_history",
              "legacy_pine_port_matches":matched,"divergence_count":len(divergences),
              "agreement_pct":round(100*matched/len(all_rows),4),
              "confusion_matrix":{k:dict(v) for k,v in matrix.items()},
