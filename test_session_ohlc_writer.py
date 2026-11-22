@@ -29,6 +29,9 @@ def make_rows(amt_date, session_name):
             "close_price": str(base + 2),
             "volume": "1.50000001",
             "data_status": "VALID",
+            "exchange": "BINANCE",
+            "symbol": "BTCUSDT",
+            "timeframe": "30",
         })
     return rows
 
@@ -153,8 +156,10 @@ class SessionAggregationTests(unittest.TestCase):
         rows = make_rows(DAY, "ASIA")
         rows.pop(5)
         replacement = dict(rows[4])
-        replacement["candle_open_time"] = (
-            datetime.fromisoformat(replacement["candle_open_time"]) + timedelta(minutes=15)
+        replacement_open = datetime.fromisoformat(replacement["candle_open_time"]) + timedelta(minutes=15)
+        replacement["candle_open_time"] = replacement_open.isoformat()
+        replacement["candle_close_time"] = (
+            replacement_open + timedelta(minutes=30) - timedelta(milliseconds=1)
         ).isoformat()
         rows.append(replacement)
         result = validate_and_aggregate(DAY, "ASIA", rows, NOW)
