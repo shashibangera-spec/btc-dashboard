@@ -219,6 +219,21 @@ def fetch_session_rows(client: Any, start: datetime, end: datetime) -> list[dict
     return rows
 
 
+def session_already_complete(client: Any, amt_date: date, session_name: str) -> bool:
+    """Avoid repeat writes and never downgrade an already complete session."""
+    response = (
+        client.table("session_ohlc_history")
+        .select("data_status")
+        .eq("amt_date", amt_date.isoformat())
+        .eq("session_name", session_name)
+        .execute()
+    )
+    return any(
+        str(row.get("data_status", "")).upper() == "COMPLETE"
+        for row in (response.data or [])
+    )
+
+
 def process_date(
     client: Any,
     amt_date: date,
@@ -230,6 +245,8 @@ def process_date(
     for session_name in SESSION_SPECS:
         start, end, _ = session_bounds(amt_date, session_name)
         if end > parse_timestamp(now):
+            continue
+        if write and session_already_complete(client, amt_date, session_name):
             continue
         source_rows = fetch_session_rows(client, start, end)
         record = validate_and_aggregate(amt_date, session_name, source_rows, now)
