@@ -20,9 +20,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install test dependency
-        run: python -m pip install "supabase>=2.0.0"
-
       - name: Compile writer and tests
         run: python -m py_compile session_ohlc_writer.py test_session_ohlc_writer.py
 
