@@ -17,6 +17,8 @@ on:
       - "pine_state_machine.py"
       - "test_pine_state_machine.py"
       - "test_pine_dashboard_integration.py"
+      - "replay_pine_state_machine.py"
+      - "test_replay_input_validation.py"
       - "btc_live_dashboard.py"
       - ".github/workflows/pine-state-machine-tests.yml"
 
