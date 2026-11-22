@@ -1,0 +1,30 @@
+name: Binance OHLC Archive Offline Tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: pip install requests
+
+      - name: Compile archive writer and tests
+        run: python -m py_compile binance_ohlc_archive.py test_binance_ohlc_archive.py
+
+      - name: Run offline archive tests
+        run: python -m unittest -v test_binance_ohlc_archive

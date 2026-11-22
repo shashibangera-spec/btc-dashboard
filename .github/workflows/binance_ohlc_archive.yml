@@ -1,0 +1,54 @@
+name: Binance BTCUSDT 30m OHLC Archive
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Backfill from 1 Nov 2026, or run a short live catch-up"
+        required: true
+        type: choice
+        options:
+          - backfill
+          - live
+        default: backfill
+  schedule:
+    - cron: "7,37 * * * *"
+
+concurrency:
+  group: binance-btcusdt-ohlc-archive
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests supabase
+
+      - name: Backfill historical Binance candles
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'backfill'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python binance_ohlc_archive.py --start-date 2026-11-01 --write
+
+      - name: Catch up recent closed candles
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'live')
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python binance_ohlc_archive.py --lookback-hours 4 --write
