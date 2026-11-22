@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
 from session_ohlc_writer import (
@@ -214,6 +215,18 @@ class SessionAggregationTests(unittest.TestCase):
         self.assertEqual(result["data_status"], "INCOMPLETE")
         self.assertIsNone(result["close_price"])
 
+
+class CoordinatorIntegrationTests(unittest.TestCase):
+    def test_writer_is_called_after_amt_collector_as_non_blocking_sidecar(self):
+        workflow = Path(".github/workflows/amt_collector.yml").read_text()
+        collector_position = workflow.index("run: python amt_collector.py")
+        writer_position = workflow.index(
+            "run: python session_ohlc_writer.py --lookback-days 11 --write"
+        )
+        writer_step = workflow[workflow.rfind("- name:", 0, writer_position):writer_position]
+        self.assertLess(collector_position, writer_position)
+        self.assertIn("continue-on-error: true", writer_step)
+        self.assertIn("SUPABASE_SERVICE_ROLE_KEY", writer_step)
 
 class WriterSafetyTests(unittest.TestCase):
     def test_default_process_is_read_only(self):
