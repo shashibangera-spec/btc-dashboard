@@ -124,15 +124,48 @@ var int pullbackDownBars = 0
 var bool acceptanceUp = false
 var bool acceptanceDown = false
 
-float atr20 = ta.atr(20)
+// The Python replay starts from exactly 11 Nov 2026 00:00 UTC (48 warm-up bars).
+// Seed ATR from that same first candle; do not inherit TradingView's earlier chart history.
+int replayStartTime = timestamp("Etc/UTC", 2026, 11, 11, 0, 0)
+bool inReplayWindow = time >= replayStartTime
+bool firstReplayBar = time == replayStartTime
+var bool replayStartSeen = false
+var float replayAtr = na
+var float atrSeedSum = 0.0
+var int atrSeedCount = 0
+var float replayPreviousClose = na
+
+if firstReplayBar
+    replayStartSeen := true
+
+if inReplayWindow
+    float trueRange = na(replayPreviousClose) ? high - low : math.max(high - low, math.max(math.abs(high - replayPreviousClose), math.abs(low - replayPreviousClose)))
+    if atrSeedCount < 20
+        atrSeedSum += trueRange
+        atrSeedCount += 1
+        if atrSeedCount == 20
+            replayAtr := atrSeedSum / 20.0
+    else
+        replayAtr := ((replayAtr * 19.0) + trueRange) / 20.0
+    replayPreviousClose := close
+
+float atr20 = replayAtr
 bool newCycle = hour(time, "Etc/UTC") == 0 and minute(time, "Etc/UTC") == 0
 
 if newCycle
-    [savedVAH, savedVAL, savedPOC] = f_profile(tpo, nz(tpoBase, 0), rowSize)
-    if not na(savedVAH) and not na(savedVAL) and not na(savedPOC)
-        priorVAH := savedVAH
-        priorVAL := savedVAL
-        priorPOC := savedPOC
+    // The Python replay begins at 11 Nov 00:00 UTC with no prior-cycle profile.
+    // Clear pre-window chart history instead of accidentally importing 10 Nov value.
+    if firstReplayBar
+        priorVAH := na
+        priorVAL := na
+        priorPOC := na
+        previousDevelopingPOC := na
+    else
+        [savedVAH, savedVAL, savedPOC] = f_profile(tpo, nz(tpoBase, 0), rowSize)
+        if not na(savedVAH) and not na(savedVAL) and not na(savedPOC)
+            priorVAH := savedVAH
+            priorVAL := savedVAL
+            priorPOC := savedPOC
     array.clear(tpo)
     tpoBase := na
     cycleBars := 0
@@ -410,6 +443,10 @@ plot(priorPOC, "Python-Port Prior POC", display=display.data_window)
 plot(currentVAH, "Python-Port Developing VAH", display=display.data_window)
 plot(currentVAL, "Python-Port Developing VAL", display=display.data_window)
 plot(currentPOC, "Python-Port Developing POC", display=display.data_window)
+plot(atr20, "Python-Port ATR20", display=display.data_window)
+
+if barstate.islast and time >= replayStartTime and not replayStartSeen
+    runtime.error("Chart history must include 11 Nov 2026 00:00 UTC to match the Python replay warm-up.")
 
 var table panel = table.new(position.top_right, 2, 6, border_width=1)
 if barstate.islast
