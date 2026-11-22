@@ -52,7 +52,7 @@ def test_missing_archive_candle_fails_closed():
 def test_missing_target_snapshot_fails_closed():
     snapshots, history = fixture_data()
     snapshots.pop(0)
-    with pytest.raises(RuntimeError, match="exactly cover"):
+    with pytest.raises(RuntimeError, match="Expected 240 completed target snapshots"):
         verify_and_join(snapshots, history)
 
 
@@ -72,7 +72,7 @@ def test_duplicate_archive_timestamp_fails_closed():
 
 def test_archive_gap_fails_closed_even_if_count_is_unchanged():
     snapshots, history = fixture_data()
-    history[100] = Candle(history[100].open_time + timedelta(minutes=30),
+    history[100] = Candle(history[100].open_time + timedelta(minutes=15),
                           100.0, 110.0, 90.0, 105.0)
     with pytest.raises(RuntimeError, match="exact continuous 30m"):
         verify_and_join(snapshots, history)
