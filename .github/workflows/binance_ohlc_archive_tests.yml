@@ -20,6 +20,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install test dependency
+        run: pip install requests
+
       - name: Compile archive writer and tests
         run: python -m py_compile binance_ohlc_archive.py test_binance_ohlc_archive.py
 
