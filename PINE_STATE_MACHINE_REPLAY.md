@@ -34,18 +34,18 @@ The historical replay treats every candle as completed. Display, OI/PI, EMA diag
 
 ## Historical input and continuity
 
-Default window: 2026-11-11 00:00 UTC inclusive through 2026-11-17 00:00 UTC exclusive.
+The replay window is **12 November 2026 00:00 UTC inclusive through 17 November 2026 00:00 UTC exclusive**.
 
-Supabase filter:
-- exchange=BINANCE
-- symbol=BTCUSDT
-- timeframe=30
-- data_status=VALID
-- state_output.completed=true
+- Warm-up: 11 November 2026 00:00–23:30 UTC (48 archived candles).
+- Target: 12–16 November 2026 (240 completed 30m candles).
+- Canonical OHLC source: `public.binance_ohlc_history`, filtered to BINANCE / SPOT / BTCUSDT / 30m.
+- Snapshot cross-check: `public.amt_snapshots`, filtered to BINANCE / BTCUSDT / 30m / VALID / `state_output.completed=true`.
 
-The database audit returned 282 unique completed snapshots. There is one target-window gap: 2026-11-11 23:30 UTC. The harness retrieves contiguous Binance 30m spot history for warm-up and gap reconciliation, cross-checks each database OHLC tuple against Binance, and inserts the missing 23:30 candle from Binance into both replays. This results in 283 target candles (282 database-backed + 1 Binance gap fill). Earlier candles provide ATR and prior-cycle profile warm-up.
+The harness reads 288 archived candles (48 warm-up + 240 target) and 240 completed AMT snapshots. Every archive timestamp must exactly match the expected 30m UTC grid. Every target snapshot must have a matching archive candle and its OHLC must match within 0.005. Duplicate timestamps, missing candles, missing snapshots, count changes, or OHLC mismatches stop the replay.
 
-If the row count, gap count, OHLC parity, or Binance continuity differs from the audited assumptions, the script stops rather than silently changing the sample.
+The 11 November 23:30 candle comes from the permanent Binance archive. It is used as the final warm-up bracket, not as a target replay row. The replay does not insert or update any database records and no longer makes a live Binance HTTP request.
+
+The Pine engine receives all 288 candles in chronological order so ATR(20) is warmed before the 12 November reset and the completed 11 November profile becomes the prior-day profile. Only 12–16 November rows are written to the comparison outputs.
 
 ## Run
 
@@ -53,15 +53,16 @@ Install repository dependencies and set read-only Supabase credentials.
 
 PowerShell:
 
-\`\`\`powershell
+```powershell
 py -m pip install -r requirements.txt
 $env:SUPABASE_URL = "YOUR_SUPABASE_URL"
 $env:SUPABASE_ANON_KEY = "YOUR_READ_ONLY_SUPABASE_KEY"
 py -m unittest -v test_pine_state_machine.py
+py -m pytest -q test_replay_input_validation.py
 py replay_pine_state_machine.py --output-dir replay_output
-\`\`\`
+```
 
-The harness only reads amt_snapshots. It does not write to Supabase. Binance is used as a public historical OHLC source.
+The replay is read-only. It reads the archive and snapshot tables only. It does not write to Supabase, query the live Binance API, or change production code or Pine settings.
 
 ## Outputs
 

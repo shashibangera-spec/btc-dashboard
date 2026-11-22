@@ -6,6 +6,8 @@ on:
       - "pine_state_machine.py"
       - "test_pine_state_machine.py"
       - "test_pine_dashboard_integration.py"
+      - "replay_pine_state_machine.py"
+      - "test_replay_input_validation.py"
       - "btc_live_dashboard.py"
       - ".github/workflows/pine-state-machine-tests.yml"
   push:
@@ -15,6 +17,8 @@ on:
       - "pine_state_machine.py"
       - "test_pine_state_machine.py"
       - "test_pine_dashboard_integration.py"
+      - "replay_pine_state_machine.py"
+      - "test_replay_input_validation.py"
       - "btc_live_dashboard.py"
       - ".github/workflows/pine-state-machine-tests.yml"
 
@@ -34,6 +38,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install "pandas>=2.1.0" "numpy>=1.26.0" pytest
       - name: Run Pine state-machine and dashboard integration tests
-        run: pytest -q test_pine_state_machine.py test_pine_dashboard_integration.py
+        run: pytest -q test_pine_state_machine.py test_pine_dashboard_integration.py test_replay_input_validation.py
       - name: Compile dashboard and state-machine modules
-        run: python -m py_compile pine_state_machine.py btc_live_dashboard.py
+        run: python -m py_compile pine_state_machine.py replay_pine_state_machine.py btc_live_dashboard.py
