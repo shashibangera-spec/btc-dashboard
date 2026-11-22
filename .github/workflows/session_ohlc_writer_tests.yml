@@ -1,6 +1,7 @@
 name: Session OHLC Writer Offline Tests
 
 on:
+  pull_request:
   workflow_dispatch:
 
 permissions:
