@@ -9,7 +9,10 @@ No production Pine, dashboard, database, collector, alert, or trading rule is ch
 ## Settings
 
 - Chart: `BINANCE:BTCUSDT`, 30-minute.
-- Cycle reset: 00:00 UTC (05:30 IST).
+- Replay seed boundary: **11 Nov 2026 00:00 UTC** (the first of the 48 warm-up candles).
+- The verifier deliberately clears any chart history before that boundary, so the Python replay does not inherit a 10 Nov prior-value profile.
+- Cycle reset after the seed boundary: 00:00 UTC (05:30 IST).
+- ATR20 is seeded from the same first 20 true-range observations as the Python replay, then updated with Wilder RMA. It does not use TradingView's earlier chart-wide ATR history.
 - TPO row: fixed $50.
 - Value area: 70%.
 - ATR: Pine `ta.atr(20)` RMA, used for significance and adaptive discovery timeout.
@@ -31,7 +34,7 @@ The state code plot is deliberately in the Data Window, not on the price pane. T
 - It does **not** independently validate the original production script because the production Pine source was not available in the repository when this verifier was prepared.
 - No TradingView export is required for spot checks, but a free-plan user may need to select candles individually in the Data Window. This is not an efficient way to collect all 240 values.
 - The Python port and this verifier should be treated as a research pair. Any discrepancies must be investigated before drawing conclusions.
-- The verifier requires sufficient chart history before 12 November for the ATR warm-up and the completed 11 November profile to be available. The script resets its AMT cycle at 00:00 UTC.
+- The verifier requires the exact 11 Nov 2026 00:00 UTC candle to be present in TradingView history. It seeds its 20-period ATR from that candle and the following 19 warm-up candles, and builds the 11 November profile before using it as prior value on 12 November. If the exact seed candle is missing, the script raises a runtime error rather than silently comparing mismatched windows.
 
 ## Known parity-sensitive details
 
