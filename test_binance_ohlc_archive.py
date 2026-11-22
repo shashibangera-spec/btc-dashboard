@@ -80,8 +80,9 @@ class KlineValidationTests(unittest.TestCase):
         self.assertEqual(row["source"], "BINANCE_PUBLIC_KLINES")
 
     def test_open_candle_is_ignored(self):
+        close_ms = self.open_ms + INTERVAL_MS - 1
         row = parse_kline(
-            raw_kline(self.open_ms, self.now_ms + 1), self.now_ms
+            raw_kline(self.open_ms, close_ms), close_ms - 1
         )
         self.assertIsNone(row)
 
