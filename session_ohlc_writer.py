@@ -12,9 +12,9 @@ import argparse
 import os
 import sys
 from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from supabase import create_client
 
 CALCULATION_VERSION = "session_ohlc_v1"
 SOURCE_EXCHANGE = "BINANCE"
@@ -62,12 +62,15 @@ def session_bounds(amt_date: date, session_name: str) -> tuple[datetime, datetim
     return start, end, expected_count
 
 
-def _numeric(row: dict[str, Any], field: str) -> float:
+def _numeric(row: dict[str, Any], field: str) -> Decimal:
     value = row.get(field)
     if value is None:
         raise ValueError(f"{field} is null")
-    number = float(value)
-    if number != number or number in (float("inf"), float("-inf")):
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field} is not numeric") from exc
+    if not number.is_finite():
         raise ValueError(f"{field} is not finite")
     return number
 
@@ -118,8 +121,11 @@ def validate_and_aggregate(
                 invalid_reasons.append("duplicate candle timestamp")
                 continue
             seen.add(opened)
-            if closed != opened + CANDLE_INTERVAL:
-                invalid_reasons.append("candle close time is not 30 minutes after open")
+            expected_close = opened + CANDLE_INTERVAL
+            # Binance close timestamps are inclusive; Supabase stores them as
+            # xx:xx:xx.999. Accept [interval_end - 1ms, interval_end].
+            if not expected_close - timedelta(milliseconds=1) <= closed <= expected_close:
+                invalid_reasons.append("candle close time is outside the 30m candle boundary")
                 continue
             if closed > now_utc:
                 invalid_reasons.append("candle has not closed")
@@ -178,11 +184,11 @@ def validate_and_aggregate(
     if status == "COMPLETE":
         ordered = [row for _, row in parsed_rows]
         result.update({
-            "open_price": _numeric(ordered[0], "open_price"),
-            "high_price": max(_numeric(row, "high_price") for row in ordered),
-            "low_price": min(_numeric(row, "low_price") for row in ordered),
-            "close_price": _numeric(ordered[-1], "close_price"),
-            "volume": sum(_numeric(row, "volume") for row in ordered),
+            "open_price": str(_numeric(ordered[0], "open_price")),
+            "high_price": str(max(_numeric(row, "high_price") for row in ordered)),
+            "low_price": str(min(_numeric(row, "low_price") for row in ordered)),
+            "close_price": str(_numeric(ordered[-1], "close_price")),
+            "volume": str(sum((_numeric(row, "volume") for row in ordered), Decimal("0"))),
         })
     return result
 
@@ -229,7 +235,9 @@ def process_date(
         record = validate_and_aggregate(amt_date, session_name, source_rows, now)
         record.pop("reason", None)
         outputs.append(record)
-        if write:
+        # Persist only fully validated sessions. This prevents a transient
+        # source gap from downgrading an existing COMPLETE record.
+        if write and record["data_status"] == "COMPLETE":
             (
                 client.table("session_ohlc_history")
                 .upsert(record, on_conflict="amt_date,session_name")
@@ -263,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     if not supabase_url or not supabase_key:
         print("Missing Supabase secrets.", file=sys.stderr)
         return 1
+
+    from supabase import create_client
 
     client = create_client(supabase_url, supabase_key)
     total = 0
