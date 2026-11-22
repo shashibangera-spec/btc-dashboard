@@ -1,0 +1,464 @@
+//@version=6
+indicator("BTC AMT v7.2.2 — Research State Verifier (Python Port)", overlay=false, max_bars_back=5000)
+
+// RESEARCH ONLY.
+// This is a Pine translation of pine_state_machine.py, NOT the locked production
+// BTC AMT Observer source. It cannot establish production TradingView parity.
+// Defaults mirror PineStateMachine/PineConfig in the Python research port.
+
+string groupProfile = "Python-port profile settings"
+float rowSize = input.float(50.0, "TPO row size ($)", minval=0.01, group=groupProfile)
+float valuePercent = input.float(70.0, "Value area (%)", minval=1.0, maxval=100.0, group=groupProfile)
+int developmentMin = input.int(3, "Minimum development bars", minval=1, group=groupProfile)
+
+string groupState = "Python-port state settings"
+int acceptBars = input.int(2, "Acceptance close bars", minval=1, group=groupState)
+bool useSignificance = input.bool(true, "Use significance gate", group=groupState)
+float significanceMult = input.float(1.5, "Significance ATR multiple", minval=0.1, group=groupState)
+int discoveryTimeout = input.int(6, "Base discovery timeout", minval=1, group=groupState)
+bool adaptiveTimeout = input.bool(true, "Adaptive discovery timeout", group=groupState)
+int pocPersistence = input.int(2, "POC persistence bars", minval=1, group=groupState)
+float pocDeltaRows = input.float(1.0, "POC migration threshold (rows)", minval=0.0, group=groupState)
+int developmentStallBars = input.int(20, "New-area stall bars", minval=1, group=groupState)
+int failedConfirmBars = input.int(2, "Failed-discovery inside bars", minval=1, group=groupState)
+int reentryBars = input.int(3, "Re-entry persistence bars", minval=1, group=groupState)
+int pullbackBars = input.int(2, "Acceptance retest bars", minval=1, group=groupState)
+
+bool correctSymbol = syminfo.tickerid == "BINANCE:BTCUSDT"
+bool correctTimeframe = timeframe.isminutes and timeframe.multiplier == 30
+if barstate.islast and not correctSymbol
+    runtime.error("Use BINANCE:BTCUSDT for this research verifier.")
+if barstate.islast and not correctTimeframe
+    runtime.error("Use the 30-minute timeframe for this research verifier.")
+
+// TPO profile helpers. Each candle contributes one TPO to every $50 bucket
+// touched by its high-low range, matching the Python port's profile routine.
+f_profile(array<int> counts, int baseBucket, float row) =>
+    int n = array.size(counts)
+    float vah = na
+    float val = na
+    float poc = na
+    if n > 0
+        int maxCount = array.max(counts)
+        int pocIdx = array.indexof(counts, maxCount)
+        float midpoint = (n - 1) / 2.0
+        float bestDistance = 1e20
+        for i = 0 to n - 1
+            if array.get(counts, i) == maxCount
+                float distance = math.abs(i - midpoint)
+                if distance < bestDistance
+                    bestDistance := distance
+                    pocIdx := i
+        int total = array.sum(counts)
+        int target = int(math.ceil(total * valuePercent / 100.0))
+        int covered = array.get(counts, pocIdx)
+        int lo = pocIdx
+        int hi = pocIdx
+        while covered < target
+            bool canDown = lo > 0
+            bool canUp = hi < n - 1
+            if not canDown and not canUp
+                break
+            int downCount = canDown ? array.get(counts, lo - 1) : -1
+            int upCount = canUp ? array.get(counts, hi + 1) : -1
+            if upCount > downCount
+                hi += 1
+                covered += array.get(counts, hi)
+            else if downCount > upCount
+                lo -= 1
+                covered += array.get(counts, lo)
+            else
+                if canDown
+                    lo -= 1
+                    covered += array.get(counts, lo)
+                if covered < target and canUp
+                    hi += 1
+                    covered += array.get(counts, hi)
+        vah := (baseBucket + hi) * row + row * 0.5
+        val := (baseBucket + lo) * row + row * 0.5
+        poc := (baseBucket + pocIdx) * row + row * 0.5
+    [vah, val, poc]
+
+f_state_name(int code) =>
+    switch code
+        0 => "BUILDING"
+        1 => "DEVELOPMENT"
+        2 => "DISCOVERY ABOVE"
+        3 => "DISCOVERY BELOW"
+        4 => "PRICE ACCEPTANCE ABOVE"
+        5 => "PRICE ACCEPTANCE BELOW"
+        6 => "POC BREAK ABOVE"
+        7 => "POC BREAK BELOW"
+        8 => "NEW AREA DEVELOPING UP"
+        9 => "NEW AREA DEVELOPING DOWN"
+        10 => "FAILED DISCOVERY UP"
+        11 => "FAILED DISCOVERY DOWN"
+        12 => "ACCEPTANCE FAILURE UP"
+        13 => "ACCEPTANCE FAILURE DOWN"
+        14 => "RE-ENTRY CONFIRMED"
+        15 => "DISCOVERY STALLED ABOVE"
+        16 => "DISCOVERY STALLED BELOW"
+        17 => "FAILED DISCOVERY UP — CANDIDATE"
+        18 => "FAILED DISCOVERY DOWN — CANDIDATE"
+        => "UNKNOWN"
+
+var array<int> tpo = array.new_int()
+var int tpoBase = na
+var float priorVAH = na
+var float priorVAL = na
+var float priorPOC = na
+var float previousDevelopingPOC = na
+var int cycleBars = 0
+var int aboveBars = 0
+var int belowBars = 0
+var int insideBars = 0
+var int auctionState = 0
+var int discoveryStartBar = 0
+var int pocAboveBars = 0
+var int pocBelowBars = 0
+var int state8Bars = 0
+var int state9Bars = 0
+var int reentryInsideBars = 0
+var int pullbackUpBars = 0
+var int pullbackDownBars = 0
+var bool acceptanceUp = false
+var bool acceptanceDown = false
+
+// The Python replay starts from exactly 11 Nov 2026 00:00 UTC (48 warm-up bars).
+// Seed ATR from that same first candle; do not inherit TradingView's earlier chart history.
+int replayStartTime = timestamp("Etc/UTC", 2026, 11, 11, 0, 0)
+bool inReplayWindow = time >= replayStartTime
+bool firstReplayBar = time == replayStartTime
+var bool replayStartSeen = false
+var float replayAtr = na
+var float atrSeedSum = 0.0
+var int atrSeedCount = 0
+var float replayPreviousClose = na
+
+if firstReplayBar
+    replayStartSeen := true
+
+if inReplayWindow
+    float trueRange = na(replayPreviousClose) ? high - low : math.max(high - low, math.max(math.abs(high - replayPreviousClose), math.abs(low - replayPreviousClose)))
+    if atrSeedCount < 20
+        atrSeedSum += trueRange
+        atrSeedCount += 1
+        if atrSeedCount == 20
+            replayAtr := atrSeedSum / 20.0
+    else
+        replayAtr := ((replayAtr * 19.0) + trueRange) / 20.0
+    replayPreviousClose := close
+
+float atr20 = replayAtr
+bool newCycle = hour(time, "Etc/UTC") == 0 and minute(time, "Etc/UTC") == 0
+
+if newCycle
+    // The Python replay begins at 11 Nov 00:00 UTC with no prior-cycle profile.
+    // Clear pre-window chart history instead of accidentally importing 10 Nov value.
+    if firstReplayBar
+        priorVAH := na
+        priorVAL := na
+        priorPOC := na
+        previousDevelopingPOC := na
+    else
+        [savedVAH, savedVAL, savedPOC] = f_profile(tpo, nz(tpoBase, 0), rowSize)
+        if not na(savedVAH) and not na(savedVAL) and not na(savedPOC)
+            priorVAH := savedVAH
+            priorVAL := savedVAL
+            priorPOC := savedPOC
+    array.clear(tpo)
+    tpoBase := na
+    cycleBars := 0
+    aboveBars := 0
+    belowBars := 0
+    insideBars := 0
+    auctionState := 0
+    discoveryStartBar := 0
+    pocAboveBars := 0
+    pocBelowBars := 0
+    state8Bars := 0
+    state9Bars := 0
+    reentryInsideBars := 0
+    pullbackUpBars := 0
+    pullbackDownBars := 0
+    acceptanceUp := false
+    acceptanceDown := false
+
+int lowBucket = int(math.floor(low / rowSize))
+int highBucket = int(math.floor(high / rowSize))
+if na(tpoBase)
+    tpoBase := lowBucket
+    for b = lowBucket to highBucket
+        array.push(tpo, 0)
+else
+    if lowBucket < tpoBase
+        int prepend = tpoBase - lowBucket
+        for j = 0 to prepend - 1
+            array.unshift(tpo, 0)
+        tpoBase := lowBucket
+    int currentTop = tpoBase + array.size(tpo) - 1
+    if highBucket > currentTop
+        for j = 1 to highBucket - currentTop
+            array.push(tpo, 0)
+for b = lowBucket to highBucket
+    int idx = b - tpoBase
+    array.set(tpo, idx, array.get(tpo, idx) + 1)
+
+cycleBars += 1
+[currentVAH, currentVAL, currentPOC] = f_profile(tpo, tpoBase, rowSize)
+
+if not na(priorVAH) and not na(priorVAL)
+    if close > priorVAH
+        aboveBars += 1
+        belowBars := 0
+        insideBars := 0
+    else if close < priorVAL
+        belowBars += 1
+        aboveBars := 0
+        insideBars := 0
+    else
+        aboveBars := 0
+        belowBars := 0
+        insideBars += 1
+
+float barRange = high - low
+bool significantBar = not useSignificance or (not na(atr20) and barRange > atr20 * significanceMult)
+if not na(priorVAH) and not na(priorVAL)
+    if aboveBars >= acceptBars
+        if low <= priorVAH and close > priorVAH and significantBar
+            pullbackUpBars += 1
+            if pullbackUpBars >= pullbackBars
+                acceptanceUp := true
+        else if close < priorVAH
+            pullbackUpBars := 0
+            acceptanceUp := false
+    else
+        pullbackUpBars := 0
+        acceptanceUp := false
+
+    if belowBars >= acceptBars
+        if high >= priorVAL and close < priorVAL and significantBar
+            pullbackDownBars += 1
+            if pullbackDownBars >= pullbackBars
+                acceptanceDown := true
+        else if close > priorVAL
+            pullbackDownBars := 0
+            acceptanceDown := false
+    else
+        pullbackDownBars := 0
+        acceptanceDown := false
+
+bool vaShiftUp = not na(currentVAH) and not na(currentVAL) and not na(priorVAH) and not na(priorVAL) and currentVAH > priorVAH and currentVAL > priorVAL
+bool vaShiftDown = not na(currentVAH) and not na(currentVAL) and not na(priorVAH) and not na(priorVAL) and currentVAH < priorVAH and currentVAL < priorVAL
+float pocThreshold = rowSize * pocDeltaRows
+bool pocShiftUp = not na(currentPOC) and not na(previousDevelopingPOC) and currentPOC - previousDevelopingPOC >= pocThreshold
+bool pocShiftDown = not na(currentPOC) and not na(previousDevelopingPOC) and previousDevelopingPOC - currentPOC >= pocThreshold
+bool valueMigrationUp = vaShiftUp and pocShiftUp
+bool valueMigrationDown = vaShiftDown and pocShiftDown
+
+if not na(currentPOC) and not na(priorVAH) and not na(priorVAL)
+    if currentPOC > priorVAH
+        pocAboveBars += 1
+        pocBelowBars := 0
+    else if currentPOC < priorVAL
+        pocBelowBars += 1
+        pocAboveBars := 0
+    else
+        pocAboveBars := 0
+        pocBelowBars := 0
+
+bool newValueUp = pocAboveBars >= pocPersistence and cycleBars >= developmentMin
+bool newValueDown = pocBelowBars >= pocPersistence and cycleBars >= developmentMin
+int effectiveTimeout = adaptiveTimeout and not na(atr20) ? math.max(3, math.min(20, int(math.floor(discoveryTimeout * (atr20 / 250.0) + 0.5)))) : discoveryTimeout
+bool discoveryTimedOut = (bar_index - discoveryStartBar) >= effectiveTimeout
+
+if not na(priorVAH) and not na(priorVAL) and cycleBars > 0
+    if auctionState == 0
+        if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+        else if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+        else if cycleBars >= developmentMin
+            auctionState := 1
+    else if auctionState == 1
+        if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+        else if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+    else if auctionState == 2
+        if acceptanceUp
+            auctionState := 4
+        else if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+        else if close <= priorVAH
+            auctionState := 17
+        else if discoveryTimedOut
+            auctionState := 15
+    else if auctionState == 3
+        if acceptanceDown
+            auctionState := 5
+        else if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+        else if close >= priorVAL
+            auctionState := 18
+        else if discoveryTimedOut
+            auctionState := 16
+    else if auctionState == 4
+        if valueMigrationUp
+            auctionState := 6
+        else if close <= priorVAH
+            auctionState := 12
+    else if auctionState == 5
+        if valueMigrationDown
+            auctionState := 7
+        else if close >= priorVAL
+            auctionState := 13
+    else if auctionState == 6
+        if newValueUp
+            auctionState := 8
+        else if close <= priorVAH
+            auctionState := 12
+    else if auctionState == 7
+        if newValueDown
+            auctionState := 9
+        else if close >= priorVAL
+            auctionState := 13
+    else if auctionState == 8
+        state8Bars += 1
+        if state8Bars >= developmentStallBars and not newValueUp
+            auctionState := 12
+        else if not na(currentPOC) and close <= priorVAH and currentPOC <= priorVAH
+            auctionState := 12
+    else if auctionState == 9
+        state9Bars += 1
+        if state9Bars >= developmentStallBars and not newValueDown
+            auctionState := 13
+        else if not na(currentPOC) and close >= priorVAL and currentPOC >= priorVAL
+            auctionState := 13
+    else if auctionState == 17
+        if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+        else if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+        else if close >= priorVAL and close <= priorVAH and insideBars >= failedConfirmBars
+            auctionState := 10
+    else if auctionState == 18
+        if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+        else if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+        else if close >= priorVAL and close <= priorVAH and insideBars >= failedConfirmBars
+            auctionState := 11
+    else if auctionState == 10
+        if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+        else if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+        else if close >= priorVAL and close <= priorVAH and insideBars >= acceptBars
+            auctionState := 14
+    else if auctionState == 11
+        if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+        else if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+        else if close >= priorVAL and close <= priorVAH and insideBars >= acceptBars
+            auctionState := 14
+    else if auctionState == 15
+        if acceptanceUp
+            auctionState := 4
+        else if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+        else if close >= priorVAL and close <= priorVAH
+            auctionState := 10
+    else if auctionState == 16
+        if acceptanceDown
+            auctionState := 5
+        else if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+        else if close >= priorVAL and close <= priorVAH
+            auctionState := 11
+    else if auctionState == 12
+        if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+        else if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+        else if insideBars >= acceptBars
+            auctionState := 14
+    else if auctionState == 13
+        if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+        else if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+        else if insideBars >= acceptBars
+            auctionState := 14
+    else if auctionState == 14
+        if close > priorVAH
+            auctionState := 2
+            discoveryStartBar := bar_index
+            reentryInsideBars := 0
+        else if close < priorVAL
+            auctionState := 3
+            discoveryStartBar := bar_index
+            reentryInsideBars := 0
+        else
+            reentryInsideBars += 1
+            if reentryInsideBars >= reentryBars and cycleBars >= developmentMin
+                auctionState := 1
+                reentryInsideBars := 0
+
+if auctionState != 8
+    state8Bars := 0
+if auctionState != 9
+    state9Bars := 0
+if auctionState != 14
+    reentryInsideBars := 0
+
+previousDevelopingPOC := currentPOC
+
+// Historical output: inspect "Python-Port State Code" in TradingView's Data Window.
+plot(auctionState, "Python-Port State Code", color=color.orange, linewidth=2, style=plot.style_stepline, display=display.data_window)
+plot(priorVAH, "Python-Port Prior VAH", display=display.data_window)
+plot(priorVAL, "Python-Port Prior VAL", display=display.data_window)
+plot(priorPOC, "Python-Port Prior POC", display=display.data_window)
+plot(currentVAH, "Python-Port Developing VAH", display=display.data_window)
+plot(currentVAL, "Python-Port Developing VAL", display=display.data_window)
+plot(currentPOC, "Python-Port Developing POC", display=display.data_window)
+plot(atr20, "Python-Port ATR20", display=display.data_window)
+
+if barstate.islast and time >= replayStartTime and not replayStartSeen
+    runtime.error("Chart history must include 11 Nov 2026 00:00 UTC to match the Python replay warm-up.")
+
+var table panel = table.new(position.top_right, 2, 6, border_width=1)
+if barstate.islast
+    table.cell(panel, 0, 0, "RESEARCH ONLY", bgcolor=color.new(color.orange, 15), text_color=color.black)
+    table.cell(panel, 1, 0, "Python port", bgcolor=color.new(color.orange, 15), text_color=color.black)
+    table.cell(panel, 0, 1, "State code")
+    table.cell(panel, 1, 1, str.tostring(auctionState))
+    table.cell(panel, 0, 2, "State")
+    table.cell(panel, 1, 2, f_state_name(auctionState))
+    table.cell(panel, 0, 3, "Prior VAH / VAL")
+    table.cell(panel, 1, 3, str.tostring(priorVAH, format.mintick) + " / " + str.tostring(priorVAL, format.mintick))
+    table.cell(panel, 0, 4, "Developing POC")
+    table.cell(panel, 1, 4, str.tostring(currentPOC, format.mintick))
+    table.cell(panel, 0, 5, "Chart check")
+    table.cell(panel, 1, 5, correctSymbol and correctTimeframe ? "BTCUSDT · 30m" : "CHECK CHART")
