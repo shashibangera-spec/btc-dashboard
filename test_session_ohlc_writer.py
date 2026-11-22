@@ -79,7 +79,11 @@ class FakeQuery:
 
     def execute(self):
         if self.table_name == "session_ohlc_history":
-            return FakeResponse([])
+            matches = [
+                row for row in self.client.existing_history
+                if all(row.get(k) == v for k, v in self.filters.items())
+            ]
+            return FakeResponse(matches)
         rows = []
         for row in self.client.source_rows:
             if any(row.get(k) != v for k, v in self.filters.items()):
@@ -97,8 +101,9 @@ class FakeQuery:
 
 
 class FakeClient:
-    def __init__(self, source_rows):
+    def __init__(self, source_rows, existing_history=None):
         self.source_rows = source_rows
+        self.existing_history = existing_history or []
         self.writes = []
 
     def table(self, table_name):
@@ -219,6 +224,23 @@ class WriterSafetyTests(unittest.TestCase):
         records = process_date(client, DAY, NOW, write=False)
         self.assertEqual(len(records), 4)
         self.assertEqual(len(client.writes), 0)
+
+    def test_write_mode_does_not_downgrade_existing_complete_records(self):
+        source = []
+        for session_name in SESSION_SPECS:
+            source.extend(make_rows(DAY, session_name))
+        existing = [{
+            "amt_date": DAY.isoformat(),
+            "session_name": "ASIA",
+            "data_status": "COMPLETE",
+        }]
+        client = FakeClient(source, existing_history=existing)
+        process_date(client, DAY, NOW, write=True)
+        self.assertEqual(len(client.writes), 3)
+        self.assertNotIn(
+            "ASIA",
+            [record[1]["session_name"] for record in client.writes],
+        )
 
     def test_write_mode_upserts_only_complete_records_with_stable_key(self):
         source = []
