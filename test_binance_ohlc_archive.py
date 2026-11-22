@@ -109,6 +109,30 @@ class KlineValidationTests(unittest.TestCase):
             parse_kline(row, self.now_ms)
 
 
+class EndpointFallbackTests(unittest.TestCase):
+    def test_http_451_switches_to_public_market_data_endpoint(self):
+        start = 1791676800000
+        class RestrictedResponse(FakeResponse):
+            status_code = 451
+            def raise_for_status(self):
+                raise requests.HTTPError("451 restricted")
+        class FallbackSession:
+            def __init__(self):
+                self.calls = []
+            def get(self, url, params, timeout):
+                self.calls.append(url)
+                if len(self.calls) == 1:
+                    return RestrictedResponse([])
+                return FakeResponse([raw_kline(start)])
+        import requests
+        session = FallbackSession()
+        with patch("binance_ohlc_archive.time.sleep"):
+            rows = fetch_klines(start, start + INTERVAL_MS, start + INTERVAL_MS * 2, session=session)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(session.calls[0], "https://api.binance.com/api/v3/klines")
+        self.assertEqual(session.calls[1], "https://data-api.binance.vision/api/v3/klines")
+
+
 class FetchAndPersistenceTests(unittest.TestCase):
     def test_fetch_paginates_and_deduplicates_by_open_time(self):
         start = 1791676800000
