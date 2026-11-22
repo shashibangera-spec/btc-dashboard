@@ -115,7 +115,7 @@ class EndpointFallbackTests(unittest.TestCase):
         class RestrictedResponse(FakeResponse):
             status_code = 451
             def raise_for_status(self):
-                raise requests.HTTPError("451 restricted")
+                raise AssertionError("451 response should trigger endpoint fallback before raise_for_status")
         class FallbackSession:
             def __init__(self):
                 self.calls = []
@@ -124,7 +124,6 @@ class EndpointFallbackTests(unittest.TestCase):
                 if len(self.calls) == 1:
                     return RestrictedResponse([])
                 return FakeResponse([raw_kline(start)])
-        import requests
         session = FallbackSession()
         with patch("binance_ohlc_archive.time.sleep"):
             rows = fetch_klines(start, start + INTERVAL_MS, start + INTERVAL_MS * 2, session=session)
