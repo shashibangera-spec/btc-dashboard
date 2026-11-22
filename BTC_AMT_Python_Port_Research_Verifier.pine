@@ -7,7 +7,7 @@ indicator("BTC AMT v7.2.2 — Research State Verifier (Python Port)", overlay=fa
 // Defaults mirror PineStateMachine/PineConfig in the Python research port.
 
 string groupProfile = "Python-port profile settings"
-float rowSize = input.float(50.0, "TPO row size ($)", minval=syminfo.mintick, group=groupProfile)
+float rowSize = input.float(50.0, "TPO row size ($)", minval=0.01, group=groupProfile)
 float valuePercent = input.float(70.0, "Value area (%)", minval=1.0, maxval=100.0, group=groupProfile)
 int developmentMin = input.int(3, "Minimum development bars", minval=1, group=groupProfile)
 
