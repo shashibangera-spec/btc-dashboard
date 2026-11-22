@@ -17,6 +17,7 @@ from typing import Any
 import requests
 
 API_URL = "https://api.binance.com/api/v3/klines"
+FALLBACK_API_URL = "https://data-api.binance.vision/api/v3/klines"
 EXCHANGE = "BINANCE"
 MARKET_TYPE = "SPOT"
 SYMBOL = "BTCUSDT"
@@ -104,6 +105,7 @@ def fetch_klines(
         raise ValueError("start must be earlier than exclusive end")
     cursor = start_ms
     collected: dict[int, dict[str, Any]] = {}
+    api_url = API_URL
     while cursor < end_ms_exclusive and cursor <= now_ms:
         params = {
             "symbol": SYMBOL,
@@ -114,7 +116,11 @@ def fetch_klines(
         }
         response = None
         for attempt in range(5):
-            response = session.get(API_URL, params=params, timeout=30)
+            response = session.get(api_url, params=params, timeout=30)
+            if response.status_code in (403, 451) and api_url != FALLBACK_API_URL:
+                api_url = FALLBACK_API_URL
+                print("Primary Binance API restricted (HTTP %s); switching to public market-data endpoint." % response.status_code)
+                continue
             if response.status_code in (418, 429) or response.status_code >= 500:
                 if attempt == 4:
                     response.raise_for_status()
