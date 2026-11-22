@@ -1,0 +1,27 @@
+name: Session OHLC Writer Offline Tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile writer and tests
+        run: python -m py_compile session_ohlc_writer.py test_session_ohlc_writer.py
+
+      - name: Run offline unit tests
+        run: python -m unittest -v test_session_ohlc_writer
