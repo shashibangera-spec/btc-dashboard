@@ -4,36 +4,34 @@ from datetime import datetime
 import math
 VERSION = "phase2-oi-migration-v1.0"
 REQUIRED = ("snapshot_id", "product_id", "expiry_date", "option_type", "strike_price", "oi_contracts")
-
 def _num(value):
     if value is None or isinstance(value, bool): return None
-    try: value = float(value)
-    except (TypeError, ValueError, OverflowError): return None
-    return value if math.isfinite(value) and value >= 0 else None
+    try: value=float(value)
+    except (TypeError,ValueError,OverflowError): return None
+    return value if math.isfinite(value) and value>=0 else None
 def _dt(value):
-    try: return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError): return None
+    try: return datetime.fromisoformat(str(value).replace("Z","+00:00"))
+    except (TypeError,ValueError): return None
 def _rows(value):
     if value is None: return []
-    return value.to_dict("records") if hasattr(value, "to_dict") else [dict(x) for x in value]
-def _index(value, endpoint, expected_snapshot_id):
-    rows = _rows(value)
-    missing = sorted({c for r in rows for c in REQUIRED if c not in r})
-    ids = [str(r.get("product_id") or "") for r in rows]
-    duplicate_ids = sorted(k for k, n in Counter(ids).items() if k and n > 1)
-    identity = [(str(r.get("expiry_date") or ""), str(r.get("option_type") or "").upper(), str(r.get("strike_price"))) for r in rows]
-    duplicate_identity = sorted(str(k) for k, n in Counter(identity).items() if n > 1)
-    snapshot_ids = sorted({str(r.get("snapshot_id")) for r in rows if r.get("snapshot_id") is not None})
-    snapshot_mismatch = snapshot_ids != [str(expected_snapshot_id)]
-    diag = {"endpoint": endpoint, "row_count": len(rows), "missing_columns": missing,
-        "snapshot_ids": snapshot_ids, "expected_snapshot_id": str(expected_snapshot_id),
-        "snapshot_id_mismatch": snapshot_mismatch, "duplicate_product_ids": duplicate_ids,
-        "blank_product_id_rows": sum(not x for x in ids), "duplicate_contract_identities": duplicate_identity}
-    if missing or snapshot_mismatch or duplicate_ids or diag["blank_product_id_rows"] or duplicate_identity: return {}, diag
-    return {str(r["product_id"]): r for r in rows}, diag
+    return value.to_dict("records") if hasattr(value,"to_dict") else [dict(x) for x in value]
+def _index(value,endpoint,expected_snapshot_id):
+    rows=_rows(value); missing=sorted({c for r in rows for c in REQUIRED if c not in r})
+    ids=[str(r.get("product_id") or "") for r in rows]
+    duplicate_ids=sorted(k for k,n in Counter(ids).items() if k and n>1)
+    identity=[(str(r.get("expiry_date") or "")[:10],str(r.get("option_type") or "").upper(),_num(r.get("strike_price"))) for r in rows]
+    duplicate_identity=sorted(str(k) for k,n in Counter(identity).items() if n>1)
+    snapshot_ids=sorted({str(r.get("snapshot_id")) for r in rows if r.get("snapshot_id") is not None})
+    snapshot_mismatch=snapshot_ids != [str(expected_snapshot_id)]
+    diag={"endpoint":endpoint,"row_count":len(rows),"missing_columns":missing,"snapshot_ids":snapshot_ids,
+        "expected_snapshot_id":str(expected_snapshot_id),"snapshot_id_mismatch":snapshot_mismatch,
+        "duplicate_product_ids":duplicate_ids,"blank_product_id_rows":sum(not x for x in ids),
+        "duplicate_contract_identities":duplicate_identity}
+    if missing or snapshot_mismatch or duplicate_ids or diag["blank_product_id_rows"] or duplicate_identity: return {},diag
+    return {str(r["product_id"]):r for r in rows},diag
 def _conc(values):
-    positive = sorted((v for v in values.values() if v > 0), reverse=True); total = sum(positive)
-    if total <= 0: return {"total_oi":total,"hhi":None,"hhi_0_10000":None,"top5_share_pct":None,"top10_share_pct":None,"strike_count":len(values)}
+    positive=sorted((v for v in values.values() if v>0),reverse=True); total=sum(positive)
+    if total<=0: return {"total_oi":total,"hhi":None,"hhi_0_10000":None,"top5_share_pct":None,"top10_share_pct":None,"strike_count":len(values)}
     shares=[x/total for x in positive]; hhi=sum(x*x for x in shares)
     return {"total_oi":total,"hhi":hhi,"hhi_0_10000":hhi*10000,"top5_share_pct":sum(shares[:5])*100,
         "top10_share_pct":sum(shares[:10])*100,"strike_count":len(values)}
@@ -46,8 +44,7 @@ def _distribution(rows):
         for strike,oi in values.items(): combined[strike]=combined.get(strike,0.0)+oi
     return {"CALL":_conc(sides["CALL"]),"PUT":_conc(sides["PUT"]),"COMBINED":_conc(combined),"strike_oi":sides}
 def _expiry(cur,prev,expiry):
-    a={k:v for k,v in cur.items() if str(v.get("expiry_date"))==expiry}
-    b={k:v for k,v in prev.items() if str(v.get("expiry_date"))==expiry}
+    a={k:v for k,v in cur.items() if str(v.get("expiry_date"))==expiry}; b={k:v for k,v in prev.items() if str(v.get("expiry_date"))==expiry}
     common=sorted(set(a)&set(b)); valid=[]; invalid=[]
     for pid in common:
         x,y=a[pid],b[pid]; side=str(x.get("option_type","")).upper()
@@ -59,7 +56,7 @@ def _expiry(cur,prev,expiry):
     cr=[{"option_type":r["option_type"],"strike_price":r["strike_price"],"oi_contracts":r["current_oi"]} for r in valid]
     pdist,cdist=_distribution(pr),_distribution(cr); delta={"CALL":{},"PUT":{}}
     for r in valid:
-        s,k=r["option_type"],r["strike_price"]; delta[s][k]=delta[s].get(k,0)+r["oi_change"]
+        side,strike=r["option_type"],r["strike_price"]; delta[side][strike]=delta[side].get(strike,0)+r["oi_change"]
     pt=sum(r["previous_oi"] for r in valid); ct=sum(r["current_oi"] for r in valid); change=sum(r["oi_change"] for r in valid); diff=(ct-pt)-change
     return {"expiry_date":expiry,"status":"OK" if valid else "INSUFFICIENT_DATA",
         "coverage":{"current_product_ids":len(a),"previous_product_ids":len(b),"matched_product_ids":len(common),
@@ -109,7 +106,7 @@ def calculate_oi_migration(current_rows,previous_rows,*,current_snapshot_id,prev
     cr=[{"option_type":r["option_type"],"strike_price":r["strike_price"],"oi_contracts":r["current_oi"]} for r in cohort]
     pdist,cdist=_distribution(pr),_distribution(cr); delta={"CALL":{},"PUT":{}}
     for r in cohort:
-        s,k=r["option_type"],r["strike_price"]; delta[s][k]=delta[s].get(k,0)+r["oi_change"]
+        side,strike=r["option_type"],r["strike_price"]; delta[side][strike]=delta[side].get(strike,0)+r["oi_change"]
     pt=sum(r["previous_oi"] for r in cohort); ct=sum(r["current_oi"] for r in cohort); change=sum(r["oi_change"] for r in cohort)
     diff=(ct-pt)-change; recon={"previous_matched_cohort_oi":pt,"current_matched_cohort_oi":ct,"net_oi_change":ct-pt,
         "sum_of_contract_changes":change,"difference":diff,"status":"PASS" if math.isclose(diff,0,rel_tol=1e-12,abs_tol=1e-9) else "FAIL"}
