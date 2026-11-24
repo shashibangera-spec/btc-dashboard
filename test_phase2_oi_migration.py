@@ -57,8 +57,13 @@ def test_hhi_top5_top10_reported_for_call_put_and_combined():
 def test_regions_are_not_invented_without_explicit_fixed_boundaries():
     assert calc()["strike_region_concentration"]["nearest_expiry"]["status"]=="NOT_CALCULATED"
 
-def test_explicit_fixed_regions_are_applied_and_overlap_is_rejected():
-    assert calc(region_boundaries=[("LOW",0,100),("HIGH",100,1000)])["strike_region_concentration"]["nearest_expiry"]["status"]=="OK"
+def test_explicit_fixed_regions_report_previous_current_delta_and_share_change():
+    regions=calc(region_boundaries=[("LOW",0,100),("HIGH",100,1000)])["strike_region_concentration"]["nearest_expiry"]
+    assert regions["status"]=="OK"
+    assert regions["by_option_side"]["CALL"]["regions"]["LOW"]["oi_change"]==pytest.approx(10)
+    assert regions["by_option_side"]["CALL"]["regions"]["LOW"]["share_change_percentage_points"] is not None
+
+def test_overlapping_region_boundaries_are_rejected():
     with pytest.raises(ValueError): calc(region_boundaries=[("A",0,100),("B",90,200)])
 
 def test_matched_cohort_arithmetic_reconciles_but_exchange_completeness_is_unverified():
@@ -86,7 +91,7 @@ class Client:
     def __init__(self,db): self.db=db
     def table(self,name): return Query(self.db,name)
 
-def adapter_db():
+def adapter_db(invalid_previous=True,tied_previous=False):
     db={"options_collection_runs":[],"options_derived_snapshots":[],"options_oi_snapshots":[]}
     def add(sid,stamp,bad=False):
         rows=[]
@@ -103,8 +108,10 @@ def adapter_db():
         for expiry in EXPIRIES: db["options_derived_snapshots"].append({"snapshot_id":sid,"expiry_date":expiry,
             "calculated_at":stamp,"source_collected_at":stamp,"underlying_spot_price":100,"metric_status":{"chain":"OK"}})
         db["options_oi_snapshots"].extend(rows)
-    add("current","2026-11-25T12:30:00Z"); add("immediate-invalid","2026-11-25T12:05:00Z",True)
-    add("older-valid","2026-11-25T11:50:00Z"); return db
+    add("current","2026-11-25T12:30:00Z"); add("immediate-invalid","2026-11-25T12:05:00Z",invalid_previous)
+    add("older-valid","2026-11-25T11:50:00Z")
+    if tied_previous: add("tied-immediate","2026-11-25T12:05:00Z",False)
+    return db
 
 def load_adapter(monkeypatch):
     stub=types.ModuleType("options_filters")
@@ -137,3 +144,15 @@ def test_adapter_withholds_invalid_immediately_preceding_success_instead_of_skip
     loader=load_adapter(monkeypatch); r=loader(Client(adapter_db()),as_of=date(2026,11,25))
     assert r["status"]=="WITHHELD" and r["reason"]=="PREVIOUS_EXPIRY_VALIDATION_FAILED"
     assert r["pair"]["previous_snapshot_id"]=="immediate-invalid" and r["pair"]["previous_snapshot_id"]!="older-valid"
+    assert r["canonical_selector_previous_snapshot_id"]=="older-valid"
+    assert r["canonical_selector_previous_snapshot_ignored"] is True
+
+def test_adapter_accepts_valid_immediate_predecessor_without_fallback(monkeypatch):
+    loader=load_adapter(monkeypatch); r=loader(Client(adapter_db(invalid_previous=False)),as_of=date(2026,11,25))
+    assert r["status"]=="OK"
+    assert r["pair"]["previous_snapshot_id"]=="immediate-invalid"
+    assert r["pair_validation"]["previous_run_skipped"] is False
+
+def test_adapter_withholds_ambiguous_equal_timestamp_predecessors(monkeypatch):
+    loader=load_adapter(monkeypatch); r=loader(Client(adapter_db(invalid_previous=False,tied_previous=True)),as_of=date(2026,11,25))
+    assert r["status"]=="WITHHELD" and r["reason"]=="AMBIGUOUS_IMMEDIATELY_PRECEDING_SUCCESS_RUN"
