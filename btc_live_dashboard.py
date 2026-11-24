@@ -1290,7 +1290,7 @@ def fetch_delta_options():
                 iv = float(quotes.get("mark_iv") or quotes.get("ask_iv") or "0") * 100
                 ts_val = ticker.get("timestamp") or ticker.get("updated_at")
                 
-                chain.append({"Symbol": sym, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val})
+                chain.append({"Product_ID": opt.get("id"), "Symbol": sym, "Expiry": nearest_expiry, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val})
             except (ValueError, TypeError): continue
 
         df = pd.DataFrame(chain)
@@ -2086,6 +2086,50 @@ def _render_market_dashboard():
             oi="$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A",
             basis=format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A",
         )
+        # Append the already-fetched nearest-expiry contract chain. Do not issue another API request.
+        contract_export_columns = [
+            "Product_ID", "Symbol", "Expiry", "Type", "Strike",
+            "OI_Contracts", "OI_USD",
+        ]
+        snapshot_text += "\\n\\n=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ===\\n"
+        if raw_chain_df is None or raw_chain_df.empty:
+            snapshot_text += "EXPORT STATUS: UNAVAILABLE — raw nearest-expiry contract chain is empty or unavailable.\\n"
+        else:
+            export_df = raw_chain_df.copy()
+            missing_columns = [
+                column for column in contract_export_columns if column not in export_df.columns
+            ]
+            for column in missing_columns:
+                export_df[column] = np.nan
+
+            # Expiry is also supplied separately by the existing fetch result.
+            if "Expiry" in missing_columns and loaded_expiry:
+                export_df["Expiry"] = loaded_expiry
+
+            null_required = [
+                column for column in contract_export_columns
+                if export_df[column].isna().any()
+            ]
+            incomplete_reasons = []
+            if not is_chain_complete:
+                incomplete_reasons.append("existing API/product pagination completeness check failed")
+            if missing_columns:
+                incomplete_reasons.append("missing fields: " + ", ".join(missing_columns))
+            if null_required:
+                incomplete_reasons.append("null values in: " + ", ".join(null_required))
+
+            export_complete = not incomplete_reasons
+            export_status = "COMPLETE" if export_complete else "INCOMPLETE"
+            snapshot_text += (
+                f"EXPORT STATUS: {export_status} — {len(export_df)} contract rows; "
+                f"selected expiry: {loaded_expiry or 'UNKNOWN'}\\n"
+            )
+            if incomplete_reasons:
+                snapshot_text += "INCOMPLETE REASONS: " + "; ".join(incomplete_reasons) + "\\n"
+            snapshot_text += export_df[contract_export_columns].to_csv(
+                sep="\\t", index=False, na_rep="NULL", lineterminator="\\n"
+            )
+
         st.code(snapshot_text, language="text")
     
     
