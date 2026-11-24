@@ -39,10 +39,7 @@ def _distribution(rows):
     sides={"CALL":{},"PUT":{}}
     for r in rows:
         side,strike=r["option_type"],r["strike_price"]; sides[side][strike]=sides[side].get(strike,0.0)+r["oi_contracts"]
-    combined={}
-    for values in sides.values():
-        for strike,oi in values.items(): combined[strike]=combined.get(strike,0.0)+oi
-    return {"CALL":_conc(sides["CALL"]),"PUT":_conc(sides["PUT"]),"COMBINED":_conc(combined),"strike_oi":sides}
+    return {"CALL":_conc(sides["CALL"]),"PUT":_conc(sides["PUT"]),"strike_oi":sides}
 def _expiry(cur,prev,expiry):
     a={k:v for k,v in cur.items() if str(v.get("expiry_date"))==expiry}; b={k:v for k,v in prev.items() if str(v.get("expiry_date"))==expiry}
     common=sorted(set(a)&set(b)); valid=[]; invalid=[]
@@ -66,32 +63,8 @@ def _expiry(cur,prev,expiry):
             "sum_of_contract_changes":change,"difference":diff,"status":"PASS" if math.isclose(diff,0,rel_tol=1e-12,abs_tol=1e-9) else "FAIL"},
         "call_oi_change":sum(delta["CALL"].values()),"put_oi_change":sum(delta["PUT"].values()),"combined_oi_change":change,
         "previous_concentration":pdist,"current_concentration":cdist,"strike_oi_change":delta,"matched_contract_changes":valid}
-def _region_migration(previous,current,strike_change,boundaries):
-    if boundaries is None: return {"status":"NOT_CALCULATED","reason":"FIXED_REGION_BOUNDARIES_NOT_SUPPLIED"}
-    checked=[]; last=-math.inf
-    for label,lower,upper in boundaries:
-        lower,upper=float(lower),float(upper)
-        if not label or not math.isfinite(lower) or not math.isfinite(upper) or lower>=upper or lower<last:
-            raise ValueError("Region boundaries must be finite, ordered and non-overlapping")
-        checked.append((str(label),lower,upper)); last=upper
-    output={}
-    for side in ("CALL","PUT"):
-        pmap,cmap,dmap=previous["strike_oi"][side],current["strike_oi"][side],strike_change[side]
-        ptotal,ctotal=sum(pmap.values()),sum(cmap.values()); regions={}; assigned=set()
-        for label,lower,upper in checked:
-            po=sum(v for k,v in pmap.items() if lower<=k<upper); co=sum(v for k,v in cmap.items() if lower<=k<upper)
-            do=sum(v for k,v in dmap.items() if lower<=k<upper)
-            assigned.update(k for k in set(pmap)|set(cmap)|set(dmap) if lower<=k<upper)
-            ps=po/ptotal*100 if ptotal else None; cs=co/ctotal*100 if ctotal else None
-            regions[label]={"previous_oi":po,"current_oi":co,"oi_change":do,"previous_share_pct":ps,"current_share_pct":cs,
-                "share_change_percentage_points":cs-ps if ps is not None and cs is not None else None}
-        output[side]={"regions":regions,"unassigned_previous_oi":sum(v for k,v in pmap.items() if k not in assigned),
-            "unassigned_current_oi":sum(v for k,v in cmap.items() if k not in assigned),
-            "unassigned_oi_change":sum(v for k,v in dmap.items() if k not in assigned),"previous_total_oi":ptotal,"current_total_oi":ctotal}
-    return {"status":"OK","boundaries":[{"label":n,"lower_inclusive":lo,"upper_exclusive":hi} for n,lo,hi in checked],
-        "by_option_side":output,"interpretation":"Descriptive region totals and share changes; not directional positioning"}
 def calculate_oi_migration(current_rows,previous_rows,*,current_snapshot_id,previous_snapshot_id,current_completed_at,
-    previous_completed_at,selected_expiry,eligible_expiries,region_boundaries=None):
+    previous_completed_at,selected_expiry,eligible_expiries):
     """Use only common valid Product IDs; ambiguous duplicate endpoints fail closed."""
     cur,cd=_index(current_rows,"current",current_snapshot_id); prev,pd=_index(previous_rows,"previous",previous_snapshot_id)
     provenance={"current_snapshot_id":current_snapshot_id,"previous_snapshot_id":previous_snapshot_id,
@@ -119,5 +92,4 @@ def calculate_oi_migration(current_rows,previous_rows,*,current_snapshot_id,prev
         "cross_expiry_same_numerical_strike":{"status":"OK" if cohort else "INSUFFICIENT_DATA",
             "aggregation_basis":"COMMON_VALID_MATCHED_PRODUCT_IDS_ACROSS_ELIGIBLE_EXPIRIES","expiry_breakdown_retained":True,
             "matched_contract_count":len(cohort),"previous_concentration":pdist,"current_concentration":cdist,"strike_oi_change":delta},
-        "strike_region_concentration":{"nearest_expiry":_region_migration(nearest["previous_concentration"],nearest["current_concentration"],nearest["strike_oi_change"],region_boundaries),
-            "cross_expiry_same_numerical_strike":_region_migration(pdist,cdist,delta,region_boundaries)},"endpoint_validation":[cd,pd]}
+        "endpoint_validation":[cd,pd]}
