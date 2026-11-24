@@ -412,11 +412,24 @@ def calculate_volume_oi(snapshot: CanonicalSnapshot) -> dict:
     if call_oi == 0 or put_oi == 0:
         return _result("24h Volume / OI", "INSUFFICIENT_DATA", snapshot, reason="ZERO_OI")
     call_ratio, put_ratio = call_vol / call_oi, put_vol / put_oi
-    activity = "FRESH_MONEY_ENTERING" if call_ratio > .5 or put_ratio > .5 else "STALE_POSITIONING"
-    direction = "BULLISH_ACTIVITY" if call_ratio > put_ratio * 1.5 else (
-        "BEARISH_ACTIVITY" if put_ratio > call_ratio * 1.5 else "NEUTRAL")
-    return _result("24h Volume / OI", "OK", snapshot, classification=activity,
-                   direction=direction, call_ratio=call_ratio, put_ratio=put_ratio)
+    # 0.5 and 1.5 are research heuristics, not established market thresholds.
+    relative_volume = (
+        "RELATIVE_VOLUME_ABOVE_0_5"
+        if call_ratio > .5 or put_ratio > .5
+        else "RELATIVE_VOLUME_AT_OR_BELOW_0_5"
+    )
+    ratio_comparison = (
+        "CALL_RATIO_OVER_1_5X_PUT_RATIO" if call_ratio > put_ratio * 1.5 else
+        "PUT_RATIO_OVER_1_5X_CALL_RATIO" if put_ratio > call_ratio * 1.5 else
+        "CALL_PUT_RATIO_WITHIN_1_5X"
+    )
+    return _result(
+        "24h Volume / OI", "OK", snapshot,
+        relative_volume=relative_volume,
+        ratio_comparison=ratio_comparison,
+        call_ratio=call_ratio, put_ratio=put_ratio,
+        heuristic_note="0.5 and 1.5 are research heuristics, not established market thresholds.",
+    )
 
 
 def calculate_oi_migration(snapshot: CanonicalSnapshot) -> dict:
