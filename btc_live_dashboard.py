@@ -254,6 +254,57 @@ def _decimal_value(value):
     return number if number.is_finite() else None
 
 
+def _build_option_chain_frame(chain):
+    """Build the fetched chain while keeping original API OI values in object columns."""
+    frame = pd.DataFrame(chain)
+    # DataFrame inference can coerce [large_int, None] to float64 and round the
+    # integer. Rebuild source-only columns from the original records as object
+    # dtype; calculation columns remain the float-normalized values in each row.
+    for column in ("OI_Contracts_Source", "OI_USD_Source"):
+        if any(column in row for row in chain):
+            frame[column] = pd.Series(
+                [row.get(column) for row in chain], index=frame.index, dtype=object
+            )
+    return frame
+
+
+def _prepare_contract_export(raw_chain_df, selected_expiry, existing_chain_complete):
+    """Run the production snapshot export preparation, validation and TSV serialization."""
+    columns = [
+        "Product_ID", "Symbol", "Expiry", "Type", "Strike",
+        "OI_Contracts", "OI_USD",
+    ]
+    export_df = raw_chain_df.copy()
+    missing_columns = [column for column in columns if column not in export_df.columns]
+    for column in missing_columns:
+        export_df[column] = np.nan
+    if "Expiry" in missing_columns and selected_expiry:
+        export_df["Expiry"] = selected_expiry
+
+    # Source columns are deliberately object dtype, preserving API int/Decimal/
+    # string values; calculation columns remain the existing float-normalized data.
+    if "OI_Contracts_Source" in export_df.columns:
+        export_df["OI_Contracts"] = pd.Series(
+            export_df["OI_Contracts_Source"].tolist(), index=export_df.index, dtype=object
+        )
+    if "OI_USD_Source" in export_df.columns:
+        export_df["OI_USD"] = pd.Series(
+            export_df["OI_USD_Source"].tolist(), index=export_df.index, dtype=object
+        )
+
+    complete, reasons = _validate_contract_export(
+        export_df[columns], selected_expiry, existing_chain_complete
+    )
+    if missing_columns:
+        missing_reason = "missing fields: " + ", ".join(missing_columns)
+        if missing_reason not in reasons:
+            reasons.append(missing_reason)
+    tsv = export_df[columns].to_csv(
+        sep="\\t", index=False, na_rep="NULL", lineterminator="\\n"
+    )
+    return export_df, ("COMPLETE" if complete else "INCOMPLETE"), reasons, tsv
+
+
 def _validate_contract_export(frame, selected_expiry, existing_chain_complete=True):
     """Return (complete, reasons) after validating every required exported field."""
     required = ["Product_ID", "Symbol", "Expiry", "Type", "Strike", "OI_Contracts", "OI_USD"]
@@ -406,7 +457,65 @@ def _run_contract_export_validation_tests():
     assert str(parsed["oi_value_usd"]) == "123456789.1234567890123456789"
     precision_csv = pd.DataFrame([dict(base, OI_USD=parsed["oi_value_usd"])]).to_csv(index=False)
     assert "123456789.1234567890123456789" in precision_csv
-    print("PASS: canonical Product IDs, invalid/fractional IDs, symbol expiry/date/strike, incomplete upstream chain, zero/fallback OI, missing values, non-finite and negative OI, precision")
+    # Exercise the exact fetch-chain frame builder and production snapshot TSV path.
+    huge_integer = 9007199254740993
+    long_decimal = Decimal("123456789.12345678901234567890123456789")
+    source_chain = [
+        {
+            "Product_ID": 201, "Symbol": "C-BTC-100000-301226",
+            "Expiry": "301226", "Type": "Call", "Strike": 100000.0,
+            "OI_Contracts": float(huge_integer), "OI_USD": 1.0,
+            "OI_Contracts_Source": huge_integer,
+            "OI_USD_Source": long_decimal,
+        },
+        {
+            "Product_ID": 202, "Symbol": "P-BTC-101000-301226",
+            "Expiry": "301226", "Type": "Put", "Strike": 101000.0,
+            "OI_Contracts": np.nan, "OI_USD": np.nan,
+            "OI_Contracts_Source": None, "OI_USD_Source": None,
+        },
+        {
+            "Product_ID": 203, "Symbol": "C-BTC-102000-301226",
+            "Expiry": "301226", "Type": "Call", "Strike": 102000.0,
+            "OI_Contracts": 123.0, "OI_USD": 456.0,
+            "OI_Contracts_Source": Decimal("123.000000000000000000123456789"),
+            "OI_USD_Source": "4567890123456789.1234567890123456789",
+        },
+        {
+            "Product_ID": 204, "Symbol": "P-BTC-103000-301226",
+            "Expiry": "301226", "Type": "Put", "Strike": 103000.0,
+            "OI_Contracts": 789.0, "OI_USD": 987.0,
+            "OI_Contracts_Source": "7890000000000000.0000000000000000007",
+            "OI_USD_Source": 9876543210987654321,
+        },
+    ]
+    fetched_frame = _build_option_chain_frame(source_chain)
+    assert fetched_frame["OI_Contracts_Source"].dtype == object
+    assert fetched_frame.loc[0, "OI_Contracts_Source"] == huge_integer
+    assert type(fetched_frame.loc[0, "OI_Contracts_Source"]) is int
+    assert fetched_frame.loc[1, "OI_Contracts_Source"] is None
+    assert fetched_frame.loc[2, "OI_Contracts_Source"] == Decimal("123.000000000000000000123456789")
+    assert fetched_frame.loc[3, "OI_Contracts_Source"] == "7890000000000000.0000000000000000007"
+    assert fetched_frame.loc[0, "OI_Contracts"] == float(huge_integer)
+
+    exported_frame, export_status, export_reasons, tsv = _prepare_contract_export(
+        fetched_frame, "301226", existing_chain_complete=False
+    )
+    assert export_status == "INCOMPLETE"
+    assert any("completeness check failed" in reason for reason in export_reasons)
+    tsv_lines = tsv.splitlines()
+    assert tsv_lines[0].split("\\t")[-2:] == ["OI_Contracts", "OI_USD"]
+    assert "9007199254740993" in tsv_lines[1]
+    assert "123456789.12345678901234567890123456789" in tsv_lines[1]
+    assert tsv_lines[2].endswith("NULL\\tNULL")
+    assert "123.000000000000000000123456789" in tsv_lines[3]
+    assert "4567890123456789.1234567890123456789" in tsv_lines[3]
+    assert "7890000000000000.0000000000000000007" in tsv_lines[4]
+    assert "9876543210987654321" in tsv_lines[4]
+    # Float calculation columns remain distinct from exact source columns.
+    assert fetched_frame.loc[0, "OI_Contracts"] == float(huge_integer)
+    assert fetched_frame.loc[0, "OI_Contracts_Source"] == huge_integer
+    print("PASS: validator safeguards; fetch-chain object source preservation; mixed int/string/Decimal/missing OI; exact production TSV export; float calculation columns unchanged")
 
 def _sum_if_complete(series):
     """Return a sum only when every expected observation is present and valid."""
@@ -1468,7 +1577,7 @@ def fetch_delta_options():
                 chain.append({"Product_ID": opt.get("id"), "Symbol": sym, "Expiry": nearest_expiry, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "OI_USD_Source": oi_usd_source, "OI_Contracts_Source": oi_contracts_source, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val})
             except (ValueError, TypeError): continue
 
-        df = pd.DataFrame(chain)
+        df = _build_option_chain_frame(chain)
         if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, False
 
         expected_symbol_set = set(str(sym) for sym in expected_symbols)
@@ -2262,50 +2371,20 @@ def _render_market_dashboard():
             basis=format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A",
         )
         # Append the already-fetched nearest-expiry contract chain. Do not issue another API request.
-        contract_export_columns = [
-            "Product_ID", "Symbol", "Expiry", "Type", "Strike",
-            "OI_Contracts", "OI_USD",
-        ]
-        snapshot_text += "\n\n=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ===\n"
+        snapshot_text += "\\n\\n=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ===\\n"
         if raw_chain_df is None or raw_chain_df.empty:
-            snapshot_text += "EXPORT STATUS: UNAVAILABLE — raw nearest-expiry contract chain is empty or unavailable.\n"
+            snapshot_text += "EXPORT STATUS: UNAVAILABLE — raw nearest-expiry contract chain is empty or unavailable.\\n"
         else:
-            export_df = raw_chain_df.copy()
-            missing_columns = [
-                column for column in contract_export_columns if column not in export_df.columns
-            ]
-            for column in missing_columns:
-                export_df[column] = np.nan
-
-            # Expiry is also supplied separately by the existing fetch result.
-            if "Expiry" in missing_columns and loaded_expiry:
-                export_df["Expiry"] = loaded_expiry
-
-            # Export original API OI numeric values (Decimal/int) while the existing
-            # calculation columns remain normalized floats for backward compatibility.
-            if "OI_Contracts_Source" in export_df.columns:
-                export_df["OI_Contracts"] = export_df["OI_Contracts_Source"]
-            if "OI_USD_Source" in export_df.columns:
-                export_df["OI_USD"] = export_df["OI_USD_Source"]
-
-            export_complete, incomplete_reasons = _validate_contract_export(
-                export_df[contract_export_columns], loaded_expiry, is_chain_complete
+            export_df, export_status, incomplete_reasons, export_tsv = _prepare_contract_export(
+                raw_chain_df, loaded_expiry, is_chain_complete
             )
-            if missing_columns:
-                incomplete_reasons.extend(
-                    reason for reason in ["missing fields: " + ", ".join(missing_columns)]
-                    if reason not in incomplete_reasons
-                )
-            export_status = "COMPLETE" if export_complete else "INCOMPLETE"
             snapshot_text += (
                 f"EXPORT STATUS: {export_status} — {len(export_df)} contract rows; "
-                f"selected expiry: {loaded_expiry or 'UNKNOWN'}\n"
+                f"selected expiry: {loaded_expiry or 'UNKNOWN'}\\n"
             )
             if incomplete_reasons:
-                snapshot_text += "INCOMPLETE REASONS: " + "; ".join(incomplete_reasons) + "\n"
-            snapshot_text += export_df[contract_export_columns].to_csv(
-                sep="\t", index=False, na_rep="NULL", lineterminator="\n"
-            )
+                snapshot_text += "INCOMPLETE REASONS: " + "; ".join(incomplete_reasons) + "\\n"
+            snapshot_text += export_tsv
 
         st.code(snapshot_text, language="text")
     
