@@ -4,7 +4,6 @@ from datetime import date
 import pandas as pd
 import pytest
 from phase2_oi_migration import calculate_oi_migration
-
 EXPIRIES=("2026-12-01","2026-12-08")
 def chain(snapshot):
     rows=[]
@@ -20,7 +19,6 @@ def calc(cur=None,prev=None,**kw):
     return calculate_oi_migration(cur,prev,current_snapshot_id="c1",previous_snapshot_id="p1",
         current_completed_at="2026-11-25T12:30:00Z",previous_completed_at="2026-11-25T12:00:00Z",
         selected_expiry=EXPIRIES[0],eligible_expiries=EXPIRIES,**kw)
-
 def test_calculates_pair_provenance_and_elapsed_seconds():
     r=calc(); assert r["status"]=="OK" and r["provenance"]["elapsed_seconds"]==1800
     assert (r["provenance"]["current_snapshot_id"],r["provenance"]["previous_snapshot_id"])==("c1","p1")
@@ -43,6 +41,10 @@ def test_rows_with_snapshot_id_mismatch_are_rejected():
 def test_duplicate_contract_identity_withholds_comparison():
     cur=chain("current"); cur.append(dict(cur[0],product_id="different")); r=calc(cur)
     assert r["status"]=="WITHHELD" and r["endpoint_validation"][0]["duplicate_contract_identities"]
+def test_duplicate_contract_identity_normalizes_numeric_strike_representation():
+    cur=chain("current"); duplicate=dict(cur[0],product_id="different",strike_price=float(cur[0]["strike_price"]))
+    cur[0]["strike_price"]=str(cur[0]["strike_price"]); cur.append(duplicate); r=calc(cur)
+    assert r["status"]=="WITHHELD" and r["endpoint_validation"][0]["duplicate_contract_identities"]
 def test_unmatched_products_are_reported_and_excluded():
     cur=chain("current"); cur=cur[1:]; x=calc(cur)["nearest_expiry"]["coverage"]
     assert x["unmatched_previous_product_ids"] and x["valid_matched_product_ids"]==9
@@ -63,7 +65,6 @@ def test_matched_cohort_arithmetic_reconciles_but_exchange_completeness_is_unver
     r=calc(); assert r["validity"]["arithmetic_reconciliation"]=="PASS"
     assert r["cross_expiry_arithmetic_reconciliation"]["difference"]==pytest.approx(0)
     assert r["validity"]["exchange_wide_completeness"]=="UNVERIFIED"
-
 class Response:
     def __init__(self,data): self.data=data
 class Query:
@@ -133,8 +134,7 @@ def test_adapter_withholds_invalid_immediately_preceding_success_instead_of_skip
     loader=load_adapter(monkeypatch); r=loader(Client(adapter_db()),as_of=date(2026,11,25))
     assert r["status"]=="WITHHELD" and r["reason"]=="PREVIOUS_EXPIRY_VALIDATION_FAILED"
     assert r["pair"]["previous_snapshot_id"]=="immediate-invalid" and r["pair"]["previous_snapshot_id"]!="older-valid"
-    assert r["canonical_selector_previous_snapshot_id"]=="older-valid"
-    assert r["canonical_selector_previous_snapshot_ignored"] is True
+    assert r["canonical_selector_previous_snapshot_id"]=="older-valid" and r["canonical_selector_previous_snapshot_ignored"] is True
 def test_adapter_accepts_valid_immediate_predecessor_without_fallback(monkeypatch):
     loader=load_adapter(monkeypatch); r=loader(Client(adapter_db(invalid_previous=False)),as_of=date(2026,11,25))
     assert r["status"]=="OK" and r["pair"]["previous_snapshot_id"]=="immediate-invalid"
