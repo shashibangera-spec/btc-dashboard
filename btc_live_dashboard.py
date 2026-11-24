@@ -287,8 +287,13 @@ def _validate_contract_export(frame, selected_expiry, existing_chain_complete=Tr
             reasons.append(f"row {row_index}: missing or invalid Symbol")
         else:
             parts = symbol.strip().split("-")
-            if len(parts) < 4 or "BTC" not in parts or not parts[2] or not parts[3].isdigit() or len(parts[3]) != 6:
+            if (
+                len(parts) < 4 or parts[0] not in ("C", "P") or parts[1] != "BTC"
+                or not parts[2] or not parts[3].isdigit() or len(parts[3]) != 6
+            ):
                 reasons.append(f"row {row_index}: malformed BTC option Symbol")
+            elif row["Type"] in ("Call", "Put") and parts[0] != ("C" if row["Type"] == "Call" else "P"):
+                reasons.append(f"row {row_index}: Symbol side does not match option Type")
             symbols.append(symbol.strip())
 
         expiry = row["Expiry"]
@@ -360,6 +365,8 @@ def _run_contract_export_validation_tests():
     parsed = _json.loads('{"oi_value_usd":123456789.1234567890123456789}', parse_float=Decimal)
     assert parsed["oi_value_usd"] == precise
     assert str(parsed["oi_value_usd"]) == "123456789.1234567890123456789"
+    precision_csv = pd.DataFrame([dict(base, OI_USD=parsed["oi_value_usd"])]).to_csv(index=False)
+    assert "123456789.1234567890123456789" in precision_csv
     print("PASS: zero OI, fallback semantics, missing values, infinity, NaN, duplicate Product IDs, invalid Type, expiry mismatch, precision preservation")
 
 
