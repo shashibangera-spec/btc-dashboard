@@ -179,8 +179,15 @@ def test_volume_oi_uses_24h_volume_and_fails_closed_on_null_nearest_contract():
     assert exact["relative_volume"] == "RELATIVE_VOLUME_AT_OR_BELOW_0_5"
     assert exact["ratio_comparison"] == "CALL_PUT_RATIO_WITHIN_1_5X"
 
+    ratio_boundary = raw_rows()
+    ratio_boundary.loc[ratio_boundary.option_type == "CALL", "volume_24h"] = 210
+    ratio_boundary.loc[ratio_boundary.option_type == "PUT", "volume_24h"] = 140
+    equal_ratio = f.calculate_volume_oi(snapshot(ratio_boundary))
+    assert equal_ratio["call_ratio"] == pytest.approx(equal_ratio["put_ratio"] * 1.5)
+    assert equal_ratio["ratio_comparison"] == "CALL_PUT_RATIO_WITHIN_1_5X"
+
     above = raw_rows()
-    above.loc[above.option_type == "CALL", "volume_24h"] = 210.2
+    above.loc[above.option_type == "CALL", "volume_24h"] = 211
     above.loc[above.option_type == "PUT", "volume_24h"] = 140
     over = f.calculate_volume_oi(snapshot(above))
     assert over["call_ratio"] > over["put_ratio"] * 1.5
