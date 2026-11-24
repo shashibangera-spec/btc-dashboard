@@ -48,19 +48,25 @@ def test_duplicate_contract_identity_normalizes_numeric_strike_representation():
 def test_unmatched_products_are_reported_and_excluded():
     cur=chain("current"); cur=cur[1:]; x=calc(cur)["nearest_expiry"]["coverage"]
     assert x["unmatched_previous_product_ids"] and x["valid_matched_product_ids"]==9
-def test_hhi_top5_top10_reported_for_call_put_and_combined():
+def test_hhi_top5_top10_reported_separately_for_call_and_put_only():
     metrics=calc()["nearest_expiry"]["current_concentration"]
-    for side in ("CALL","PUT","COMBINED"):
+    assert set(metrics)=={"CALL","PUT","strike_oi"}
+    for side in ("CALL","PUT"):
         assert metrics[side]["hhi"] is not None and metrics[side]["top5_share_pct"] is not None and metrics[side]["top10_share_pct"] is not None
-def test_regions_are_not_invented_without_explicit_fixed_boundaries():
-    assert calc()["strike_region_concentration"]["nearest_expiry"]["status"]=="NOT_CALCULATED"
-def test_explicit_fixed_regions_report_previous_current_delta_and_share_change():
-    regions=calc(region_boundaries=[("LOW",0,100),("HIGH",100,1000)])["strike_region_concentration"]["nearest_expiry"]
-    assert regions["status"]=="OK"
-    assert regions["by_option_side"]["CALL"]["regions"]["LOW"]["oi_change"]==pytest.approx(10)
-    assert regions["by_option_side"]["CALL"]["regions"]["LOW"]["share_change_percentage_points"] is not None
-def test_overlapping_region_boundaries_are_rejected():
-    with pytest.raises(ValueError): calc(region_boundaries=[("A",0,100),("B",90,200)])
+def test_region_functionality_and_parameters_are_absent(monkeypatch):
+    import inspect, phase2_oi_migration as module
+    load_adapter(monkeypatch)
+    import phase2_oi_migration_adapter as adapter_module
+    assert not hasattr(module,"_region_migration")
+    assert "region_boundaries" not in inspect.signature(module.calculate_oi_migration).parameters
+    assert "region_boundaries" not in inspect.signature(adapter_module.load_phase2_oi_migration).parameters
+    assert "strike_region_concentration" not in calc()
+def test_combined_hhi_and_combined_concentration_are_absent():
+    result=calc()
+    assert "COMBINED" not in result["nearest_expiry"]["current_concentration"]
+    assert "COMBINED" not in result["nearest_expiry"]["previous_concentration"]
+    assert "COMBINED" not in result["cross_expiry_same_numerical_strike"]["current_concentration"]
+    assert "COMBINED" not in result["cross_expiry_same_numerical_strike"]["previous_concentration"]
 def test_matched_cohort_arithmetic_reconciles_but_exchange_completeness_is_unverified():
     r=calc(); assert r["validity"]["arithmetic_reconciliation"]=="PASS"
     assert r["cross_expiry_arithmetic_reconciliation"]["difference"]==pytest.approx(0)
@@ -71,13 +77,17 @@ class Query:
     def __init__(self,db,table): self.db,self.table,self.filters,self.sort=db,table,[],None
     def select(self,*_): return self
     def eq(self,k,v): self.filters.append((k,v)); return self
-    def order(self,k,desc=False): self.sort=(k,desc); return self
+    def order(self,k,desc=False):
+        if self.sort is None: self.sort=[]
+        self.sort.append((k,desc)); return self
     def limit(self,n): self.maximum=n; return self
     def range(self,a,b): self.bounds=(a,b); return self
     def execute(self):
         rows=list(self.db.get(self.table,[]))
         for k,v in self.filters: rows=[r for r in rows if r.get(k)==v]
-        if self.sort: rows.sort(key=lambda r:r.get(self.sort[0]) or "",reverse=self.sort[1])
+        if self.sort:
+            for key,desc in reversed(self.sort):
+                rows.sort(key=lambda r:r.get(key) or "",reverse=desc)
         if hasattr(self,"maximum"): rows=rows[:self.maximum]
         if hasattr(self,"bounds"): rows=rows[self.bounds[0]:self.bounds[1]+1]
         return Response(rows)
@@ -142,3 +152,33 @@ def test_adapter_accepts_valid_immediate_predecessor_without_fallback(monkeypatc
 def test_adapter_withholds_ambiguous_equal_timestamp_predecessors(monkeypatch):
     loader=load_adapter(monkeypatch); r=loader(Client(adapter_db(invalid_previous=False,tied_previous=True)),as_of=date(2026,11,25))
     assert r["status"]=="WITHHELD" and r["reason"]=="AMBIGUOUS_IMMEDIATELY_PRECEDING_SUCCESS_RUN"
+def test_adapter_finds_actual_predecessor_beyond_500_runs(monkeypatch):
+    db=adapter_db(invalid_previous=False)
+    current=db["options_collection_runs"][0]
+    db["options_collection_runs"]=[current]
+    for i in range(505):
+        minute=29-(i//60); second=59-(i%60)
+        stamp=f"2026-11-25T12:{minute:02d}:{second:02d}Z"
+        db["options_collection_runs"].append({**current,"snapshot_id":f"between-{i}",
+            "completed_at":stamp,"started_at":stamp})
+    predecessor={**current,"snapshot_id":"true-predecessor","completed_at":"2026-11-24T23:59:59Z",
+        "started_at":"2026-11-24T23:59:59Z"}
+    db["options_collection_runs"].append(predecessor)
+    loader=load_adapter(monkeypatch); r=loader(Client(db),as_of=date(2026,11,25))
+    assert r["status"]=="WITHHELD"
+    assert r["pair"]["previous_snapshot_id"]=="true-predecessor"
+def test_adapter_withholds_invalid_immediate_success_run_without_older_fallback(monkeypatch):
+    db=adapter_db(invalid_previous=False)
+    immediate=next(r for r in db["options_collection_runs"] if r["snapshot_id"]=="immediate-invalid")
+    immediate["inserted_contracts"]-=1
+    loader=load_adapter(monkeypatch); r=loader(Client(db),as_of=date(2026,11,25))
+    assert r["status"]=="WITHHELD"
+    assert r["reason"]=="IMMEDIATELY_PRECEDING_SUCCESS_RUN_INVALID"
+    assert r["pair"]["previous_snapshot_id"]=="immediate-invalid"
+    assert r["pair"]["previous_snapshot_id"]!="older-valid"
+def test_adapter_withholds_when_success_run_timestamp_is_unresolvable(monkeypatch):
+    db=adapter_db(invalid_previous=False)
+    db["options_collection_runs"].append({**db["options_collection_runs"][-1],
+        "snapshot_id":"bad-time","completed_at":"not-a-timestamp"})
+    loader=load_adapter(monkeypatch); r=loader(Client(db),as_of=date(2026,11,25))
+    assert r["status"]=="WITHHELD" and r["reason"]=="RUN_HISTORY_TIMESTAMP_INVALID"
