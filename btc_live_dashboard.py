@@ -402,7 +402,7 @@ def _validate_contract_export(frame, selected_expiry, existing_chain_complete=Tr
 
 def _append_contract_export_to_snapshot(snapshot_text, raw_chain_df, loaded_expiry, existing_chain_complete):
     """Append the already-fetched nearest-expiry chain using real snapshot line breaks."""
-    snapshot_text += "\n\n=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ===\n"
+    snapshot_text = snapshot_text.rstrip("\n") + "\n\n=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ===\n"
     if raw_chain_df is None or raw_chain_df.empty:
         snapshot_text += "EXPORT STATUS: UNAVAILABLE — raw nearest-expiry contract chain is empty or unavailable.\n"
         return snapshot_text
