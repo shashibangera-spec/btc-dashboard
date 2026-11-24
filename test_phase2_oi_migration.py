@@ -157,7 +157,7 @@ def test_adapter_finds_actual_predecessor_beyond_500_runs(monkeypatch):
     current=db["options_collection_runs"][0]
     db["options_collection_runs"]=[current]
     for i in range(505):
-        minute=29-(i//60); second=59-(i%60)
+        minute=31+(i//60); second=i%60
         stamp=f"2026-11-25T12:{minute:02d}:{second:02d}Z"
         db["options_collection_runs"].append({**current,"snapshot_id":f"between-{i}",
             "completed_at":stamp,"started_at":stamp})
