@@ -2091,9 +2091,9 @@ def _render_market_dashboard():
             "Product_ID", "Symbol", "Expiry", "Type", "Strike",
             "OI_Contracts", "OI_USD",
         ]
-        snapshot_text += "\\n\\n=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ===\\n"
+        snapshot_text += "\n\n=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ===\n"
         if raw_chain_df is None or raw_chain_df.empty:
-            snapshot_text += "EXPORT STATUS: UNAVAILABLE — raw nearest-expiry contract chain is empty or unavailable.\\n"
+            snapshot_text += "EXPORT STATUS: UNAVAILABLE — raw nearest-expiry contract chain is empty or unavailable.\n"
         else:
             export_df = raw_chain_df.copy()
             missing_columns = [
@@ -2122,12 +2122,12 @@ def _render_market_dashboard():
             export_status = "COMPLETE" if export_complete else "INCOMPLETE"
             snapshot_text += (
                 f"EXPORT STATUS: {export_status} — {len(export_df)} contract rows; "
-                f"selected expiry: {loaded_expiry or 'UNKNOWN'}\\n"
+                f"selected expiry: {loaded_expiry or 'UNKNOWN'}\n"
             )
             if incomplete_reasons:
-                snapshot_text += "INCOMPLETE REASONS: " + "; ".join(incomplete_reasons) + "\\n"
+                snapshot_text += "INCOMPLETE REASONS: " + "; ".join(incomplete_reasons) + "\n"
             snapshot_text += export_df[contract_export_columns].to_csv(
-                sep="\\t", index=False, na_rep="NULL", lineterminator="\\n"
+                sep="\t", index=False, na_rep="NULL", lineterminator="\n"
             )
 
         st.code(snapshot_text, language="text")
