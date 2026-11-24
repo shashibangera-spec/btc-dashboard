@@ -158,7 +158,34 @@ def test_iv_skew_requires_both_iv_sides():
 def test_volume_oi_uses_24h_volume_and_fails_closed_on_null_nearest_contract():
     raw = raw_rows()
     raw["volume_24h"] = 600
-    assert f.calculate_volume_oi(snapshot(raw))["classification"] == "FRESH_MONEY_ENTERING"
+    result = f.calculate_volume_oi(snapshot(raw))
+    # Existing nearest-five-strike 24h volume / OI arithmetic is unchanged.
+    assert result["status"] == "OK"
+    assert result["call_ratio"] == pytest.approx(3000 / 1400)
+    assert result["put_ratio"] == pytest.approx(3000 / 1400)
+    assert result["relative_volume"] == "RELATIVE_VOLUME_ABOVE_0_5"
+    assert result["ratio_comparison"] == "CALL_PUT_RATIO_WITHIN_1_5X"
+    assert "research heuristics" in result["heuristic_note"]
+    assert "classification" not in result
+    assert "direction" not in result
+
+    # Strict comparisons are preserved: equality does not cross either threshold.
+    boundary = raw_rows()
+    boundary.loc[boundary.option_type == "CALL", "volume_24h"] = 140
+    boundary.loc[boundary.option_type == "PUT", "volume_24h"] = 140
+    exact = f.calculate_volume_oi(snapshot(boundary))
+    assert exact["call_ratio"] == pytest.approx(0.5)
+    assert exact["put_ratio"] == pytest.approx(0.5)
+    assert exact["relative_volume"] == "RELATIVE_VOLUME_AT_OR_BELOW_0_5"
+    assert exact["ratio_comparison"] == "CALL_PUT_RATIO_WITHIN_1_5X"
+
+    above = raw_rows()
+    above.loc[above.option_type == "CALL", "volume_24h"] = 210.2
+    above.loc[above.option_type == "PUT", "volume_24h"] = 140
+    over = f.calculate_volume_oi(snapshot(above))
+    assert over["call_ratio"] > over["put_ratio"] * 1.5
+    assert over["ratio_comparison"] == "CALL_RATIO_OVER_1_5X_PUT_RATIO"
+
     raw.loc[(raw.strike_price == 1000) & (raw.option_type == "CALL"), "volume_24h"] = None
     assert f.calculate_volume_oi(snapshot(raw))["status"] == "INSUFFICIENT_DATA"
 
