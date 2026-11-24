@@ -300,7 +300,7 @@ def _prepare_contract_export(raw_chain_df, selected_expiry, existing_chain_compl
         if missing_reason not in reasons:
             reasons.append(missing_reason)
     tsv = export_df[columns].to_csv(
-        sep="\\t", index=False, na_rep="NULL", lineterminator="\\n"
+        sep="\t", index=False, na_rep="NULL", lineterminator="\n"
     )
     return export_df, ("COMPLETE" if complete else "INCOMPLETE"), reasons, tsv
 
@@ -504,10 +504,10 @@ def _run_contract_export_validation_tests():
     assert export_status == "INCOMPLETE"
     assert any("completeness check failed" in reason for reason in export_reasons)
     tsv_lines = tsv.splitlines()
-    assert tsv_lines[0].split("\\t")[-2:] == ["OI_Contracts", "OI_USD"]
+    assert tsv_lines[0].split("\t")[-2:] == ["OI_Contracts", "OI_USD"]
     assert "9007199254740993" in tsv_lines[1]
     assert "123456789.12345678901234567890123456789" in tsv_lines[1]
-    assert tsv_lines[2].endswith("NULL\\tNULL")
+    assert tsv_lines[2].endswith("NULL\tNULL")
     assert "123.000000000000000000123456789" in tsv_lines[3]
     assert "4567890123456789.1234567890123456789" in tsv_lines[3]
     assert "7890000000000000.0000000000000000007" in tsv_lines[4]
@@ -2371,19 +2371,19 @@ def _render_market_dashboard():
             basis=format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A",
         )
         # Append the already-fetched nearest-expiry contract chain. Do not issue another API request.
-        snapshot_text += "\\n\\n=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ===\\n"
+        snapshot_text += "\n\n=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ===\n"
         if raw_chain_df is None or raw_chain_df.empty:
-            snapshot_text += "EXPORT STATUS: UNAVAILABLE — raw nearest-expiry contract chain is empty or unavailable.\\n"
+            snapshot_text += "EXPORT STATUS: UNAVAILABLE — raw nearest-expiry contract chain is empty or unavailable.\n"
         else:
             export_df, export_status, incomplete_reasons, export_tsv = _prepare_contract_export(
                 raw_chain_df, loaded_expiry, is_chain_complete
             )
             snapshot_text += (
                 f"EXPORT STATUS: {export_status} — {len(export_df)} contract rows; "
-                f"selected expiry: {loaded_expiry or 'UNKNOWN'}\\n"
+                f"selected expiry: {loaded_expiry or 'UNKNOWN'}\n"
             )
             if incomplete_reasons:
-                snapshot_text += "INCOMPLETE REASONS: " + "; ".join(incomplete_reasons) + "\\n"
+                snapshot_text += "INCOMPLETE REASONS: " + "; ".join(incomplete_reasons) + "\n"
             snapshot_text += export_tsv
 
         st.code(snapshot_text, language="text")
