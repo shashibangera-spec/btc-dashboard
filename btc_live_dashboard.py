@@ -9,6 +9,7 @@ import logging
 import os
 import json
 import html
+from decimal import Decimal, InvalidOperation
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import timezone, timedelta
@@ -233,6 +234,134 @@ hr { border-color: var(--border) !important; margin: 0.6rem 0 !important; }
 # CONFIGURATION & STATE
 # ==========================================
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+def _extract_option_oi_values(ticker):
+    """Return source OI values without coercion; zero is a valid primary value."""
+    oi_contracts = ticker.get("oi_contracts")
+    if oi_contracts is None:
+        oi_contracts = ticker.get("oi")
+    return oi_contracts, ticker.get("oi_value_usd")
+
+
+def _decimal_value(value):
+    """Parse a finite decimal without routing source values through binary float."""
+    if value is None or isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        number = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return number if number.is_finite() else None
+
+
+def _validate_contract_export(frame, selected_expiry, existing_chain_complete=True):
+    """Return (complete, reasons) after validating every required exported field."""
+    required = ["Product_ID", "Symbol", "Expiry", "Type", "Strike", "OI_Contracts", "OI_USD"]
+    reasons = []
+    if not existing_chain_complete:
+        reasons.append("existing API/product pagination completeness check failed")
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        reasons.append("missing fields: " + ", ".join(missing))
+        return False, reasons
+    if frame.empty:
+        return False, reasons + ["contract export contains no rows"]
+    if selected_expiry is None or str(selected_expiry).strip() == "":
+        reasons.append("selected expiry is unavailable")
+
+    ids = []
+    symbols = []
+    for row_index, row in frame.iterrows():
+        product_id = row["Product_ID"]
+        try:
+            pid = _decimal_value(product_id)
+            if pid is None or pid <= 0 or pid != pid.to_integral_value():
+                reasons.append(f"row {row_index}: invalid Product_ID")
+            else:
+                ids.append(str(pid))
+        except Exception:
+            reasons.append(f"row {row_index}: invalid Product_ID")
+
+        symbol = row["Symbol"]
+        if not isinstance(symbol, str) or not symbol.strip():
+            reasons.append(f"row {row_index}: missing or invalid Symbol")
+        else:
+            parts = symbol.strip().split("-")
+            if len(parts) < 4 or "BTC" not in parts or not parts[2] or not parts[3].isdigit() or len(parts[3]) != 6:
+                reasons.append(f"row {row_index}: malformed BTC option Symbol")
+            symbols.append(symbol.strip())
+
+        expiry = row["Expiry"]
+        if expiry is None or pd.isna(expiry) or str(expiry).strip() == "":
+            reasons.append(f"row {row_index}: missing Expiry")
+        elif selected_expiry is not None and str(expiry).strip() != str(selected_expiry).strip():
+            reasons.append(f"row {row_index}: Expiry does not match selected expiry")
+
+        if row["Type"] not in ("Call", "Put"):
+            reasons.append(f"row {row_index}: invalid option Type")
+
+        strike = _decimal_value(row["Strike"])
+        if strike is None or strike <= 0:
+            reasons.append(f"row {row_index}: Strike must be numeric, finite and positive")
+
+        for column in ("OI_Contracts", "OI_USD"):
+            value = _decimal_value(row[column])
+            if value is None or value < 0:
+                reasons.append(f"row {row_index}: {column} must be numeric, finite and non-negative")
+
+    if len(ids) != len(frame):
+        reasons.append("one or more Product_ID values are missing or invalid")
+    elif len(set(ids)) != len(ids):
+        reasons.append("duplicate Product_ID values")
+    if len(symbols) != len(frame):
+        reasons.append("one or more Symbols are missing or invalid")
+    elif len(set(symbols)) != len(symbols):
+        reasons.append("duplicate Symbols")
+    return not reasons, reasons
+
+
+def _run_contract_export_validation_tests():
+    """Focused offline regression tests; run with BTC_EXPORT_SELF_TEST=1."""
+    import json as _json
+
+    base = {
+        "Product_ID": 101, "Symbol": "C-BTC-100000-301226",
+        "Expiry": "301226", "Type": "Call", "Strike": Decimal("100000"),
+        "OI_Contracts": Decimal("0"), "OI_USD": Decimal("0"),
+    }
+    valid, reasons = _validate_contract_export(pd.DataFrame([base]), "301226")
+    assert valid, reasons
+
+    contracts, usd = _extract_option_oi_values({"oi_contracts": 0, "oi": 77, "oi_value_usd": 0})
+    assert contracts == 0 and usd == 0
+    assert _extract_option_oi_values({"oi_contracts": None, "oi": 77})[0] == 77
+    assert _extract_option_oi_values({"oi": 0})[0] == 0
+
+    for field in ("Product_ID", "Symbol", "Expiry", "Type", "Strike", "OI_Contracts", "OI_USD"):
+        bad = dict(base)
+        bad[field] = None
+        assert not _validate_contract_export(pd.DataFrame([bad]), "301226")[0], field
+
+    for field, value in (("Strike", Decimal("Infinity")), ("OI_Contracts", Decimal("NaN")),
+                         ("OI_USD", Decimal("Infinity"))):
+        bad = dict(base)
+        bad[field] = value
+        assert not _validate_contract_export(pd.DataFrame([bad]), "301226")[0], (field, value)
+
+    duplicate = dict(base)
+    duplicate["Symbol"] = "P-BTC-100000-301226"
+    assert not _validate_contract_export(pd.DataFrame([base, duplicate]), "301226")[0]
+    bad_type = dict(base, Type="CALL")
+    assert not _validate_contract_export(pd.DataFrame([bad_type]), "301226")[0]
+    bad_expiry = dict(base, Expiry="310127")
+    assert not _validate_contract_export(pd.DataFrame([bad_expiry]), "301226")[0]
+
+    precise = Decimal("123456789.1234567890123456789")
+    parsed = _json.loads('{"oi_value_usd":123456789.1234567890123456789}', parse_float=Decimal)
+    assert parsed["oi_value_usd"] == precise
+    assert str(parsed["oi_value_usd"]) == "123456789.1234567890123456789"
+    print("PASS: zero OI, fallback semantics, missing values, infinity, NaN, duplicate Product IDs, invalid Type, expiry mismatch, precision preservation")
+
 
 def _sum_if_complete(series):
     """Return a sum only when every expected observation is present and valid."""
@@ -1220,7 +1349,7 @@ def fetch_delta_options():
                 break
             try:
                 response = requests.get(url, timeout=10); response.raise_for_status()
-                data = response.json()
+                data = response.json(parse_float=Decimal)
                 if not isinstance(data, dict): break
                 page_results = data.get("result", [])
                 if not isinstance(page_results, list): break
@@ -1277,8 +1406,9 @@ def fetch_delta_options():
                     strike = float(raw_strike.replace("K", "")) * 1000 if "K" in raw_strike else float(raw_strike)
                 
                 strike = float(strike); opt_type = "Call" if opt.get("contract_type") == "call_options" else "Put"
-                oi_usd = float(ticker.get("oi_value_usd")) if ticker.get("oi_value_usd") is not None else None
-                oi_contracts = float(ticker.get("oi_contracts") or ticker.get("oi")) if (ticker.get("oi_contracts") or ticker.get("oi")) is not None else None
+                oi_contracts_source, oi_usd_source = _extract_option_oi_values(ticker)
+                oi_usd = float(oi_usd_source) if oi_usd_source is not None else None
+                oi_contracts = float(oi_contracts_source) if oi_contracts_source is not None else None
                 volume = float(ticker.get("volume", 0)) if ticker.get("volume") is not None else 0.0
                 quotes = ticker.get("quotes", {})
                 bid = float(quotes.get("best_bid") or ticker.get("best_bid")) if (quotes.get("best_bid") or ticker.get("best_bid")) is not None else None
@@ -1290,7 +1420,7 @@ def fetch_delta_options():
                 iv = float(quotes.get("mark_iv") or quotes.get("ask_iv") or "0") * 100
                 ts_val = ticker.get("timestamp") or ticker.get("updated_at")
                 
-                chain.append({"Product_ID": opt.get("id"), "Symbol": sym, "Expiry": nearest_expiry, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val})
+                chain.append({"Product_ID": opt.get("id"), "Symbol": sym, "Expiry": nearest_expiry, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "OI_USD_Source": oi_usd_source, "OI_Contracts_Source": oi_contracts_source, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val})
             except (ValueError, TypeError): continue
 
         df = pd.DataFrame(chain)
@@ -2106,19 +2236,21 @@ def _render_market_dashboard():
             if "Expiry" in missing_columns and loaded_expiry:
                 export_df["Expiry"] = loaded_expiry
 
-            null_required = [
-                column for column in contract_export_columns
-                if export_df[column].isna().any()
-            ]
-            incomplete_reasons = []
-            if not is_chain_complete:
-                incomplete_reasons.append("existing API/product pagination completeness check failed")
-            if missing_columns:
-                incomplete_reasons.append("missing fields: " + ", ".join(missing_columns))
-            if null_required:
-                incomplete_reasons.append("null values in: " + ", ".join(null_required))
+            # Export original API OI numeric values (Decimal/int) while the existing
+            # calculation columns remain normalized floats for backward compatibility.
+            if "OI_Contracts_Source" in export_df.columns:
+                export_df["OI_Contracts"] = export_df["OI_Contracts_Source"]
+            if "OI_USD_Source" in export_df.columns:
+                export_df["OI_USD"] = export_df["OI_USD_Source"]
 
-            export_complete = not incomplete_reasons
+            export_complete, incomplete_reasons = _validate_contract_export(
+                export_df[contract_export_columns], loaded_expiry, is_chain_complete
+            )
+            if missing_columns:
+                incomplete_reasons.extend(
+                    reason for reason in ["missing fields: " + ", ".join(missing_columns)]
+                    if reason not in incomplete_reasons
+                )
             export_status = "COMPLETE" if export_complete else "INCOMPLETE"
             snapshot_text += (
                 f"EXPORT STATUS: {export_status} — {len(export_df)} contract rows; "
@@ -2138,5 +2270,8 @@ def _render_market_dashboard():
         unsafe_allow_html=True,
     )
 
-_render_dashboard()
+if os.environ.get("BTC_EXPORT_SELF_TEST") == "1":
+    _run_contract_export_validation_tests()
+else:
+    _render_dashboard()
 
