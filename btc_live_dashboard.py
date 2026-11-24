@@ -879,11 +879,11 @@ def _format_options_filter_result(key, result):
 
     if key == "volume_oi":
         return (
-            f'{result.get("classification", "N/A")} · '
-            f'Call {float(result.get("call_ratio")):.3f} / '
-            f'Put {float(result.get("put_ratio")):.3f} · '
-            f'{result.get("direction", "N/A")}',
-            "OK",
+            f'Call {float(result.get("call_ratio")):.3f}× / '
+            f'Put {float(result.get("put_ratio")):.3f}× · '
+            f'{result.get("relative_volume", "N/A")} · '
+            f'{result.get("ratio_comparison", "N/A")}',
+            "OK · descriptive only; 0.5 and 1.5 are research heuristics, not established market thresholds",
         )
 
     if key == "oi_migration":
@@ -957,11 +957,14 @@ def render_options_filter_panel(payload):
                 primary = f'{float(result.get("call_iv_premium_pct")):+.2f}%'
                 secondary = "Call IV Premium"
             elif key == "volume_oi":
-                primary = str(result.get("classification", "N/A"))
+                primary = (
+                    f'Call {float(result.get("call_ratio")):.3f}× / '
+                    f'Put {float(result.get("put_ratio")):.3f}×'
+                )
                 secondary = (
-                    f'Call {float(result.get("call_ratio")):.3f} / '
-                    f'Put {float(result.get("put_ratio")):.3f} · '
-                    f'{result.get("direction", "N/A")}'
+                    f'{result.get("relative_volume", "N/A")} · '
+                    f'{result.get("ratio_comparison", "N/A")} · '
+                    '0.5 and 1.5 are research heuristics, not established market thresholds'
                 )
             elif key == "oi_migration":
                 primary = str(result.get("classification", "N/A"))
