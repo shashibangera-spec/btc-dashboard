@@ -355,6 +355,7 @@ def _run_contract_export_validation_tests():
 
     duplicate = dict(base)
     duplicate["Symbol"] = "P-BTC-100000-301226"
+    duplicate["Type"] = "Put"
     assert not _validate_contract_export(pd.DataFrame([base, duplicate]), "301226")[0]
     bad_type = dict(base, Type="CALL")
     assert not _validate_contract_export(pd.DataFrame([bad_type]), "301226")[0]
