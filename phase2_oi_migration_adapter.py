@@ -26,7 +26,7 @@ def _read_all_raw(client,snapshot_id):
     if missing["missing_columns"]: raise MissingRequiredRecordKeys("options_oi_snapshots",missing)
     return pd.DataFrame(rows,columns=list(RAW_COLUMNS))
 
-def load_phase2_oi_migration(client,*,as_of:date|None=None,region_boundaries=None):
+def load_phase2_oi_migration(client,*,as_of:date|None=None):
     """Withhold unless the immediately preceding SUCCESS run validates; never skip it."""
     snap,meta=select_canonical_snapshot(client,as_of=as_of)
     if snap is None: return {"status":"WITHHELD","reason":"CURRENT_SNAPSHOT_INVALID","current_selection":meta}
@@ -35,14 +35,27 @@ def load_phase2_oi_migration(client,*,as_of:date|None=None,region_boundaries=Non
     current=current_rows[0]; current_valid=_validate_run(current)
     if current_valid["status"]!="OK": return {"status":"WITHHELD","reason":"CURRENT_RUN_INVALID","current_validation":current_valid}
     underlying=str(current.get("underlying") or "BTCUSD")
-    history=_execute(client.table("options_collection_runs").select(",".join(RUN_COLUMNS)).eq("status","SUCCESS")
-        .eq("underlying",underlying).order("completed_at",desc=True).limit(500))
+    # Exhaustively page through successful runs; never infer adjacency from a fixed window.
+    history_query=(client.table("options_collection_runs").select(",".join(RUN_COLUMNS))
+        .eq("status","SUCCESS").eq("underlying",underlying)
+        .order("completed_at",desc=True).order("snapshot_id"))
+    history=[]; offset=0; page_size=500
+    while True:
+        page=_execute(history_query.range(offset,offset+page_size-1))
+        history.extend(page)
+        if len(page)<page_size: break
+        offset+=page_size
     missing=_missing_record_keys(history,tuple(c for c in RUN_COLUMNS if c!="underlying"))
     if missing["missing_columns"]: return {"status":"WITHHELD","reason":"RUN_HISTORY_INVALID",**missing}
-    current_time=pd.to_datetime(current["completed_at"],utc=True,errors="coerce"); earlier=[]
+    parsed=[]
     for run in history:
         stamp=pd.to_datetime(run.get("completed_at"),utc=True,errors="coerce")
-        if not pd.isna(stamp) and stamp<current_time: earlier.append((stamp,run))
+        if pd.isna(stamp):
+            return {"status":"WITHHELD","reason":"RUN_HISTORY_TIMESTAMP_INVALID",
+                "invalid_snapshot_id":run.get("snapshot_id")}
+        parsed.append((stamp,run))
+    current_time=pd.to_datetime(current["completed_at"],utc=True,errors="coerce")
+    earlier=[(stamp,run) for stamp,run in parsed if stamp<current_time]
     if not earlier: return {"status":"WITHHELD","reason":"NO_IMMEDIATELY_PRECEDING_SUCCESS_RUN",
         "current_snapshot_id":snap.snapshot_id,"current_completed_at":current["completed_at"]}
     latest=max(x[0] for x in earlier); candidates=[r for t,r in earlier if t==latest]
@@ -89,7 +102,7 @@ def load_phase2_oi_migration(client,*,as_of:date|None=None,region_boundaries=Non
     prev_raw=prev_raw[prev_raw.expiry_date.astype(str).isin(shared)]
     result=calculate_oi_migration(cur_raw,prev_raw,current_snapshot_id=snap.snapshot_id,previous_snapshot_id=previous_id,
         current_completed_at=current["completed_at"],previous_completed_at=previous["completed_at"],
-        selected_expiry=snap.expiry_date,eligible_expiries=shared,region_boundaries=region_boundaries)
+        selected_expiry=snap.expiry_date,eligible_expiries=shared)
     result.update({"pair":pair,"current_selection":meta,"eligible_expiries":shared,
         "expiry_eligibility":{"current_eligible_expiries":current_exp,"previous_eligible_expiries":previous_exp,
             "shared_eligible_expiries":shared,"current_only_expiries":sorted(set(current_exp)-set(previous_exp)),
