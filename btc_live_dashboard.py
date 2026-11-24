@@ -9,6 +9,7 @@ import logging
 import os
 import json
 import html
+from decimal import Decimal, InvalidOperation
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import timezone, timedelta
@@ -233,6 +234,336 @@ hr { border-color: var(--border) !important; margin: 0.6rem 0 !important; }
 # CONFIGURATION & STATE
 # ==========================================
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+def _extract_option_oi_values(ticker):
+    """Return source OI values without coercion; zero is a valid primary value."""
+    oi_contracts = ticker.get("oi_contracts")
+    if oi_contracts is None:
+        oi_contracts = ticker.get("oi")
+    return oi_contracts, ticker.get("oi_value_usd")
+
+
+def _decimal_value(value):
+    """Parse a finite decimal without routing source values through binary float."""
+    if value is None or isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        number = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return number if number.is_finite() else None
+
+
+def _build_option_chain_frame(chain):
+    """Build the fetched chain while keeping original API OI values in object columns."""
+    frame = pd.DataFrame(chain)
+    # DataFrame inference can coerce [large_int, None] to float64 and round the
+    # integer. Rebuild source-only columns from the original records as object
+    # dtype; calculation columns remain the float-normalized values in each row.
+    for column in ("OI_Contracts_Source", "OI_USD_Source"):
+        if any(column in row for row in chain):
+            frame[column] = pd.Series(
+                [row.get(column) for row in chain], index=frame.index, dtype=object
+            )
+    return frame
+
+
+def _prepare_contract_export(raw_chain_df, selected_expiry, existing_chain_complete):
+    """Run the production snapshot export preparation, validation and TSV serialization."""
+    columns = [
+        "Product_ID", "Symbol", "Expiry", "Type", "Strike",
+        "OI_Contracts", "OI_USD",
+    ]
+    export_df = raw_chain_df.copy()
+    missing_columns = [column for column in columns if column not in export_df.columns]
+    for column in missing_columns:
+        export_df[column] = np.nan
+    if "Expiry" in missing_columns and selected_expiry:
+        export_df["Expiry"] = selected_expiry
+
+    # Source columns are deliberately object dtype, preserving API int/Decimal/
+    # string values; calculation columns remain the existing float-normalized data.
+    if "OI_Contracts_Source" in export_df.columns:
+        export_df["OI_Contracts"] = pd.Series(
+            export_df["OI_Contracts_Source"].tolist(), index=export_df.index, dtype=object
+        )
+    if "OI_USD_Source" in export_df.columns:
+        export_df["OI_USD"] = pd.Series(
+            export_df["OI_USD_Source"].tolist(), index=export_df.index, dtype=object
+        )
+
+    complete, reasons = _validate_contract_export(
+        export_df[columns], selected_expiry, existing_chain_complete
+    )
+    if missing_columns:
+        missing_reason = "missing fields: " + ", ".join(missing_columns)
+        if missing_reason not in reasons:
+            reasons.append(missing_reason)
+    tsv = export_df[columns].to_csv(
+        sep="\t", index=False, na_rep="NULL", lineterminator="\n"
+    )
+    return export_df, ("COMPLETE" if complete else "INCOMPLETE"), reasons, tsv
+
+
+def _validate_contract_export(frame, selected_expiry, existing_chain_complete=True):
+    """Return (complete, reasons) after validating every required exported field."""
+    required = ["Product_ID", "Symbol", "Expiry", "Type", "Strike", "OI_Contracts", "OI_USD"]
+    reasons = []
+    if not existing_chain_complete:
+        reasons.append("existing API/product pagination completeness check failed")
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        reasons.append("missing fields: " + ", ".join(missing))
+        return False, reasons
+    if frame.empty:
+        return False, reasons + ["contract export contains no rows"]
+    if selected_expiry is None or str(selected_expiry).strip() == "":
+        reasons.append("selected expiry is unavailable")
+
+    # Product IDs are numeric identifiers: compare canonical integral values,
+    # not their textual formatting (e.g. 101 and 101.0 are the same ID).
+    canonical_ids = []
+    symbols = []
+    selected_expiry_text = str(selected_expiry).strip() if selected_expiry is not None else ""
+    for row_index, row in frame.iterrows():
+        product_id = row["Product_ID"]
+        pid = _decimal_value(product_id)
+        if pid is None or pid <= 0 or pid != pid.to_integral_value():
+            reasons.append(f"row {row_index}: invalid Product_ID")
+        else:
+            canonical_ids.append(int(pid))
+
+        symbol = row["Symbol"]
+        symbol_parts = None
+        if not isinstance(symbol, str) or not symbol.strip():
+            reasons.append(f"row {row_index}: missing or invalid Symbol")
+        else:
+            symbol_text = symbol.strip()
+            parts = symbol_text.split("-")
+            if (
+                len(parts) != 4 or parts[0] not in ("C", "P") or parts[1] != "BTC"
+                or not parts[2] or not parts[3].isdigit() or len(parts[3]) != 6
+            ):
+                reasons.append(f"row {row_index}: malformed BTC option Symbol")
+            else:
+                symbol_parts = parts
+                try:
+                    datetime.datetime.strptime(parts[3], "%d%m%y")
+                except ValueError:
+                    reasons.append(f"row {row_index}: symbol expiry is not a real calendar date")
+                if selected_expiry_text and parts[3] != selected_expiry_text:
+                    reasons.append(f"row {row_index}: symbol expiry does not match selected expiry")
+                if row["Type"] in ("Call", "Put") and parts[0] != ("C" if row["Type"] == "Call" else "P"):
+                    reasons.append(f"row {row_index}: Symbol side does not match option Type")
+                symbols.append(symbol_text)
+
+        expiry = row["Expiry"]
+        if expiry is None or pd.isna(expiry) or str(expiry).strip() == "":
+            reasons.append(f"row {row_index}: missing Expiry")
+        elif selected_expiry_text and str(expiry).strip() != selected_expiry_text:
+            reasons.append(f"row {row_index}: Expiry does not match selected expiry")
+
+        if row["Type"] not in ("Call", "Put"):
+            reasons.append(f"row {row_index}: invalid option Type")
+
+        strike = _decimal_value(row["Strike"])
+        if strike is None or strike <= 0:
+            reasons.append(f"row {row_index}: Strike must be numeric, finite and positive")
+        if symbol_parts is not None:
+            encoded_strike_text = symbol_parts[2].replace(",", "").strip().upper()
+            try:
+                if encoded_strike_text.endswith("K"):
+                    encoded_strike = Decimal(encoded_strike_text[:-1]) * Decimal("1000")
+                else:
+                    encoded_strike = Decimal(encoded_strike_text)
+                if not encoded_strike.is_finite() or encoded_strike <= 0:
+                    raise InvalidOperation
+                if strike is not None and encoded_strike != strike:
+                    reasons.append(f"row {row_index}: symbol strike does not match exported Strike")
+            except (InvalidOperation, TypeError, ValueError):
+                reasons.append(f"row {row_index}: invalid strike encoded in Symbol")
+
+        for column in ("OI_Contracts", "OI_USD"):
+            value = _decimal_value(row[column])
+            if value is None or value < 0:
+                reasons.append(f"row {row_index}: {column} must be numeric, finite and non-negative")
+
+    if len(canonical_ids) != len(frame):
+        reasons.append("one or more Product_ID values are missing or invalid")
+    elif len(set(canonical_ids)) != len(canonical_ids):
+        reasons.append("duplicate Product_ID values")
+    if len(symbols) != len(frame):
+        reasons.append("one or more Symbols are missing or invalid")
+    elif len(set(symbols)) != len(symbols):
+        reasons.append("duplicate Symbols")
+    return not reasons, reasons
+
+
+
+def _append_contract_export_to_snapshot(snapshot_text, raw_chain_df, loaded_expiry, existing_chain_complete):
+    """Append the already-fetched nearest-expiry chain using real snapshot line breaks."""
+    snapshot_text = snapshot_text.rstrip("\n") + "\n\n=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ===\n"
+    if raw_chain_df is None or raw_chain_df.empty:
+        snapshot_text += "EXPORT STATUS: UNAVAILABLE — raw nearest-expiry contract chain is empty or unavailable.\n"
+        return snapshot_text
+
+    export_df, export_status, incomplete_reasons, export_tsv = _prepare_contract_export(
+        raw_chain_df, loaded_expiry, existing_chain_complete
+    )
+    snapshot_text += (
+        f"EXPORT STATUS: {export_status} — {len(export_df)} contract rows; "
+        f"selected expiry: {loaded_expiry or 'UNKNOWN'}\n"
+    )
+    if incomplete_reasons:
+        snapshot_text += "INCOMPLETE REASONS: " + "; ".join(incomplete_reasons) + "\n"
+    return snapshot_text + export_tsv
+
+
+def _run_contract_export_validation_tests():
+    """Focused offline regression tests; run with BTC_EXPORT_SELF_TEST=1."""
+    import json as _json
+
+    base = {
+        "Product_ID": 101, "Symbol": "C-BTC-100000-301226",
+        "Expiry": "301226", "Type": "Call", "Strike": Decimal("100000"),
+        "OI_Contracts": Decimal("0"), "OI_USD": Decimal("0"),
+    }
+    valid, reasons = _validate_contract_export(pd.DataFrame([base]), "301226")
+    assert valid, reasons
+
+    contracts, usd = _extract_option_oi_values({"oi_contracts": 0, "oi": 77, "oi_value_usd": 0})
+    assert contracts == 0 and usd == 0
+    assert _extract_option_oi_values({"oi_contracts": None, "oi": 77})[0] == 77
+    assert _extract_option_oi_values({"oi": 0})[0] == 0
+    assert _extract_option_oi_values({"oi_contracts": None, "oi": 77.25})[0] == 77.25
+
+    for field in ("Product_ID", "Symbol", "Expiry", "Type", "Strike", "OI_Contracts", "OI_USD"):
+        bad = dict(base)
+        bad[field] = None
+        assert not _validate_contract_export(pd.DataFrame([bad]), "301226")[0], field
+
+    for field, value in (
+        ("Strike", Decimal("Infinity")), ("OI_Contracts", Decimal("NaN")),
+        ("OI_USD", Decimal("Infinity")), ("OI_Contracts", Decimal("-0.01")),
+        ("OI_USD", Decimal("-0.01")),
+    ):
+        bad = dict(base)
+        bad[field] = value
+        assert not _validate_contract_export(pd.DataFrame([bad]), "301226")[0], (field, value)
+
+    duplicate = dict(base, Product_ID=Decimal("101.0"), Symbol="P-BTC-100000-301226", Type="Put")
+    assert not _validate_contract_export(pd.DataFrame([base, duplicate]), "301226")[0]
+    for invalid_id in (0, -1, Decimal("101.5"), "not-an-id"):
+        bad = dict(base, Product_ID=invalid_id)
+        assert not _validate_contract_export(pd.DataFrame([bad]), "301226")[0], invalid_id
+
+    bad_type = dict(base, Type="CALL")
+    assert not _validate_contract_export(pd.DataFrame([bad_type]), "301226")[0]
+    bad_expiry_column = dict(base, Expiry="310127")
+    assert not _validate_contract_export(pd.DataFrame([bad_expiry_column]), "301226")[0]
+    bad_symbol_expiry = dict(base, Symbol="C-BTC-100000-310127")
+    assert not _validate_contract_export(pd.DataFrame([bad_symbol_expiry]), "301226")[0]
+    invalid_calendar_expiry = dict(base, Symbol="C-BTC-100000-311326", Expiry="311326")
+    assert not _validate_contract_export(pd.DataFrame([invalid_calendar_expiry]), "311326")[0]
+    mismatched_symbol_strike = dict(base, Symbol="C-BTC-99000-301226")
+    assert not _validate_contract_export(pd.DataFrame([mismatched_symbol_strike]), "301226")[0]
+    valid_k_strike = dict(base, Symbol="C-BTC-100K-301226")
+    assert _validate_contract_export(pd.DataFrame([valid_k_strike]), "301226")[0]
+    assert not _validate_contract_export(pd.DataFrame([base]), "301226", existing_chain_complete=False)[0]
+
+    precise = Decimal("123456789.1234567890123456789")
+    parsed = _json.loads('{"oi_value_usd":123456789.1234567890123456789}', parse_float=Decimal)
+    assert parsed["oi_value_usd"] == precise
+    assert str(parsed["oi_value_usd"]) == "123456789.1234567890123456789"
+    precision_csv = pd.DataFrame([dict(base, OI_USD=parsed["oi_value_usd"])]).to_csv(index=False)
+    assert "123456789.1234567890123456789" in precision_csv
+    # Exercise the exact fetch-chain frame builder and production snapshot TSV path.
+    huge_integer = 9007199254740993
+    long_decimal = Decimal("123456789.12345678901234567890123456789")
+    source_chain = [
+        {
+            "Product_ID": 201, "Symbol": "C-BTC-100000-301226",
+            "Expiry": "301226", "Type": "Call", "Strike": 100000.0,
+            "OI_Contracts": float(huge_integer), "OI_USD": 1.0,
+            "OI_Contracts_Source": huge_integer,
+            "OI_USD_Source": long_decimal,
+        },
+        {
+            "Product_ID": 202, "Symbol": "P-BTC-101000-301226",
+            "Expiry": "301226", "Type": "Put", "Strike": 101000.0,
+            "OI_Contracts": np.nan, "OI_USD": np.nan,
+            "OI_Contracts_Source": None, "OI_USD_Source": None,
+        },
+        {
+            "Product_ID": 203, "Symbol": "C-BTC-102000-301226",
+            "Expiry": "301226", "Type": "Call", "Strike": 102000.0,
+            "OI_Contracts": 123.0, "OI_USD": 456.0,
+            "OI_Contracts_Source": Decimal("123.000000000000000000123456789"),
+            "OI_USD_Source": "4567890123456789.1234567890123456789",
+        },
+        {
+            "Product_ID": 204, "Symbol": "P-BTC-103000-301226",
+            "Expiry": "301226", "Type": "Put", "Strike": 103000.0,
+            "OI_Contracts": 789.0, "OI_USD": 987.0,
+            "OI_Contracts_Source": "7890000000000000.0000000000000000007",
+            "OI_USD_Source": 9876543210987654321,
+        },
+    ]
+    fetched_frame = _build_option_chain_frame(source_chain)
+    assert fetched_frame["OI_Contracts_Source"].dtype == object
+    assert fetched_frame.loc[0, "OI_Contracts_Source"] == huge_integer
+    assert type(fetched_frame.loc[0, "OI_Contracts_Source"]) is int
+    assert fetched_frame.loc[1, "OI_Contracts_Source"] is None
+    assert fetched_frame.loc[2, "OI_Contracts_Source"] == Decimal("123.000000000000000000123456789")
+    assert fetched_frame.loc[3, "OI_Contracts_Source"] == "7890000000000000.0000000000000000007"
+    assert fetched_frame.loc[0, "OI_Contracts"] == float(huge_integer)
+
+    exported_frame, export_status, export_reasons, tsv = _prepare_contract_export(
+        fetched_frame, "301226", existing_chain_complete=False
+    )
+    assert export_status == "INCOMPLETE"
+    assert any("completeness check failed" in reason for reason in export_reasons)
+    tsv_lines = tsv.splitlines()
+    assert tsv_lines[0].split("\t")[-2:] == ["OI_Contracts", "OI_USD"]
+    assert "9007199254740993" in tsv_lines[1]
+    assert "123456789.12345678901234567890123456789" in tsv_lines[1]
+    assert tsv_lines[2].endswith("NULL\tNULL")
+    assert "123.000000000000000000123456789" in tsv_lines[3]
+    assert "4567890123456789.1234567890123456789" in tsv_lines[3]
+    assert "7890000000000000.0000000000000000007" in tsv_lines[4]
+    assert "9876543210987654321" in tsv_lines[4]
+    # Real TSV separators and record terminators are present in the serialized output.
+    assert "\t" in tsv_lines[0] and "\\t" not in tsv_lines[0]
+    assert tsv.count("\n") == len(tsv_lines)
+    assert tsv.endswith("\n")
+    assert len(tsv_lines) == len(source_chain) + 1
+
+    # A fully valid subset still reaches COMPLETE; the missing-OI row above is rejected.
+    complete_frame, complete_status, complete_reasons, complete_tsv = _prepare_contract_export(
+        fetched_frame.iloc[[0, 2, 3]].copy(), "301226", existing_chain_complete=True
+    )
+    assert complete_status == "COMPLETE", complete_reasons
+    assert len(complete_frame) == 3 and len(complete_tsv.splitlines()) == 4
+
+    # Exercise the exact helper used by the dashboard snapshot renderer.
+    snapshot = _append_contract_export_to_snapshot(
+        "BASE DASHBOARD SNAPSHOT\n", fetched_frame, "301226", existing_chain_complete=False
+    )
+    snapshot_lines = snapshot.splitlines()
+    assert snapshot_lines[0] == "BASE DASHBOARD SNAPSHOT"
+    assert snapshot_lines[1] == ""
+    assert snapshot_lines[2] == "=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ==="
+    assert snapshot_lines[3].startswith("EXPORT STATUS: INCOMPLETE — 4 contract rows;")
+    assert snapshot_lines[4].startswith("INCOMPLETE REASONS:")
+    assert snapshot_lines[5].split("\t")[-2:] == ["OI_Contracts", "OI_USD"]
+    assert "9007199254740993" in snapshot_lines[6]
+    assert snapshot_lines[7].endswith("NULL\tNULL")
+    assert "123456789.12345678901234567890123456789" in snapshot_lines[6]
+
+    # Float calculation columns remain distinct from exact source columns.
+    assert fetched_frame.loc[0, "OI_Contracts"] == float(huge_integer)
+    assert fetched_frame.loc[0, "OI_Contracts_Source"] == huge_integer
+    print("PASS: validator safeguards; fetch-chain object source preservation; mixed int/string/Decimal/missing OI; exact production TSV export; float calculation columns unchanged")
 
 def _sum_if_complete(series):
     """Return a sum only when every expected observation is present and valid."""
@@ -1220,7 +1551,7 @@ def fetch_delta_options():
                 break
             try:
                 response = requests.get(url, timeout=10); response.raise_for_status()
-                data = response.json()
+                data = response.json(parse_float=Decimal)
                 if not isinstance(data, dict): break
                 page_results = data.get("result", [])
                 if not isinstance(page_results, list): break
@@ -1277,8 +1608,9 @@ def fetch_delta_options():
                     strike = float(raw_strike.replace("K", "")) * 1000 if "K" in raw_strike else float(raw_strike)
                 
                 strike = float(strike); opt_type = "Call" if opt.get("contract_type") == "call_options" else "Put"
-                oi_usd = float(ticker.get("oi_value_usd")) if ticker.get("oi_value_usd") is not None else None
-                oi_contracts = float(ticker.get("oi_contracts") or ticker.get("oi")) if (ticker.get("oi_contracts") or ticker.get("oi")) is not None else None
+                oi_contracts_source, oi_usd_source = _extract_option_oi_values(ticker)
+                oi_usd = float(oi_usd_source) if oi_usd_source is not None else None
+                oi_contracts = float(oi_contracts_source) if oi_contracts_source is not None else None
                 volume = float(ticker.get("volume", 0)) if ticker.get("volume") is not None else 0.0
                 quotes = ticker.get("quotes", {})
                 bid = float(quotes.get("best_bid") or ticker.get("best_bid")) if (quotes.get("best_bid") or ticker.get("best_bid")) is not None else None
@@ -1290,10 +1622,10 @@ def fetch_delta_options():
                 iv = float(quotes.get("mark_iv") or quotes.get("ask_iv") or "0") * 100
                 ts_val = ticker.get("timestamp") or ticker.get("updated_at")
                 
-                chain.append({"Symbol": sym, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val})
+                chain.append({"Product_ID": opt.get("id"), "Symbol": sym, "Expiry": nearest_expiry, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "OI_USD_Source": oi_usd_source, "OI_Contracts_Source": oi_contracts_source, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val})
             except (ValueError, TypeError): continue
 
-        df = pd.DataFrame(chain)
+        df = _build_option_chain_frame(chain)
         if df.empty: return pd.DataFrame(), nearest_expiry, expiry_dt, expiry_source, contract_size, None, False
 
         expected_symbol_set = set(str(sym) for sym in expected_symbols)
@@ -2086,6 +2418,11 @@ def _render_market_dashboard():
             oi="$" + format(oi_usd / 1e6, ".2f") + "M" if oi_usd is not None else "N/A",
             basis=format(sp_prem, ".4f") + "%" if sp_prem is not None else "N/A",
         )
+        # Append the already-fetched nearest-expiry contract chain. Do not issue another API request.
+        snapshot_text = _append_contract_export_to_snapshot(
+            snapshot_text, raw_chain_df, loaded_expiry, is_chain_complete
+        )
+
         st.code(snapshot_text, language="text")
     
     
@@ -2094,5 +2431,8 @@ def _render_market_dashboard():
         unsafe_allow_html=True,
     )
 
-_render_dashboard()
+if os.environ.get("BTC_EXPORT_SELF_TEST") == "1":
+    _run_contract_export_validation_tests()
+else:
+    _render_dashboard()
 
