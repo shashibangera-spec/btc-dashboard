@@ -269,37 +269,47 @@ def _validate_contract_export(frame, selected_expiry, existing_chain_complete=Tr
     if selected_expiry is None or str(selected_expiry).strip() == "":
         reasons.append("selected expiry is unavailable")
 
-    ids = []
+    # Product IDs are numeric identifiers: compare canonical integral values,
+    # not their textual formatting (e.g. 101 and 101.0 are the same ID).
+    canonical_ids = []
     symbols = []
+    selected_expiry_text = str(selected_expiry).strip() if selected_expiry is not None else ""
     for row_index, row in frame.iterrows():
         product_id = row["Product_ID"]
-        try:
-            pid = _decimal_value(product_id)
-            if pid is None or pid <= 0 or pid != pid.to_integral_value():
-                reasons.append(f"row {row_index}: invalid Product_ID")
-            else:
-                ids.append(str(pid))
-        except Exception:
+        pid = _decimal_value(product_id)
+        if pid is None or pid <= 0 or pid != pid.to_integral_value():
             reasons.append(f"row {row_index}: invalid Product_ID")
+        else:
+            canonical_ids.append(int(pid))
 
         symbol = row["Symbol"]
+        symbol_parts = None
         if not isinstance(symbol, str) or not symbol.strip():
             reasons.append(f"row {row_index}: missing or invalid Symbol")
         else:
-            parts = symbol.strip().split("-")
+            symbol_text = symbol.strip()
+            parts = symbol_text.split("-")
             if (
-                len(parts) < 4 or parts[0] not in ("C", "P") or parts[1] != "BTC"
+                len(parts) != 4 or parts[0] not in ("C", "P") or parts[1] != "BTC"
                 or not parts[2] or not parts[3].isdigit() or len(parts[3]) != 6
             ):
                 reasons.append(f"row {row_index}: malformed BTC option Symbol")
-            elif row["Type"] in ("Call", "Put") and parts[0] != ("C" if row["Type"] == "Call" else "P"):
-                reasons.append(f"row {row_index}: Symbol side does not match option Type")
-            symbols.append(symbol.strip())
+            else:
+                symbol_parts = parts
+                try:
+                    datetime.datetime.strptime(parts[3], "%d%m%y")
+                except ValueError:
+                    reasons.append(f"row {row_index}: symbol expiry is not a real calendar date")
+                if selected_expiry_text and parts[3] != selected_expiry_text:
+                    reasons.append(f"row {row_index}: symbol expiry does not match selected expiry")
+                if row["Type"] in ("Call", "Put") and parts[0] != ("C" if row["Type"] == "Call" else "P"):
+                    reasons.append(f"row {row_index}: Symbol side does not match option Type")
+                symbols.append(symbol_text)
 
         expiry = row["Expiry"]
         if expiry is None or pd.isna(expiry) or str(expiry).strip() == "":
             reasons.append(f"row {row_index}: missing Expiry")
-        elif selected_expiry is not None and str(expiry).strip() != str(selected_expiry).strip():
+        elif selected_expiry_text and str(expiry).strip() != selected_expiry_text:
             reasons.append(f"row {row_index}: Expiry does not match selected expiry")
 
         if row["Type"] not in ("Call", "Put"):
@@ -308,15 +318,28 @@ def _validate_contract_export(frame, selected_expiry, existing_chain_complete=Tr
         strike = _decimal_value(row["Strike"])
         if strike is None or strike <= 0:
             reasons.append(f"row {row_index}: Strike must be numeric, finite and positive")
+        if symbol_parts is not None:
+            encoded_strike_text = symbol_parts[2].replace(",", "").strip().upper()
+            try:
+                if encoded_strike_text.endswith("K"):
+                    encoded_strike = Decimal(encoded_strike_text[:-1]) * Decimal("1000")
+                else:
+                    encoded_strike = Decimal(encoded_strike_text)
+                if not encoded_strike.is_finite() or encoded_strike <= 0:
+                    raise InvalidOperation
+                if strike is not None and encoded_strike != strike:
+                    reasons.append(f"row {row_index}: symbol strike does not match exported Strike")
+            except (InvalidOperation, TypeError, ValueError):
+                reasons.append(f"row {row_index}: invalid strike encoded in Symbol")
 
         for column in ("OI_Contracts", "OI_USD"):
             value = _decimal_value(row[column])
             if value is None or value < 0:
                 reasons.append(f"row {row_index}: {column} must be numeric, finite and non-negative")
 
-    if len(ids) != len(frame):
+    if len(canonical_ids) != len(frame):
         reasons.append("one or more Product_ID values are missing or invalid")
-    elif len(set(ids)) != len(ids):
+    elif len(set(canonical_ids)) != len(canonical_ids):
         reasons.append("duplicate Product_ID values")
     if len(symbols) != len(frame):
         reasons.append("one or more Symbols are missing or invalid")
@@ -341,26 +364,41 @@ def _run_contract_export_validation_tests():
     assert contracts == 0 and usd == 0
     assert _extract_option_oi_values({"oi_contracts": None, "oi": 77})[0] == 77
     assert _extract_option_oi_values({"oi": 0})[0] == 0
+    assert _extract_option_oi_values({"oi_contracts": None, "oi": 77.25})[0] == 77.25
 
     for field in ("Product_ID", "Symbol", "Expiry", "Type", "Strike", "OI_Contracts", "OI_USD"):
         bad = dict(base)
         bad[field] = None
         assert not _validate_contract_export(pd.DataFrame([bad]), "301226")[0], field
 
-    for field, value in (("Strike", Decimal("Infinity")), ("OI_Contracts", Decimal("NaN")),
-                         ("OI_USD", Decimal("Infinity"))):
+    for field, value in (
+        ("Strike", Decimal("Infinity")), ("OI_Contracts", Decimal("NaN")),
+        ("OI_USD", Decimal("Infinity")), ("OI_Contracts", Decimal("-0.01")),
+        ("OI_USD", Decimal("-0.01")),
+    ):
         bad = dict(base)
         bad[field] = value
         assert not _validate_contract_export(pd.DataFrame([bad]), "301226")[0], (field, value)
 
-    duplicate = dict(base)
-    duplicate["Symbol"] = "P-BTC-100000-301226"
-    duplicate["Type"] = "Put"
+    duplicate = dict(base, Product_ID=Decimal("101.0"), Symbol="P-BTC-100000-301226", Type="Put")
     assert not _validate_contract_export(pd.DataFrame([base, duplicate]), "301226")[0]
+    for invalid_id in (0, -1, Decimal("101.5"), "not-an-id"):
+        bad = dict(base, Product_ID=invalid_id)
+        assert not _validate_contract_export(pd.DataFrame([bad]), "301226")[0], invalid_id
+
     bad_type = dict(base, Type="CALL")
     assert not _validate_contract_export(pd.DataFrame([bad_type]), "301226")[0]
-    bad_expiry = dict(base, Expiry="310127")
-    assert not _validate_contract_export(pd.DataFrame([bad_expiry]), "301226")[0]
+    bad_expiry_column = dict(base, Expiry="310127")
+    assert not _validate_contract_export(pd.DataFrame([bad_expiry_column]), "301226")[0]
+    bad_symbol_expiry = dict(base, Symbol="C-BTC-100000-310127")
+    assert not _validate_contract_export(pd.DataFrame([bad_symbol_expiry]), "301226")[0]
+    invalid_calendar_expiry = dict(base, Symbol="C-BTC-100000-311326", Expiry="311326")
+    assert not _validate_contract_export(pd.DataFrame([invalid_calendar_expiry]), "311326")[0]
+    mismatched_symbol_strike = dict(base, Symbol="C-BTC-99000-301226")
+    assert not _validate_contract_export(pd.DataFrame([mismatched_symbol_strike]), "301226")[0]
+    valid_k_strike = dict(base, Symbol="C-BTC-100K-301226")
+    assert _validate_contract_export(pd.DataFrame([valid_k_strike]), "301226")[0]
+    assert not _validate_contract_export(pd.DataFrame([base]), "301226", existing_chain_complete=False)[0]
 
     precise = Decimal("123456789.1234567890123456789")
     parsed = _json.loads('{"oi_value_usd":123456789.1234567890123456789}', parse_float=Decimal)
@@ -368,8 +406,7 @@ def _run_contract_export_validation_tests():
     assert str(parsed["oi_value_usd"]) == "123456789.1234567890123456789"
     precision_csv = pd.DataFrame([dict(base, OI_USD=parsed["oi_value_usd"])]).to_csv(index=False)
     assert "123456789.1234567890123456789" in precision_csv
-    print("PASS: zero OI, fallback semantics, missing values, infinity, NaN, duplicate Product IDs, invalid Type, expiry mismatch, precision preservation")
-
+    print("PASS: canonical Product IDs, invalid/fractional IDs, symbol expiry/date/strike, incomplete upstream chain, zero/fallback OI, missing values, non-finite and negative OI, precision")
 
 def _sum_if_complete(series):
     """Return a sum only when every expected observation is present and valid."""
