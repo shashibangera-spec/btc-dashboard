@@ -2,18 +2,36 @@
 from datetime import date, datetime, timezone
 import pandas as pd
 from options_filters import (DERIVED_COLUMNS, RAW_COLUMNS, RUN_COLUMNS, _execute,
-    _missing_record_keys, _run_is_complete, _iso_date, validate_raw_snapshot,
+    _missing_record_keys, _iso_date, validate_raw_snapshot,
     select_canonical_snapshot, MissingRequiredRecordKeys)
 from phase2_oi_migration import calculate_oi_migration
 
 def _validate_run(run):
-    missing=_missing_record_keys([run],tuple(c for c in RUN_COLUMNS if c!="underlying"))
+    required_columns=tuple(c for c in RUN_COLUMNS if c!="underlying")
+    missing=_missing_record_keys([run],required_columns)
     if missing["missing_columns"]: return {"status":"INVALID","reason":"MISSING_RUN_COLUMNS",**missing}
-    if not _run_is_complete(run): return {"status":"INVALID","reason":"RUN_COUNTER_MISMATCH_OR_NOT_SUCCESS"}
+    if run.get("status")!="SUCCESS":
+        return {"status":"INVALID","reason":"RUN_NOT_SUCCESS"}
+    counter_columns=("expected_contracts","received_contracts","inserted_contracts")
+    missing_counters=[name for name in counter_columns if name not in run or run[name] is None]
+    if missing_counters:
+        return {"status":"INVALID","reason":"RUN_COUNTERS_MISSING","missing_counters":missing_counters}
+    invalid_counters={}
+    for name in counter_columns:
+        value=run[name]
+        if isinstance(value,bool) or not isinstance(value,int):
+            invalid_counters[name]="NOT_INTEGER"
+        elif value<0:
+            invalid_counters[name]="NEGATIVE"
+    if invalid_counters:
+        return {"status":"INVALID","reason":"RUN_COUNTERS_INVALID","invalid_counters":invalid_counters}
+    counters={name:run[name] for name in counter_columns}
+    if len(set(counters.values()))!=1:
+        return {"status":"INVALID","reason":"RUN_COUNTERS_MISMATCH","counters":counters}
     if not run.get("snapshot_id") or not run.get("completed_at"): return {"status":"INVALID","reason":"INVALID_RUN_IDENTITY"}
     if pd.isna(pd.to_datetime(run.get("completed_at"),utc=True,errors="coerce")):
         return {"status":"INVALID","reason":"INVALID_COMPLETION_TIMESTAMP"}
-    return {"status":"OK"}
+    return {"status":"OK","counters":counters}
 
 def _read_all_raw(client,snapshot_id):
     query=client.table("options_oi_snapshots").select(",".join(RAW_COLUMNS)).eq("snapshot_id",snapshot_id)

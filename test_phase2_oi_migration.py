@@ -223,3 +223,83 @@ def test_adapter_withholds_when_history_query_fails(monkeypatch):
     db=adapter_db(invalid_previous=False); db["history_query_raises"]=True
     loader=load_adapter(monkeypatch); r=loader(Client(db),as_of=date(2026,11,25))
     assert r["status"]=="WITHHELD" and r["reason"]=="RUN_HISTORY_QUERY_FAILED"
+
+
+def _run_with_counter_change(db,snapshot_id,change):
+    run=next(r for r in db["options_collection_runs"] if r["snapshot_id"]==snapshot_id)
+    change(run)
+    return run
+
+@pytest.mark.parametrize("counter",("expected_contracts","received_contracts","inserted_contracts"))
+def test_adapter_withholds_when_all_run_counters_are_null(monkeypatch,counter):
+    db=adapter_db(invalid_previous=False)
+    run=_run_with_counter_change(db,"current",lambda r:r.update(
+        expected_contracts=None,received_contracts=None,inserted_contracts=None))
+    loader=load_adapter(monkeypatch); result=loader(Client(db),as_of=date(2026,11,25))
+    assert result["status"]=="WITHHELD" and result["reason"]=="CURRENT_RUN_INVALID"
+    assert result["current_validation"]["reason"]=="RUN_COUNTERS_MISSING"
+
+@pytest.mark.parametrize("counter",("expected_contracts","received_contracts","inserted_contracts"))
+@pytest.mark.parametrize("mode",("missing","null"))
+def test_adapter_withholds_when_each_required_counter_is_missing_or_null(monkeypatch,counter,mode):
+    db=adapter_db(invalid_previous=False)
+    def change(run):
+        if mode=="missing": run.pop(counter)
+        else: run[counter]=None
+    _run_with_counter_change(db,"current",change)
+    loader=load_adapter(monkeypatch); result=loader(Client(db),as_of=date(2026,11,25))
+    assert result["status"]=="WITHHELD" and result["reason"]=="CURRENT_RUN_INVALID"
+    assert result["current_validation"]["reason"] in ("MISSING_RUN_COLUMNS","RUN_COUNTERS_MISSING")
+
+@pytest.mark.parametrize("counter",("expected_contracts","received_contracts","inserted_contracts"))
+def test_adapter_withholds_when_a_run_counter_is_negative(monkeypatch,counter):
+    db=adapter_db(invalid_previous=False)
+    _run_with_counter_change(db,"current",lambda r:r.update({counter:-1}))
+    loader=load_adapter(monkeypatch); result=loader(Client(db),as_of=date(2026,11,25))
+    assert result["status"]=="WITHHELD"
+    assert result["current_validation"]["reason"]=="RUN_COUNTERS_INVALID"
+    assert result["current_validation"]["invalid_counters"][counter]=="NEGATIVE"
+
+@pytest.mark.parametrize("counter",("expected_contracts","received_contracts","inserted_contracts"))
+@pytest.mark.parametrize("value",[1.5,"12.5","not-a-count",True,False])
+def test_adapter_withholds_when_a_run_counter_is_fractional_malformed_or_boolean(monkeypatch,counter,value):
+    db=adapter_db(invalid_previous=False)
+    _run_with_counter_change(db,"current",lambda r:r.update({counter:value}))
+    loader=load_adapter(monkeypatch); result=loader(Client(db),as_of=date(2026,11,25))
+    assert result["status"]=="WITHHELD"
+    assert result["current_validation"]["reason"]=="RUN_COUNTERS_INVALID"
+    assert result["current_validation"]["invalid_counters"][counter]=="NOT_INTEGER"
+
+def test_adapter_withholds_when_run_counters_are_unequal(monkeypatch):
+    db=adapter_db(invalid_previous=False)
+    _run_with_counter_change(db,"current",lambda r:r.update(inserted_contracts=r["inserted_contracts"]-1))
+    loader=load_adapter(monkeypatch); result=loader(Client(db),as_of=date(2026,11,25))
+    assert result["status"]=="WITHHELD"
+    assert result["current_validation"]["reason"]=="RUN_COUNTERS_MISMATCH"
+
+def test_adapter_accepts_valid_equal_nonnegative_integer_run_counters(monkeypatch):
+    db=adapter_db(invalid_previous=False)
+    loader=load_adapter(monkeypatch); result=loader(Client(db),as_of=date(2026,11,25))
+    assert result["status"]=="OK"
+    current_run=next(r for r in db["options_collection_runs"] if r["snapshot_id"]=="current")
+    assert result["pair_validation"]["current_run_validation"]["counters"]=={
+        "expected_contracts":current_run["expected_contracts"],
+        "received_contracts":current_run["received_contracts"],
+        "inserted_contracts":current_run["inserted_contracts"]}
+
+@pytest.mark.parametrize("snapshot_id,counter,value,expected_reason",[
+    ("current","received_contracts",None,"CURRENT_RUN_INVALID"),
+    ("immediate-invalid","inserted_contracts",-1,"IMMEDIATELY_PRECEDING_SUCCESS_RUN_INVALID"),
+])
+def test_adapter_withholds_invalid_current_or_immediate_predecessor_without_older_fallback(
+        monkeypatch,snapshot_id,counter,value,expected_reason):
+    db=adapter_db(invalid_previous=False)
+    _run_with_counter_change(db,snapshot_id,lambda r:r.update({counter:value}))
+    loader=load_adapter(monkeypatch); result=loader(Client(db),as_of=date(2026,11,25))
+    assert result["status"]=="WITHHELD" and result["reason"]==expected_reason
+    if snapshot_id=="current":
+        assert result["current_validation"]["reason"]=="RUN_COUNTERS_MISSING"
+    else:
+        assert result["pair"]["previous_snapshot_id"]=="immediate-invalid"
+        assert result["pair"]["previous_snapshot_id"]!="older-valid"
+        assert result["previous_validation"]["reason"]=="RUN_COUNTERS_INVALID"
