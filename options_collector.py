@@ -68,6 +68,39 @@ def to_int(value):
     return int(result)
 
 
+def extract_oi_contracts(ticker):
+    """Prefer documented REST 'oi'; use legacy 'oi_contracts' only if absent."""
+    raw = ticker.get("oi") if "oi" in ticker else ticker.get("oi_contracts")
+    return to_float(raw)
+
+
+def validate_contract_identities(tickers):
+    product_ids = [
+        to_int(row.get("product_id") if row.get("product_id") is not None else row.get("id"))
+        for row in tickers
+    ]
+    symbols = [row.get("symbol") or row.get("product_symbol") for row in tickers]
+    if any(value is None for value in product_ids) or any(not value for value in symbols):
+        return False, "MISSING_CONTRACT_IDENTITY"
+    if len(set(product_ids)) != len(product_ids):
+        return False, "DUPLICATE_PRODUCT_ID"
+    if len(set(str(value) for value in symbols)) != len(symbols):
+        return False, "DUPLICATE_SYMBOL"
+    return True, "OK"
+
+
+def validate_snapshot_row_identities(rows):
+    product_ids = [to_int(row.get("product_id")) for row in rows]
+    symbols = [row.get("symbol") for row in rows]
+    if any(value is None for value in product_ids) or any(not value for value in symbols):
+        return False, "MISSING_CONTRACT_IDENTITY"
+    if len(set(product_ids)) != len(product_ids):
+        return False, "DUPLICATE_PRODUCT_ID"
+    if len(set(str(value) for value in symbols)) != len(symbols):
+        return False, "DUPLICATE_SYMBOL"
+    return True, "OK"
+
+
 def expiry_from_ticker(ticker):
     for key in ("expiry_date", "settlement_time", "expiry"):
         value = ticker.get(key)
@@ -214,7 +247,7 @@ def build_snapshot_row(ticker, snapshot_id, collected_at, expiry, taker_buy=None
         "product_id": product_id,
         "symbol": str(symbol),
         "contract_status": ticker.get("state") or ticker.get("status"),
-        "oi_contracts": to_float(ticker.get("oi_contracts")),
+        "oi_contracts": extract_oi_contracts(ticker),
         "oi_value_usd": to_float(ticker.get("oi_value_usd")),
         "volume_24h": to_float(ticker.get("volume")),
         "turnover_usd": to_float(ticker.get("turnover_usd")),
@@ -377,8 +410,24 @@ def build_derived_row(snapshot_id, expiry, rows, expected_count, inserted_count)
     source_times = [row.get("collected_at") for row in rows if row.get("collected_at")]
     source_collected_at = max(source_times) if source_times else None
     status = {}
-    chain_complete = expected_count > 0 and inserted_count == expected_count and len(rows) == expected_count
-    status["chain"] = "OK" if chain_complete else "INCOMPLETE_OI_CHAIN"
+    identities_valid, identity_reason = validate_snapshot_row_identities(rows)
+    unique_product_ids = len({to_int(row.get("product_id")) for row in rows if to_int(row.get("product_id")) is not None})
+    unique_symbols = len({str(row.get("symbol")) for row in rows if row.get("symbol")})
+    chain_complete = (
+        expected_count > 0
+        and inserted_count == expected_count
+        and len(rows) == expected_count
+        and identities_valid
+        and unique_product_ids == expected_count
+        and unique_symbols == expected_count
+    )
+    status["chain"] = "OK" if chain_complete else (
+        identity_reason if not identities_valid else "INCOMPLETE_OI_CHAIN"
+    )
+    status["chain_expected_contracts"] = expected_count
+    status["chain_inserted_contracts"] = inserted_count
+    status["chain_unique_product_ids"] = unique_product_ids
+    status["chain_unique_symbols"] = unique_symbols
     spot, spot_status = _spot_for_rows(rows)
     status["spot"] = spot_status
 
@@ -496,8 +545,38 @@ def main():
                 total_received += len(chain_rows)
                 expected_count = expected_by_expiry[expiry]
                 print(f"{expiry_label}: expected {expected_count}; received {len(chain_rows)}")
+                discovery_expiry = [
+                    ticker for ticker in discovery_rows if expiry_from_ticker(ticker) == expiry
+                ]
+                discovery_valid, discovery_reason = validate_contract_identities(discovery_expiry)
+                chain_valid, chain_reason = validate_contract_identities(chain_rows)
                 if not chain_rows:
                     failed_expiries.append({"expiry": expiry_label, "error": "ZERO_CONTRACTS_RETURNED"})
+                    continue
+                if not discovery_valid or not chain_valid:
+                    failed_expiries.append({
+                        "expiry": expiry_label,
+                        "error": discovery_reason if not discovery_valid else chain_reason,
+                    })
+                    continue
+                expected_ids = {
+                    to_int(row.get("product_id") if row.get("product_id") is not None else row.get("id"))
+                    for row in discovery_expiry
+                }
+                received_ids = {
+                    to_int(row.get("product_id") if row.get("product_id") is not None else row.get("id"))
+                    for row in chain_rows
+                }
+                expected_symbols = {
+                    str(row.get("symbol") or row.get("product_symbol")) for row in discovery_expiry
+                }
+                received_symbols = {
+                    str(row.get("symbol") or row.get("product_symbol")) for row in chain_rows
+                }
+                if expected_ids != received_ids or expected_symbols != received_symbols:
+                    failed_expiries.append({
+                        "expiry": expiry_label, "error": "DISCOVERY_CHAIN_IDENTITY_MISMATCH",
+                    })
                     continue
 
                 spot = next(
@@ -558,7 +637,7 @@ def main():
                 if not successful_rows and inserted > 0:
                     # Recover exact persisted rows for partial insertions, keyed to this run+expiry.
                     persisted = client.table("options_oi_snapshots").select(
-                        "expiry_date,option_type,strike_price,oi_contracts,mark_price,spot_price,greeks,collected_at"
+                        "expiry_date,option_type,strike_price,product_id,symbol,oi_contracts,mark_price,spot_price,greeks,collected_at"
                     ).eq("snapshot_id", snapshot_id).eq("expiry_date", expiry_label).execute()
                     successful_rows = persisted.data or []
 

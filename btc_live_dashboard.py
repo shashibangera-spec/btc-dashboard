@@ -649,6 +649,20 @@ def _normalize_listed_option_oi(product_universe, received_chain, universe_compl
     return pd.DataFrame(rows, columns=columns)
 
 
+def _validated_btc_contract_multiplier(products):
+    """Use contract_value only when every selected product declares BTC units."""
+    values = []
+    for product in products:
+        unit = str(product.get("contract_unit_currency") or "").upper()
+        value = pd.to_numeric(pd.Series([product.get("contract_value")]), errors="coerce").iloc[0]
+        if unit != "BTC" or pd.isna(value) or not np.isfinite(float(value)) or float(value) <= 0:
+            return None
+        values.append(float(value))
+    if not values or not np.allclose(values, values[0], rtol=0.0, atol=1e-12):
+        return None
+    return values[0]
+
+
 def _select_positive_wall(frame, column):
     """Select a wall only from observed, finite, strictly positive measurements."""
     if column not in frame.columns:
@@ -658,6 +672,41 @@ def _select_positive_wall(frame, column):
     if not valid.any():
         return None
     return frame.loc[values[valid].idxmax()]
+
+
+def _validate_gamma_side(expected_products, raw_chain, side):
+    """Validate gamma coverage against every listed contract on one option side."""
+    contract_type = "call_options" if side == "Call" else "put_options"
+    expected = [p for p in expected_products if p.get("contract_type") == contract_type]
+    if not expected:
+        return "MISSING_" + side.upper() + "_CHAIN"
+    expected_symbols = [str(p.get("symbol")) for p in expected]
+    if len(set(expected_symbols)) != len(expected_symbols):
+        return "DUPLICATE_" + side.upper() + "_SYMBOL"
+    if raw_chain is None or raw_chain.empty:
+        return "MISSING_" + side.upper() + "_CONTRACTS"
+    observed = raw_chain[raw_chain["Type"] == side]
+    observed_symbols = observed["Symbol"].dropna().astype(str).tolist()
+    if len(observed_symbols) != len(expected_symbols) or set(observed_symbols) != set(expected_symbols):
+        return "INCOMPLETE_" + side.upper() + "_CONTRACTS"
+    gamma = pd.to_numeric(observed["Gamma"], errors="coerce")
+    if gamma.isna().any():
+        return "MISSING_GAMMA"
+    values = gamma.to_numpy(dtype=float)
+    if not np.isfinite(values).all() or (values < 0).any():
+        return "INVALID_GAMMA"
+    return "OK"
+
+
+def _dashboard_gex_values(frame, gamma_column, oi_column, multiplier, spot, side_complete):
+    """Return NaN for unavailable GEX and numeric zero for valid zero exposure."""
+    if not side_complete or multiplier is None or not np.isfinite(float(multiplier)) or float(multiplier) <= 0:
+        return pd.Series(np.nan, index=frame.index, dtype=float)
+    gamma = pd.to_numeric(frame[gamma_column], errors="coerce")
+    oi = pd.to_numeric(frame[oi_column], errors="coerce")
+    valid = gamma.notna() & oi.notna() & np.isfinite(gamma) & np.isfinite(oi) & (gamma >= 0) & (oi >= 0)
+    values = gamma * oi * float(multiplier) * (float(spot) ** 2) * 0.01
+    return values.where(valid, np.nan)
 
 
 def _calculate_max_pain(chain, is_chain_complete):
@@ -1591,7 +1640,7 @@ def fetch_delta_options():
         nearest_expiry = nearest["expiry_str"]; expiry_dt = nearest["dt_utc"]; expiry_source = nearest["source"]
         
         filtered_options = [opt for opt in btc_options if len(opt.get("symbol", "").split("-")) >= 4 and opt.get("symbol", "").split("-")[3] == nearest_expiry]
-        contract_size = float(filtered_options[0].get("contract_value", 0.001)) if filtered_options else 0.001
+        contract_size = _validated_btc_contract_multiplier(filtered_options)
 
         tickers, tick_complete = fetch_paginated_data(f"{BASE_URL}/tickers?contract_types=call_options,put_options&page_size=1000")
         ticker_map = {t.get("symbol"): t for t in tickers if t.get("symbol")}
@@ -1631,7 +1680,21 @@ def fetch_delta_options():
         expected_symbol_set = set(str(sym) for sym in expected_symbols)
         received_symbol_set = set(df["Symbol"].dropna().astype(str)) if not df.empty else set()
         oi_values = pd.to_numeric(df["OI_Contracts"], errors="coerce") if not df.empty else pd.Series()
-        is_chain_complete = (prod_complete and tick_complete and expected_symbol_set == received_symbol_set and len(df) == len(expected_symbol_set) and oi_values.notna().all() and np.isfinite(oi_values.to_numpy(dtype=float)).all() and (oi_values >= 0).all())
+        product_ids = [opt.get("id") for opt in filtered_options]
+        ticker_subset = [t for t in tickers if t.get("symbol") in expected_symbol_set]
+        ticker_symbols = [t.get("symbol") for t in ticker_subset]
+        ticker_ids = [t.get("product_id") if t.get("product_id") is not None else t.get("id") for t in ticker_subset]
+        identities_unique = (
+            all(value is not None for value in product_ids)
+            and len(set(str(value) for value in product_ids)) == len(product_ids)
+            and len(set(expected_symbols)) == len(expected_symbols)
+            and all(value is not None for value in ticker_ids)
+            and len(set(str(value) for value in ticker_ids)) == len(ticker_ids)
+            and len(ticker_symbols) == len(set(ticker_symbols))
+        )
+        is_chain_complete = (prod_complete and tick_complete and identities_unique and expected_symbol_set == received_symbol_set and len(df) == len(expected_symbol_set) and oi_values.notna().all() and np.isfinite(oi_values.to_numpy(dtype=float)).all() and (oi_values >= 0).all())
+        call_gamma_status = _validate_gamma_side(filtered_options, df, "Call")
+        put_gamma_status = _validate_gamma_side(filtered_options, df, "Put")
 
         df_pivot = df.pivot_table(index="Strike", columns="Type", values=["Bid", "Ask", "Mark", "OI_USD", "OI_Contracts", "Gamma", "IV", "Volume"], aggfunc="first").reset_index()
         new_cols = []
@@ -1651,6 +1714,8 @@ def fetch_delta_options():
         expected_columns = ['Bid_Call', 'Ask_Call', 'Mark_Call', 'OI_USD_Call', 'OI_Contracts_Call', 'Gamma_Call', 'IV_Call', 'Volume_Call', 'Bid_Put', 'Ask_Put', 'Mark_Put', 'OI_USD_Put', 'OI_Contracts_Put', 'Gamma_Put', 'IV_Put', 'Volume_Put']
         for col in expected_columns:
             if col not in df_pivot.columns: df_pivot[col] = np.nan
+        df_pivot["GEX_Call_Status"] = call_gamma_status
+        df_pivot["GEX_Put_Status"] = put_gamma_status
 
         return df_pivot, nearest_expiry, expiry_dt, expiry_source, contract_size, df, is_chain_complete
     except Exception:
@@ -1754,8 +1819,24 @@ def _render_market_dashboard():
     
     if not options_df.empty and latest_price > 0:
         valid_contract_size = dynamic_contract_size if dynamic_contract_size and dynamic_contract_size > 0 else np.nan
-        options_df['GEX_Call'] = options_df['Gamma_Call'] * options_df['OI_Contracts_Call'] * valid_contract_size * (latest_price ** 2) * 0.01
-        options_df['GEX_Put'] = options_df['Gamma_Put'] * options_df['OI_Contracts_Put'] * valid_contract_size * (latest_price ** 2) * 0.01
+        call_gamma_complete = (
+            is_chain_complete
+            and "GEX_Call_Status" in options_df.columns
+            and options_df["GEX_Call_Status"].eq("OK").all()
+        )
+        put_gamma_complete = (
+            is_chain_complete
+            and "GEX_Put_Status" in options_df.columns
+            and options_df["GEX_Put_Status"].eq("OK").all()
+        )
+        options_df['GEX_Call'] = _dashboard_gex_values(
+            options_df, "Gamma_Call", "OI_Contracts_Call",
+            valid_contract_size, latest_price, call_gamma_complete,
+        )
+        options_df['GEX_Put'] = _dashboard_gex_values(
+            options_df, "Gamma_Put", "OI_Contracts_Put",
+            valid_contract_size, latest_price, put_gamma_complete,
+        )
         options_df['Dist_to_Spot'] = abs(options_df['Strike'] - latest_price)
         
         atm_strike = options_df.loc[options_df['Dist_to_Spot'].idxmin(), 'Strike']
