@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 import types
+from decimal import Decimal
 import numpy as np
 import pandas as pd
 import pytest
@@ -17,15 +18,12 @@ SPOT = 100_000.0
 def _dashboard_helpers():
     source = (ROOT / "btc_live_dashboard.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    names = {"_extract_option_oi_values", "_decimal_value", "_validated_delta_spot_price",
+    names = {"_extract_option_oi_values", "_validated_delta_spot_price",
              "_dashboard_gex_values", "_select_positive_wall", "_calculate_max_pain"}
     nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     assert {node.name for node in nodes} == names
-    from decimal import Decimal, InvalidOperation
     module = types.ModuleType("phase3_2_dashboard_helpers")
-    module.__dict__.update({
-        "np": np, "pd": pd, "Decimal": Decimal, "InvalidOperation": InvalidOperation,
-    })
+    module.__dict__.update({"np": np, "pd": pd})
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "btc_live_dashboard.py", "exec"), module.__dict__)
     return module
 
