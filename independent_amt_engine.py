@@ -164,7 +164,10 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
                 if raw_side is None: outside_side,outside_streak=None,0
                 elif raw_side==outside_side: outside_streak+=1
                 else: outside_side,outside_streak=raw_side,1
-                boundary_retest=(\n                    "RETEST_RECLAIM_ABOVE" if raw_side=="ABOVE" and c.low<=prior.vah else\n                    "RETEST_REJECTION_BELOW" if raw_side=="BELOW" and c.high>=prior.val else None\n                )
+                boundary_retest=(
+                    "RETEST_RECLAIM_ABOVE" if raw_side=="ABOVE" and c.low<=prior.vah else
+                    "RETEST_REJECTION_BELOW" if raw_side=="BELOW" and c.high>=prior.val else None
+                )
                 poc_side="ABOVE" if dev.poc>prior.poc else "BELOW" if dev.poc<prior.poc else None
                 if poc_side is not None:
                     if last_poc_side is not None and poc_side!=last_poc_side: poc_crossings.append(j)
@@ -184,7 +187,12 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
               "low":c.low,"close":c.close,"volume":c.volume,"atr":atr,"discovery_buffer":buf,
               "prior_profile_quality":"COMPLETE" if complete else "INCOMPLETE",
               "prior_value":prior.as_dict() if prior else None,"developing_value":dev.as_dict(),
-              "price_state":ps,"value_state":vs,"auction_read":read,"gap_before":gap,\n              "outside_prior_value_side":raw_side if prior else None,\n              "outside_value_close_streak":outside_streak if prior else 0,\n              "boundary_retest":boundary_retest if prior else None,\n              "poc_side_crossings_in_5":len(poc_crossings) if prior else 0,\n              "balance_evidence":balance_evidence if prior else False})
+              "price_state":ps,"value_state":vs,"auction_read":read,"gap_before":gap,
+              "outside_prior_value_side":raw_side if prior else None,
+              "outside_value_close_streak":outside_streak if prior else 0,
+              "boundary_retest":boundary_retest if prior else None,
+              "poc_side_crossings_in_5":len(poc_crossings) if prior else 0,
+              "balance_evidence":balance_evidence if prior else False})
             last_open=c.open_time
     return out
 
