@@ -152,3 +152,101 @@ def test_labels_call_quantities_btc_oi_and_preserve_compatibility_fields():
     collector_source = (ROOT / "options_collector.py").read_text(encoding="utf-8")
     assert '"oi_contracts": extract_oi_btc(ticker)' in collector_source
     assert '"gex_contract_multiplier": GEX_OI_SCALE' in collector_source
+
+
+class _HistoryQuery:
+    """Minimal offline query-chain fake for _previous_complete_snapshot()."""
+    def __init__(self, responses, table_name):
+        self.responses, self.table_name = responses, table_name
+    def select(self, *args, **kwargs): return self
+    def eq(self, *args, **kwargs): return self
+    def neq(self, *args, **kwargs): return self
+    def order(self, *args, **kwargs): return self
+    def limit(self, *args, **kwargs): return self
+    def range(self, *args, **kwargs): return self
+    def execute(self):
+        assert self.responses, f"Unexpected query for {self.table_name}"
+        return types.SimpleNamespace(data=self.responses.pop(0))
+
+
+class _HistoryClient:
+    def __init__(self, responses): self.responses = list(responses)
+    def table(self, name): return _HistoryQuery(self.responses, name)
+
+
+def test_previous_complete_snapshot_skips_legacy_and_incomplete_v2_candidates():
+    """Only the newest fully valid v2 candidate may become the predecessor."""
+    good_status = {
+        "chain": "OK", "call_gex": "OK", "put_gex": "OK",
+        "chain_expected_contracts": 2,
+    }
+    legacy_v1 = {
+        "snapshot_id": "legacy-v1", "expiry_date": "2026-12-25",
+        "source_collected_at": "2026-11-19T09:00:00+00:00",
+        "underlying_spot_price": SPOT, "gex_contract_multiplier": 0.001,
+        "metric_version": "options-derived-v1.0", "metric_status": good_status,
+    }
+    incomplete_v2 = {
+        "snapshot_id": "incomplete-v2", "expiry_date": "2026-12-25",
+        "source_collected_at": "2026-11-19T09:30:00+00:00",
+        "underlying_spot_price": SPOT, "gex_contract_multiplier": 1.0,
+        "metric_version": METRIC_VERSION,
+        "metric_status": {
+            "chain": "OK", "call_gex": "OK", "put_gex": "INCOMPLETE",
+            "chain_expected_contracts": 2,
+        },
+    }
+    valid_v2 = {
+        "snapshot_id": "valid-v2", "expiry_date": "2026-12-25",
+        "source_collected_at": "2026-11-19T10:00:00+00:00",
+        "underlying_spot_price": SPOT, "gex_contract_multiplier": 1.0,
+        "metric_version": METRIC_VERSION, "metric_status": good_status,
+    }
+    raw_rows = [
+        {"snapshot_id": "valid-v2", "expiry_date": "2026-12-25",
+         "option_type": "CALL", "strike_price": 100_000.0,
+         "product_id": 1, "symbol": "BTC-25DEC26-100000-C",
+         "oi_contracts": 10.0, "greeks": {"gamma": 0.00002}},
+        {"snapshot_id": "valid-v2", "expiry_date": "2026-12-25",
+         "option_type": "PUT", "strike_price": 100_000.0,
+         "product_id": 2, "symbol": "BTC-25DEC26-100000-P",
+         "oi_contracts": 8.0, "greeks": {"gamma": 0.00002}},
+    ]
+    client = _HistoryClient([
+        [
+            {"snapshot_id": "legacy-v1", "completed_at": "3"},
+            {"snapshot_id": "incomplete-v2", "completed_at": "2"},
+            {"snapshot_id": "valid-v2", "completed_at": "1"},
+        ],
+        [legacy_v1], [incomplete_v2], [valid_v2], raw_rows,
+    ])
+    selected, selected_rows, reason = attribution._previous_complete_snapshot(
+        client, "2026-12-25", "current-snapshot"
+    )
+    assert reason == "OK"
+    assert selected["snapshot_id"] == "valid-v2"
+    assert selected["metric_version"] == METRIC_VERSION
+    assert selected_rows == raw_rows
+    assert client.responses == []
+
+
+def test_gex_epsilon_is_negligible_for_realistic_corrected_btc_oi_exposure():
+    realistic_gex = attribution._gex(0.00002, 10.0, SPOT, 1.0)
+    assert realistic_gex == pytest.approx(20_000.0)
+    assert realistic_gex / attribution.GEX_EPSILON > 1e15
+    ranked = attribution._top_n({
+        100_000.0: {"gex": realistic_gex},
+        101_000.0: {"gex": realistic_gex * 0.5},
+    })
+    assert list(ranked) == [100_000.0, 101_000.0]
+    assert attribution._dominant_driver({
+        "gamma": realistic_gex, "oi": 0.0, "spot": 0.0,
+    }) == "GAMMA"
+
+
+def test_gex_epsilon_only_suppresses_sub_epsilon_values_as_written():
+    below_threshold = attribution.GEX_EPSILON / 10.0
+    assert attribution._top_n({100_000.0: {"gex": below_threshold}}) == {}
+    assert attribution._dominant_driver({
+        "gamma": below_threshold, "oi": 0.0, "spot": 0.0,
+    }) == "UNATTRIBUTED"
