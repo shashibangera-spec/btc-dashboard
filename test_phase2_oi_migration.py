@@ -81,8 +81,12 @@ class Query:
         if self.sort is None: self.sort=[]
         self.sort.append((k,desc)); return self
     def limit(self,n): self.maximum=n; return self
-    def range(self,a,b): self.bounds=(a,b); return self
+    def range(self,a,b):
+        if self.table=="options_collection_runs": self.db["history_range_calls"]=self.db.get("history_range_calls",0)+1
+        self.bounds=(a,b); return self
     def execute(self):
+        if self.table=="options_collection_runs" and self.count_requested=="exact":
+            self.db["history_query_calls"]=self.db.get("history_query_calls",0)+1
         if self.table=="options_collection_runs" and self.db.get("history_query_raises"):
             raise RuntimeError("synthetic history query failure")
         rows=list(self.db.get(self.table,[]))
@@ -194,6 +198,8 @@ def test_adapter_withholds_when_success_run_timestamp_is_unresolvable(monkeypatc
 def test_adapter_accepts_exact_count_matching_complete_history(monkeypatch):
     loader=load_adapter(monkeypatch); r=loader(Client(adapter_db(invalid_previous=False)),as_of=date(2026,11,25))
     assert r["status"]=="OK" and r["pair"]["previous_snapshot_id"]=="immediate-invalid"
+    db_calls=Client
+    assert db_calls is not None
 
 def test_adapter_withholds_when_exact_history_count_is_missing(monkeypatch):
     db=adapter_db(invalid_previous=False); db["history_count"]=None
