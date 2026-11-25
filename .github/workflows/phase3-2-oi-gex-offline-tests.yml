@@ -1,0 +1,78 @@
+name: Phase 3.2 OI and GEX offline tests
+
+on:
+  push:
+    branches:
+      - "feature/phase3-2-oi-gex-units"
+      - "feature/phase3-8-research-unit-safety"
+    paths:
+      - ".github/workflows/phase3-2-oi-gex-offline-tests.yml"
+      - "options_collector.py"
+      - "btc_live_dashboard.py"
+      - "gex_attribution.py"
+      - "options_filters.py"
+      - "research_options_adapter.py"
+      - "btc_live_research_dashboard.py"
+      - "PHASE3_8_RESEARCH_CONSUMER_UNIT_SAFETY.md"
+      - "test_options_filters.py"
+      - "test_phase3_8_research_unit_safety.py"
+      - "test_research_options_stage_*.py"
+      - "pine_state_machine.py"
+      - "test_gex_attribution.py"
+      - "test_phase3_gex_validation.py"
+      - "test_fast_dashboard_options_ui.py"
+      - "test_phase3_2_*.py"
+
+permissions:
+  contents: read
+
+jobs:
+  phase3-2-offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out triggering commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact checkout
+        shell: bash
+        run: |
+          actual="$(git rev-parse HEAD)"
+          echo "GITHUB_SHA=${GITHUB_SHA}"
+          echo "checked_out_HEAD=${actual}"
+          test "${actual}" = "${GITHUB_SHA}"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Report Python version
+        run: python --version
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest "pandas>=2.1.0" "numpy>=1.26.0" "requests>=2.31.0" "streamlit>=1.40.0" "plotly>=5.18.0" "supabase>=2.0.0"
+
+      - name: Run Phase 3 and Phase 3.2 regression tests
+        shell: bash
+        run: |
+          shopt -s nullglob
+          phase3_2_tests=(test_phase3_2_*.py)
+          pytest -q \
+            test_gex_attribution.py \
+            test_phase3_gex_validation.py \
+            test_fast_dashboard_options_ui.py \
+            test_options_filters.py \
+            test_research_options_stage_a.py \
+            test_research_options_stage_b.py \
+            test_research_options_stage_c.py \
+            test_phase3_8_research_unit_safety.py \
+            "${phase3_2_tests[@]}"
+
+      - name: Compile Phase 3 target modules
+        run: python -m py_compile options_collector.py btc_live_dashboard.py btc_live_research_dashboard.py options_filters.py research_options_adapter.py gex_attribution.py

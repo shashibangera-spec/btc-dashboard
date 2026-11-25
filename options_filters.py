@@ -27,8 +27,20 @@ RUN_COLUMNS = (
 )
 DERIVED_COLUMNS = (
     "snapshot_id", "expiry_date", "calculated_at", "source_collected_at",
-    "underlying_spot_price", "metric_status",
+    "underlying_spot_price", "metric_status", "metric_version",
+    "gex_contract_multiplier",
 )
+
+EXPECTED_METRIC_VERSION = "options-derived-v2.0-btc-oi"
+EXPECTED_GEX_CONTRACT_MULTIPLIER = 1.0
+# Phase 3.5 verified v1 oi_contracts as contract counts and 0.001 BTC/contract
+# for the audited BTC options universe. The legacy strict >500-contract gate
+# therefore maps to a strict >0.5 BTC gate for v2. The rationale for 500 itself
+# remains a historical heuristic, not a market-validated threshold.
+NEARBY_OI_MINIMUM_BTC = 0.5
+OI_QUANTITY_UNIT = "BTC"
+VOLUME_24H_UNIT = None  # Delta ticker docs do not specify this options field's unit.
+
 
 
 @dataclass(frozen=True)
@@ -42,6 +54,10 @@ class CanonicalSnapshot:
     previous_completed_at: Optional[str] = None
     previous_raw: Optional[pd.DataFrame] = None
     previous_snapshot_reason: Optional[str] = None
+    metric_version: Optional[str] = None
+    gex_contract_multiplier: Optional[float] = None
+    previous_metric_version: Optional[str] = None
+    previous_gex_contract_multiplier: Optional[float] = None
 
 
 def _rows(response: Any) -> List[dict]:
@@ -108,6 +124,25 @@ def _iso_date(value: Any) -> Optional[date]:
         return date.fromisoformat(str(value)[:10])
     except (TypeError, ValueError):
         return None
+
+
+def _metric_provenance(row: dict) -> Tuple[bool, Optional[str], Optional[str], Optional[float]]:
+    """Validate the only supported research metric and its OI unit multiplier."""
+    if not isinstance(row, dict):
+        return False, "METRIC_PROVENANCE_MISSING", None, None
+    version = row.get("metric_version")
+    if not isinstance(version, str) or not version.strip():
+        return False, "METRIC_VERSION_MISSING_OR_INVALID", None, None
+    if version != EXPECTED_METRIC_VERSION:
+        return False, "UNSUPPORTED_METRIC_VERSION", version, None
+    multiplier = _finite(row.get("gex_contract_multiplier"))
+    if multiplier is None or multiplier != EXPECTED_GEX_CONTRACT_MULTIPLIER:
+        return False, "INVALID_GEX_CONTRACT_MULTIPLIER", version, multiplier
+    return True, None, version, multiplier
+
+
+def _valid_metric_provenance(row: dict) -> bool:
+    return _metric_provenance(row)[0]
 
 
 def _contract_identity(row: dict) -> Tuple[str, str, str]:
@@ -237,16 +272,25 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
     missing = _missing_record_keys(derived, DERIVED_COLUMNS)
     if missing["missing_columns"]:
         return None, _missing_record_selection("options_derived_snapshots", missing)
-    future_valid = []
+    future_chain_valid = []
     for row in derived:
         expiry_day, quality = _iso_date(row.get("expiry_date")), row.get("metric_status")
         if (expiry_day is not None and expiry_day >= today
                 and isinstance(quality, dict) and quality.get("chain") == "OK"):
-            future_valid.append(row)
-    if not future_valid:
+            future_chain_valid.append(row)
+    if not future_chain_valid:
         return None, {"status": "UNAVAILABLE", "reason": "NO_VALID_FUTURE_EXPIRY",
                       "snapshot_id": snapshot_id, "completed_at": completed_at}
-    expiry = str(future_valid[0]["expiry_date"])
+    current_derived = future_chain_valid[0]
+    provenance_ok, provenance_reason, metric_version, multiplier = _metric_provenance(current_derived)
+    if not provenance_ok:
+        return None, {
+            "status": "UNAVAILABLE", "reason": provenance_reason,
+            "snapshot_id": snapshot_id, "expiry_date": str(current_derived["expiry_date"]),
+            "metric_version": current_derived.get("metric_version"),
+            "gex_contract_multiplier": current_derived.get("gex_contract_multiplier"),
+        }
+    expiry = str(current_derived["expiry_date"])
     try:
         raw = _query_raw(client, snapshot_id, expiry)
     except MissingRequiredRecordKeys as exc:
@@ -268,6 +312,7 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
         earlier.append((elapsed_minutes, run))
     earlier.sort(key=lambda item: item[0])
     previous_id = previous_completed = previous_raw = None
+    previous_metric_version = previous_multiplier = None
     previous_reason = "NO_ELIGIBLE_PREVIOUS_SNAPSHOT"
     if earlier:
         nearest_gap = earlier[0][0]
@@ -292,8 +337,13 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
                     continue
                 if _missing_record_keys(prev_derived, DERIVED_COLUMNS)["missing_columns"]:
                     continue
-                quality = prev_derived[0].get("metric_status")
+                previous_derived = prev_derived[0]
+                quality = previous_derived.get("metric_status")
                 if not isinstance(quality, dict) or quality.get("chain") != "OK":
+                    continue
+                previous_provenance_ok, _, prev_version, prev_multiplier = _metric_provenance(previous_derived)
+                if (not previous_provenance_ok or prev_version != metric_version
+                        or prev_multiplier != multiplier):
                     continue
                 try:
                     candidate = _query_raw(client, prev_id, expiry)
@@ -304,20 +354,31 @@ def select_canonical_snapshot(client: Any, *, as_of: Optional[date] = None):
                 previous_id = prev_id
                 previous_completed = previous.get("completed_at")
                 previous_raw = candidate
+                previous_metric_version = prev_version
+                previous_multiplier = prev_multiplier
                 previous_reason = None
                 break
 
+    if earlier and previous_id is None and previous_reason == "NO_VALID_PREVIOUS_SNAPSHOT_IN_WINDOW":
+        previous_reason = "NO_COMPATIBLE_V2_PREVIOUS_SNAPSHOT_IN_WINDOW"
     snapshot = CanonicalSnapshot(
         snapshot_id=snapshot_id, expiry_date=expiry, completed_at=completed_at,
         spot_price=validation["spot_price"], raw=raw,
         previous_snapshot_id=previous_id, previous_completed_at=previous_completed,
         previous_raw=previous_raw, previous_snapshot_reason=previous_reason,
+        metric_version=metric_version, gex_contract_multiplier=multiplier,
+        previous_metric_version=previous_metric_version,
+        previous_gex_contract_multiplier=previous_multiplier,
     )
     return snapshot, {"status": "OK", "snapshot_id": snapshot_id,
                       "expiry_date": expiry, "completed_at": completed_at,
                       "spot_price": validation["spot_price"],
+                      "metric_version": metric_version,
+                      "gex_contract_multiplier": multiplier,
                       "previous_snapshot_id": previous_id,
                       "previous_completed_at": previous_completed,
+                      "previous_metric_version": previous_metric_version,
+                      "previous_gex_contract_multiplier": previous_multiplier,
                       "previous_snapshot_reason": previous_reason}
 
 
@@ -357,7 +418,10 @@ def _nearest(chain: pd.DataFrame, spot: float, count: int = 5) -> pd.DataFrame:
 def _result(name: str, status: str, snapshot: CanonicalSnapshot, **values: Any) -> dict:
     return {"filter": name, "status": status, "snapshot_id": snapshot.snapshot_id,
             "expiry_date": snapshot.expiry_date, "snapshot_completed_at": snapshot.completed_at,
-            "spot_price": snapshot.spot_price, "calculation_version": "options-filters-v1.0", **values}
+            "spot_price": snapshot.spot_price, "calculation_version": "options-filters-v1.1",
+            "source_metric_version": snapshot.metric_version,
+            "source_gex_contract_multiplier": snapshot.gex_contract_multiplier,
+            "oi_quantity_unit": OI_QUANTITY_UNIT, **values}
 
 
 def calculate_nearby_oi(snapshot: CanonicalSnapshot) -> dict:
@@ -372,10 +436,13 @@ def calculate_nearby_oi(snapshot: CanonicalSnapshot) -> dict:
         values = usable[column].tolist()
         for i in range(1, len(values) - 1):
             neighbor_avg = (values[i - 1] + values[i + 1]) / 2
-            if values[i] > neighbor_avg * 1.5 and values[i] > 500:
+            if values[i] > neighbor_avg * 1.5 and values[i] > NEARBY_OI_MINIMUM_BTC:
                 walls.append({"strike": float(usable.iloc[i]["strike_price"]),
-                              "type": side, "oi": float(values[i])})
+                              "type": side, "oi_btc": float(values[i])})
     return _result("Nearby OI", "OK", snapshot, walls=walls,
+                   threshold_value=NEARBY_OI_MINIMUM_BTC, threshold_unit="BTC",
+                   threshold_legacy_equivalent_contracts=500,
+                   threshold_rationale="Legacy strict >500 contract gate normalized using verified 0.001 BTC per contract.",
                    usable_strikes=usable["strike_price"].tolist())
 
 
@@ -400,39 +467,36 @@ def calculate_iv_skew(snapshot: CanonicalSnapshot) -> dict:
 
 
 def calculate_volume_oi(snapshot: CanonicalSnapshot) -> dict:
-    chain = _nearest(_aggregate_chain(snapshot.raw), snapshot.spot_price)
-    if chain.empty:
-        return _result("24h Volume / OI", "UNAVAILABLE", snapshot, reason="NO_DATA")
-    fields = ["Call Vol", "Put Vol", "Call OI", "Put OI"]
-    if chain[fields].isna().any().any():
-        return _result("24h Volume / OI", "INSUFFICIENT_DATA", snapshot,
-                       reason="INCOMPLETE_NEAREST_STRIKE_COVERAGE")
-    call_vol, call_oi = float(chain["Call Vol"].sum()), float(chain["Call OI"].sum())
-    put_vol, put_oi = float(chain["Put Vol"].sum()), float(chain["Put OI"].sum())
-    if call_oi == 0 or put_oi == 0:
-        return _result("24h Volume / OI", "INSUFFICIENT_DATA", snapshot, reason="ZERO_OI")
-    call_ratio, put_ratio = call_vol / call_oi, put_vol / put_oi
-    # 0.5 and 1.5 are research heuristics, not established market thresholds.
-    relative_volume = (
-        "RELATIVE_VOLUME_ABOVE_0_5"
-        if call_ratio > .5 or put_ratio > .5
-        else "RELATIVE_VOLUME_AT_OR_BELOW_0_5"
-    )
-    ratio_comparison = (
-        "CALL_RATIO_OVER_1_5X_PUT_RATIO" if call_ratio > put_ratio * 1.5 else
-        "PUT_RATIO_OVER_1_5X_CALL_RATIO" if put_ratio > call_ratio * 1.5 else
-        "CALL_PUT_RATIO_WITHIN_1_5X"
+    """Withhold Volume/OI until the Delta options volume_24h unit is verified."""
+    reason = (
+        "VOLUME_UNIT_UNVERIFIED" if VOLUME_24H_UNIT is None
+        else "VOLUME_OI_UNIT_MISMATCH" if VOLUME_24H_UNIT != OI_QUANTITY_UNIT
+        else "VOLUME_OI_RATIO_NOT_ENABLED"
     )
     return _result(
-        "24h Volume / OI", "OK", snapshot,
-        relative_volume=relative_volume,
-        ratio_comparison=ratio_comparison,
-        call_ratio=call_ratio, put_ratio=put_ratio,
-        heuristic_note="0.5 and 1.5 are research heuristics, not established market thresholds.",
+        "24h Volume / OI", "UNAVAILABLE", snapshot,
+        reason=reason,
+        volume_source_field="volume_24h",
+        volume_source_unit=VOLUME_24H_UNIT,
+        oi_source_field="oi_contracts",
+        oi_source_unit=OI_QUANTITY_UNIT,
+        classification_available=False,
     )
 
 
 def calculate_oi_migration(snapshot: CanonicalSnapshot) -> dict:
+    if not _valid_metric_provenance({
+        "metric_version": snapshot.metric_version,
+        "gex_contract_multiplier": snapshot.gex_contract_multiplier,
+    }):
+        return _result("OI Migration", "UNAVAILABLE", snapshot, reason="INVALID_CURRENT_METRIC_PROVENANCE")
+    if (not _valid_metric_provenance({
+            "metric_version": snapshot.previous_metric_version,
+            "gex_contract_multiplier": snapshot.previous_gex_contract_multiplier,
+        }) or snapshot.previous_metric_version != snapshot.metric_version
+            or snapshot.previous_gex_contract_multiplier != snapshot.gex_contract_multiplier):
+        if snapshot.previous_raw is not None:
+            return _result("OI Migration", "UNAVAILABLE", snapshot, reason="INVALID_OR_MISMATCHED_PREVIOUS_METRIC_PROVENANCE")
     if snapshot.previous_raw is None or not snapshot.previous_snapshot_id:
         return _result(
             "OI Migration", "UNAVAILABLE", snapshot,

@@ -54,6 +54,7 @@ def make_db():
             "snapshot_id": "snap-1", "expiry_date": "2026-11-17",
             "calculated_at": "2026-11-16T12:30:00Z", "source_collected_at": "2026-11-16T12:00:00Z",
             "underlying_spot_price": 1000, "metric_status": {"chain": "OK"},
+            "metric_version": "options-derived-v2.0-btc-oi", "gex_contract_multiplier": 1.0,
             "max_pain_strike": 1000, "atm_strike": 1000, "atm_straddle_price": 20,
             "atm_straddle_pct_spot": 2, "local_oi_pcr": 1,
             "call_gex_wall_strike": 1100, "call_gex_wall_value": 3,

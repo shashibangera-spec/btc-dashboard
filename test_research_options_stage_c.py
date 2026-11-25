@@ -42,7 +42,7 @@ def test_nearest_ten_strikes_are_selected_using_snapshot_spot_not_live_price():
 
 def test_dashboard_map_does_not_fill_missing_oi_and_uses_pinned_snapshot_spot():
     source = Path("btc_live_research_dashboard.py").read_text(encoding="utf-8")
-    map_start = source.index('st.subheader("📊 OI Concentration Map")')
+    map_start = source.index('st.subheader("📊 OI Concentration Map (BTC)")')
     map_end = source.index('with raw_tab:', map_start)
     map_code = source[map_start:map_end]
     assert "nearest_strikes_by_reference(opt_df, options_reference_price, count=10)" in map_code

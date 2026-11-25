@@ -6,7 +6,10 @@ from gex_attribution import (
 
 
 def _row(side, strike, oi, gamma):
+    side_code = 1 if side == "CALL" else 2
     return {
+        "product_id": int(strike) * 10 + side_code,
+        "symbol": f"BTC-{int(strike)}-{side}",
         "option_type": side,
         "strike_price": strike,
         "oi_contracts": oi,
@@ -205,8 +208,12 @@ def test_previous_snapshot_selection_skips_partial_and_incomplete_runs():
     valid_derived = {
         "snapshot_id": "valid", "expiry_date": "2026-12-25",
         "source_collected_at": "2026-11-19T10:00:00+00:00",
-        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
-        "metric_status": {"chain": "OK", "call_gex": "OK", "put_gex": "OK"},
+        "underlying_spot_price": 100, "gex_contract_multiplier": 1.0,
+        "metric_version": "options-derived-v2.0-btc-oi",
+        "metric_status": {
+            "chain": "OK", "call_gex": "OK", "put_gex": "OK",
+            "chain_expected_contracts": 2,
+        },
     }
     rows = [_row("CALL", 100, 1000, .03), _row("PUT", 100, 1000, .03)]
     client = _MockSupabase([
@@ -220,9 +227,10 @@ def test_previous_snapshot_selection_skips_partial_and_incomplete_runs():
         _response([valid_derived]),
         _response(rows),
     ])
-    derived, fetched_rows = _previous_complete_snapshot(client, "2026-12-25", "current")
+    derived, fetched_rows, reason = _previous_complete_snapshot(client, "2026-12-25", "current")
     assert derived["snapshot_id"] == "valid"
     assert fetched_rows == rows
+    assert reason == "OK"
     run_query = client.queries[0]
     assert ("eq", ("status", "SUCCESS")) in run_query.filters
 
@@ -239,8 +247,12 @@ def test_persistence_upserts_comparison_id_and_event_payload():
     prev = {
         "snapshot_id": "00000000-0000-0000-0000-000000000001",
         "source_collected_at": "2026-11-19T10:00:00+00:00",
-        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
-        "metric_status": {"chain": "OK", "call_gex": "OK", "put_gex": "OK"},
+        "underlying_spot_price": 100, "gex_contract_multiplier": 1.0,
+        "metric_version": "options-derived-v2.0-btc-oi",
+        "metric_status": {
+            "chain": "OK", "call_gex": "OK", "put_gex": "OK",
+            "chain_expected_contracts": 6,
+        },
     }
     valid_rows = [
         _row("CALL", 100, 1000, .03), _row("CALL", 110, 900, .03), _row("CALL", 90, 800, .03),
@@ -257,8 +269,12 @@ def test_persistence_upserts_comparison_id_and_event_payload():
     current_derived = {
         "snapshot_id": "00000000-0000-0000-0000-000000000002",
         "source_collected_at": "2026-11-19T10:03:00+00:00",
-        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
-        "metric_status": {"chain": "OK", "call_gex": "OK", "put_gex": "OK"},
+        "underlying_spot_price": 100, "gex_contract_multiplier": 1.0,
+        "metric_version": "options-derived-v2.0-btc-oi",
+        "metric_status": {
+            "chain": "OK", "call_gex": "OK", "put_gex": "OK",
+            "chain_expected_contracts": 7,
+        },
     }
     saved = persist_gex_attribution(
         client, current_derived["snapshot_id"], "2026-12-25", current, current_derived
@@ -303,14 +319,22 @@ def test_database_upsert_error_is_caught_by_non_blocking_wrapper():
     previous_derived = {
         "snapshot_id": "00000000-0000-0000-0000-000000000001",
         "source_collected_at": "2026-11-19T10:00:00+00:00",
-        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
-        "metric_status": {"chain": "OK", "call_gex": "OK", "put_gex": "OK"},
+        "underlying_spot_price": 100, "gex_contract_multiplier": 1.0,
+        "metric_version": "options-derived-v2.0-btc-oi",
+        "metric_status": {
+            "chain": "OK", "call_gex": "OK", "put_gex": "OK",
+            "chain_expected_contracts": 6,
+        },
     }
     current_derived = {
         "snapshot_id": "00000000-0000-0000-0000-000000000002",
         "source_collected_at": "2026-11-19T10:03:00+00:00",
-        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
-        "metric_status": {"chain": "OK", "call_gex": "OK", "put_gex": "OK"},
+        "underlying_spot_price": 100, "gex_contract_multiplier": 1.0,
+        "metric_version": "options-derived-v2.0-btc-oi",
+        "metric_status": {
+            "chain": "OK", "call_gex": "OK", "put_gex": "OK",
+            "chain_expected_contracts": 7,
+        },
     }
     client = MagicMock()
     query = client.table.return_value
@@ -318,7 +342,7 @@ def test_database_upsert_error_is_caught_by_non_blocking_wrapper():
     logger = MagicMock()
 
     with patch("gex_attribution._previous_complete_snapshot",
-               return_value=(previous_derived, previous_rows)):
+               return_value=(previous_derived, previous_rows, "OK")):
         result = run_attribution_safely(
             client, current_derived["snapshot_id"], "2026-12-25",
             current_rows, current_derived, logger=logger,

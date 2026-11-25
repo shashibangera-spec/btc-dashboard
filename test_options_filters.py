@@ -31,6 +31,10 @@ def snapshot(raw=None, previous=None, previous_id=None):
         previous_snapshot_id=previous_id,
         previous_completed_at="2026-11-16T12:00:00Z" if previous is not None else None,
         previous_raw=previous,
+        metric_version=f.EXPECTED_METRIC_VERSION,
+        gex_contract_multiplier=f.EXPECTED_GEX_CONTRACT_MULTIPLIER,
+        previous_metric_version=f.EXPECTED_METRIC_VERSION if previous is not None else None,
+        previous_gex_contract_multiplier=f.EXPECTED_GEX_CONTRACT_MULTIPLIER if previous is not None else None,
     )
 
 
@@ -76,6 +80,8 @@ def database(rows=None, status="SUCCESS"):
             "snapshot_id": "s1", "expiry_date": "2026-11-17", "metric_status": {"chain": "OK"},
             "calculated_at": "2026-11-16T12:30:00Z", "source_collected_at": "2026-11-16T12:00:00Z",
             "underlying_spot_price": 1000,
+            "metric_version": f.EXPECTED_METRIC_VERSION,
+            "gex_contract_multiplier": f.EXPECTED_GEX_CONTRACT_MULTIPLIER,
         }],
         "options_oi_snapshots": raw,
     }
@@ -123,7 +129,10 @@ def test_nearby_oi_uses_local_peak_and_strict_threshold():
     raw.loc[(raw.strike_price == 1000) & (raw.option_type == "CALL"), "oi_contracts"] = 1000
     result = f.calculate_nearby_oi(snapshot(raw))
     assert result["status"] == "OK"
-    assert {"strike": 1000.0, "type": "CALL", "oi": 1000.0} in result["walls"]
+    assert {"strike": 1000.0, "type": "CALL", "oi_btc": 1000.0} in result["walls"]
+    assert result["threshold_value"] == 0.5 and result["threshold_unit"] == "BTC"
+    assert result["source_metric_version"] == f.EXPECTED_METRIC_VERSION
+    assert result["source_gex_contract_multiplier"] == 1.0
 
 
 @pytest.mark.parametrize("call_iv", [.60, .525, .50, .475, .40])
@@ -155,46 +164,17 @@ def test_iv_skew_requires_both_iv_sides():
     assert f.calculate_iv_skew(snapshot(raw))["status"] == "INSUFFICIENT_DATA"
 
 
-def test_volume_oi_uses_24h_volume_and_fails_closed_on_null_nearest_contract():
+def test_volume_oi_is_unavailable_until_source_unit_is_verified():
     raw = raw_rows()
-    raw["volume_24h"] = 600
+    original = raw["volume_24h"].copy(deep=True)
     result = f.calculate_volume_oi(snapshot(raw))
-    # Existing nearest-five-strike 24h volume / OI arithmetic is unchanged.
-    assert result["status"] == "OK"
-    assert result["call_ratio"] == pytest.approx(3000 / 1400)
-    assert result["put_ratio"] == pytest.approx(3000 / 1400)
-    assert result["relative_volume"] == "RELATIVE_VOLUME_ABOVE_0_5"
-    assert result["ratio_comparison"] == "CALL_PUT_RATIO_WITHIN_1_5X"
-    assert "research heuristics" in result["heuristic_note"]
-    assert "classification" not in result
-    assert "direction" not in result
-
-    # Strict comparisons are preserved: equality does not cross either threshold.
-    boundary = raw_rows()
-    boundary.loc[boundary.option_type == "CALL", "volume_24h"] = 140
-    boundary.loc[boundary.option_type == "PUT", "volume_24h"] = 140
-    exact = f.calculate_volume_oi(snapshot(boundary))
-    assert exact["call_ratio"] == pytest.approx(0.5)
-    assert exact["put_ratio"] == pytest.approx(0.5)
-    assert exact["relative_volume"] == "RELATIVE_VOLUME_AT_OR_BELOW_0_5"
-    assert exact["ratio_comparison"] == "CALL_PUT_RATIO_WITHIN_1_5X"
-
-    ratio_boundary = raw_rows()
-    ratio_boundary.loc[ratio_boundary.option_type == "CALL", "volume_24h"] = 210
-    ratio_boundary.loc[ratio_boundary.option_type == "PUT", "volume_24h"] = 140
-    equal_ratio = f.calculate_volume_oi(snapshot(ratio_boundary))
-    assert equal_ratio["call_ratio"] == pytest.approx(equal_ratio["put_ratio"] * 1.5)
-    assert equal_ratio["ratio_comparison"] == "CALL_PUT_RATIO_WITHIN_1_5X"
-
-    above = raw_rows()
-    above.loc[above.option_type == "CALL", "volume_24h"] = 211
-    above.loc[above.option_type == "PUT", "volume_24h"] = 140
-    over = f.calculate_volume_oi(snapshot(above))
-    assert over["call_ratio"] > over["put_ratio"] * 1.5
-    assert over["ratio_comparison"] == "CALL_RATIO_OVER_1_5X_PUT_RATIO"
-
-    raw.loc[(raw.strike_price == 1000) & (raw.option_type == "CALL"), "volume_24h"] = None
-    assert f.calculate_volume_oi(snapshot(raw))["status"] == "INSUFFICIENT_DATA"
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason"] == "VOLUME_UNIT_UNVERIFIED"
+    assert result["volume_source_field"] == "volume_24h"
+    assert result["volume_source_unit"] is None
+    assert result["oi_source_unit"] == "BTC"
+    assert result["classification_available"] is False
+    pd.testing.assert_series_equal(raw["volume_24h"], original)
 
 
 def test_migration_tie_break_is_lower_strike_and_elapsed_time_is_reported():
@@ -239,7 +219,8 @@ def test_one_calculator_exception_does_not_suppress_other_filters(monkeypatch):
     monkeypatch.setattr(f, "calculate_iv_skew", lambda _: (_ for _ in ()).throw(RuntimeError()))
     results = f.calculate_all_filters(snapshot())
     assert results["iv_skew"]["status"] == "ERROR"
-    assert results["nearby_oi"]["status"] == results["volume_oi"]["status"] == "OK"
+    assert results["nearby_oi"]["status"] == "OK"
+    assert results["volume_oi"]["status"] == "UNAVAILABLE"
     assert results["taker_activity"]["status"] == "OK"
 
 
@@ -325,6 +306,8 @@ def _add_previous_snapshot(db, snapshot_id, completed_at, raw=None, underlying="
         "snapshot_id": snapshot_id, "expiry_date": "2026-11-17",
         "metric_status": {"chain": "OK"}, "calculated_at": completed_at,
         "source_collected_at": completed_at, "underlying_spot_price": 1000,
+        "metric_version": f.EXPECTED_METRIC_VERSION,
+        "gex_contract_multiplier": f.EXPECTED_GEX_CONTRACT_MULTIPLIER,
     })
     db["options_oi_snapshots"].extend(rows.to_dict("records"))
 
@@ -558,3 +541,104 @@ def test_iv_research_loader_uses_read_only_select_query_and_pins_identity():
     assert "greeks" in result["raw"].columns
     assert "bid_price" in result["raw"].columns
     assert set(result["raw"]["snapshot_id"]) == {"s1"}
+
+
+def test_nearby_oi_threshold_uses_strict_btc_equivalent_of_legacy_contract_gate():
+    raw = raw_rows()
+    raw["oi_contracts"] = 0.1
+    raw.loc[(raw.strike_price == 1000) & (raw.option_type == "CALL"), "oi_contracts"] = 0.5
+    exact = f.calculate_nearby_oi(snapshot(raw))
+    assert exact["status"] == "OK"
+    assert not any(w["type"] == "CALL" and w["strike"] == 1000 for w in exact["walls"])
+    raw.loc[(raw.strike_price == 1000) & (raw.option_type == "CALL"), "oi_contracts"] = 0.50001
+    above = f.calculate_nearby_oi(snapshot(raw))
+    assert {"strike": 1000.0, "type": "CALL", "oi_btc": 0.50001} in above["walls"]
+    assert above["threshold_legacy_equivalent_contracts"] == 500
+
+
+def test_current_v1_snapshot_is_rejected_and_historical_fixture_is_unchanged():
+    import copy
+    db = database()
+    db["options_derived_snapshots"][0]["metric_version"] = "options-derived-v1.0"
+    before = copy.deepcopy(db["options_derived_snapshots"])
+    selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected is None
+    assert meta["reason"] == "UNSUPPORTED_METRIC_VERSION"
+    assert db["options_derived_snapshots"] == before
+
+
+def test_previous_v1_snapshot_is_skipped_without_mixing_with_current_v2():
+    db = database()
+    _add_previous_snapshot(db, "legacy-v1", "2026-11-16T12:00:00Z")
+    legacy = next(row for row in db["options_derived_snapshots"] if row["snapshot_id"] == "legacy-v1")
+    legacy["metric_version"] = "options-derived-v1.0"
+    selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected is not None and selected.metric_version == f.EXPECTED_METRIC_VERSION
+    assert selected.previous_snapshot_id is None
+    assert meta["previous_snapshot_reason"] == "NO_COMPATIBLE_V2_PREVIOUS_SNAPSHOT_IN_WINDOW"
+
+
+def test_previous_v2_snapshot_requires_same_multiplier_and_version():
+    db = database()
+    _add_previous_snapshot(db, "bad-multiplier", "2026-11-16T12:00:00Z")
+    previous = next(row for row in db["options_derived_snapshots"] if row["snapshot_id"] == "bad-multiplier")
+    previous["gex_contract_multiplier"] = 0.001
+    selected, _ = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected.previous_snapshot_id is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("metric_version", None), ("metric_version", 2),
+    ("gex_contract_multiplier", None), ("gex_contract_multiplier", "not-a-number"),
+    ("gex_contract_multiplier", True), ("gex_contract_multiplier", float("nan")),
+    ("gex_contract_multiplier", 0.001),
+])
+def test_current_snapshot_rejects_missing_or_invalid_metric_provenance(field, value):
+    db = database()
+    db["options_derived_snapshots"][0][field] = value
+    selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected is None and meta["status"] == "UNAVAILABLE"
+    assert meta["reason"] in {
+        "METRIC_VERSION_MISSING_OR_INVALID", "UNSUPPORTED_METRIC_VERSION",
+        "INVALID_GEX_CONTRACT_MULTIPLIER",
+    }
+
+
+def test_current_snapshot_missing_provenance_column_fails_closed():
+    db = database()
+    db["options_derived_snapshots"][0].pop("metric_version")
+    selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected is None and meta["reason"] == "MISSING_REQUIRED_COLUMNS"
+    assert "metric_version" in meta["missing_columns"]
+
+
+def test_filter_results_include_source_metric_provenance():
+    selected, meta = f.select_canonical_snapshot(Client(database()), as_of=date(2026, 11, 16))
+    result = f.calculate_iv_skew(selected)
+    assert meta["metric_version"] == f.EXPECTED_METRIC_VERSION
+    assert meta["gex_contract_multiplier"] == 1.0
+    assert result["source_metric_version"] == f.EXPECTED_METRIC_VERSION
+    assert result["source_gex_contract_multiplier"] == 1.0
+
+
+def test_volume_oi_reports_unavailable_when_source_unit_is_incompatible(monkeypatch):
+    monkeypatch.setattr(f, "VOLUME_24H_UNIT", "CONTRACTS")
+    result = f.calculate_volume_oi(snapshot())
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason"] == "VOLUME_OI_UNIT_MISMATCH"
+    assert result["volume_source_unit"] == "CONTRACTS"
+    assert result["oi_source_unit"] == "BTC"
+    assert result["classification_available"] is False
+
+
+def test_selector_accepts_valid_v2_current_and_previous_with_matching_provenance():
+    db = database()
+    _add_previous_snapshot(db, "valid-v2-previous", "2026-11-16T12:00:00Z")
+    selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected.snapshot_id == "s1"
+    assert selected.metric_version == f.EXPECTED_METRIC_VERSION
+    assert selected.gex_contract_multiplier == 1.0
+    assert selected.previous_snapshot_id == "valid-v2-previous"
+    assert selected.previous_metric_version == f.EXPECTED_METRIC_VERSION
+    assert selected.previous_gex_contract_multiplier == 1.0
+    assert meta["metric_version"] == meta["previous_metric_version"] == f.EXPECTED_METRIC_VERSION

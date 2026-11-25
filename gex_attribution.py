@@ -11,10 +11,13 @@ import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 TOP_N = 3
+GEX_METRIC_VERSION = "options-derived-v2.0-btc-oi"
+GEX_OI_SCALE = 1.0
 GEX_CHANGE_THRESHOLD_PCT = 2.0
 GEX_EPSILON = 1e-12
 MAX_PREVIOUS_RUNS_TO_CHECK = 20
 MAX_CHAIN_ROWS = 5000
+HISTORICAL_PAGE_SIZE = 1000
 
 
 def _number(value: Any) -> Optional[float]:
@@ -320,13 +323,35 @@ def run_attribution_safely(client, current_snapshot_id, expiry_date, current_row
 
 def _valid_derived(derived: Dict[str, Any]) -> bool:
     status = derived.get("metric_status") or {}
+    multiplier = _number(derived.get("gex_contract_multiplier"))
     return (
-        status.get("chain") == "OK"
+        derived.get("metric_version") == GEX_METRIC_VERSION
+        and status.get("chain") == "OK"
         and status.get("call_gex") == "OK"
         and status.get("put_gex") == "OK"
         and _number(derived.get("underlying_spot_price")) is not None
-        and _number(derived.get("gex_contract_multiplier")) is not None
+        and multiplier is not None
+        and math.isclose(multiplier, GEX_OI_SCALE, rel_tol=0.0, abs_tol=1e-12)
     )
+
+
+def _rows_match_chain_evidence(rows: List[Dict[str, Any]], metric_status: Dict[str, Any]):
+    expected = metric_status.get("chain_expected_contracts")
+    if isinstance(expected, bool) or not isinstance(expected, int) or expected <= 0:
+        return False, "MISSING_EXPECTED_CONTRACT_COUNT"
+    if expected > MAX_CHAIN_ROWS:
+        return False, "HISTORICAL_CHAIN_EXCEEDS_RETRIEVAL_LIMIT"
+    if len(rows) != expected:
+        return False, "HISTORICAL_ROW_COUNT_MISMATCH"
+    product_ids = [row.get("product_id") for row in rows]
+    symbols = [row.get("symbol") for row in rows]
+    if any(value is None for value in product_ids) or any(not value for value in symbols):
+        return False, "HISTORICAL_CONTRACT_IDENTITY_MISSING"
+    if len(set(str(value) for value in product_ids)) != expected:
+        return False, "DUPLICATE_HISTORICAL_PRODUCT_ID"
+    if len(set(str(value) for value in symbols)) != expected:
+        return False, "DUPLICATE_HISTORICAL_SYMBOL"
+    return True, "OK"
 
 
 def _previous_complete_snapshot(client, expiry_date: str, current_snapshot_id: str):
@@ -340,6 +365,7 @@ def _previous_complete_snapshot(client, expiry_date: str, current_snapshot_id: s
         .limit(MAX_PREVIOUS_RUNS_TO_CHECK)
         .execute()
     )
+    last_reason = "NO_PRIOR_SUCCESSFUL_RUN"
     for run in runs.data or []:
         snapshot_id = run.get("snapshot_id")
         if not snapshot_id:
@@ -348,7 +374,7 @@ def _previous_complete_snapshot(client, expiry_date: str, current_snapshot_id: s
             client.table("options_derived_snapshots")
             .select(
                 "snapshot_id,expiry_date,source_collected_at,underlying_spot_price,"
-                "gex_contract_multiplier,metric_status"
+                "gex_contract_multiplier,metric_version,metric_status"
             )
             .eq("snapshot_id", snapshot_id)
             .eq("expiry_date", expiry_date)
@@ -357,20 +383,43 @@ def _previous_complete_snapshot(client, expiry_date: str, current_snapshot_id: s
         )
         derived_rows = derived_response.data or []
         if not derived_rows or not _valid_derived(derived_rows[0]):
+            last_reason = "PREVIOUS_DERIVED_METRICS_INCOMPLETE"
             continue
-        raw_response = (
-            client.table("options_oi_snapshots")
-            .select("snapshot_id,expiry_date,option_type,strike_price,oi_contracts,greeks")
-            .eq("snapshot_id", snapshot_id)
-            .eq("expiry_date", expiry_date)
-            .order("strike_price")
-            .range(0, MAX_CHAIN_ROWS - 1)
-            .execute()
-        )
-        raw_rows = raw_response.data or []
-        if raw_rows:
-            return derived_rows[0], raw_rows
-    return None, None
+        metric_status = derived_rows[0].get("metric_status") or {}
+        expected = metric_status.get("chain_expected_contracts")
+        if isinstance(expected, bool) or not isinstance(expected, int) or expected <= 0:
+            last_reason = "MISSING_EXPECTED_CONTRACT_COUNT"
+            continue
+        if expected > MAX_CHAIN_ROWS:
+            last_reason = "HISTORICAL_CHAIN_EXCEEDS_RETRIEVAL_LIMIT"
+            continue
+        raw_rows = []
+        for start in range(0, expected, HISTORICAL_PAGE_SIZE):
+            end = min(start + HISTORICAL_PAGE_SIZE, expected) - 1
+            raw_response = (
+                client.table("options_oi_snapshots")
+                .select(
+                    "snapshot_id,expiry_date,option_type,strike_price,product_id,symbol,oi_contracts,greeks"
+                )
+                .eq("snapshot_id", snapshot_id)
+                .eq("expiry_date", expiry_date)
+                .order("strike_price").order("product_id")
+                .range(start, end)
+                .execute()
+            )
+            page = raw_response.data or []
+            if len(page) != end - start + 1:
+                last_reason = "HISTORICAL_RETRIEVAL_INCOMPLETE"
+                raw_rows = []
+                break
+            raw_rows.extend(page)
+        if not raw_rows:
+            continue
+        complete, reason = _rows_match_chain_evidence(raw_rows, metric_status)
+        if complete:
+            return derived_rows[0], raw_rows, "OK"
+        last_reason = reason
+    return None, None, last_reason
 
 
 def persist_gex_attribution(
@@ -385,11 +434,17 @@ def persist_gex_attribution(
         print(f"GEX attribution skipped for {expiry_date}: current derived metrics incomplete.")
         return 0
 
-    previous_derived, previous_rows = _previous_complete_snapshot(
+    current_status = current_derived.get("metric_status") or {}
+    current_complete, current_reason = _rows_match_chain_evidence(current_rows, current_status)
+    if not current_complete:
+        print(f"GEX attribution skipped for {expiry_date}: current chain invalid: {current_reason}.")
+        return 0
+
+    previous_derived, previous_rows, previous_reason = _previous_complete_snapshot(
         client, expiry_date, current_snapshot_id
     )
     if not previous_derived or not previous_rows:
-        print(f"GEX attribution skipped for {expiry_date}: no prior complete snapshot.")
+        print(f"GEX attribution skipped for {expiry_date}: {previous_reason}.")
         return 0
 
     current_collected_at = current_derived.get("source_collected_at")

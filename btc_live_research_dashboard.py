@@ -512,8 +512,8 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 if options_metrics.get("put_gex_wall_value") is not None else "N/A",
             )
             st.caption(
-                "GEX is model-derived using a 0.001 BTC-per-contract multiplier and standard API gamma. "
-                "Gross unsigned OI concentration only; this does not identify dealer positioning or net gamma."
+                "GEX is model-derived from BTC-denominated OI (Delta ticker oi) with multiplier 1.0 and standard API gamma. "
+                "Gross unsigned exposure concentration only; it is not signed gamma or directional positioning."
             )
             st.caption(
                 f"ATM strike: ${float(options_metrics['atm_strike']):,.0f}"
@@ -624,8 +624,8 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                         st.caption(f"{aggressor_analysis.get('status', 'UNAVAILABLE')}: {aggressor_analysis.get('reason', 'Insufficient taker-volume data').replace('_', ' ').lower()}.")
         # --- LAYER 2: OI CONCENTRATION MAP ---
         st.markdown("---")
-        st.subheader("📊 OI Concentration Map")
-        st.caption("Visual concentration across the same 10 nearest strikes shown in the evidence table. Call OI extends left; Put OI extends right.")
+        st.subheader("📊 OI Concentration Map (BTC)")
+        st.caption("BTC-denominated OI concentration across the same 10 nearest strikes shown in the evidence table. Call OI extends left; Put OI extends right.")
         if opt_forensics and opt_forensics.get("status") == "OK" and opt_df is not None:
             chart_df = nearest_strikes_by_reference(opt_df, options_reference_price, count=10).copy()
             if not chart_df.empty and "Call OI" in chart_df.columns and "Put OI" in chart_df.columns:
@@ -653,7 +653,7 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                                 "mark": "bar",
                                 "encoding": {
                                     "y": {"field": "Strike", "type": "ordinal", "sort": None, "title": "Strike"},
-                                    "x": {"field": "OI", "type": "quantitative", "title": "OI (Call left / Put right)"},
+                                    "x": {"field": "OI", "type": "quantitative", "title": "OI (BTC; Call left / Put right)"},
                                     "color": {"field": "Side", "type": "nominal", "legend": {"title": None}},
                                     "tooltip": [
                                         {"field": "Strike", "type": "nominal"},
