@@ -1,0 +1,120 @@
+"""Pure Phase 2 OI migration calculations; no I/O or persistence."""
+from collections import Counter
+from datetime import datetime
+import math
+VERSION = "phase2-oi-migration-v1.0"
+REQUIRED = ("snapshot_id", "product_id", "expiry_date", "option_type", "strike_price", "oi_contracts")
+def _num(value):
+    if value is None or isinstance(value, bool): return None
+    try: value=float(value)
+    except (TypeError,ValueError,OverflowError): return None
+    return value if math.isfinite(value) and value>=0 else None
+def _dt(value):
+    try: return datetime.fromisoformat(str(value).replace("Z","+00:00"))
+    except (TypeError,ValueError): return None
+def _rows(value):
+    if value is None: return []
+    return value.to_dict("records") if hasattr(value,"to_dict") else [dict(x) for x in value]
+def _index(value,endpoint,expected_snapshot_id):
+    rows=_rows(value); missing=sorted({c for r in rows for c in REQUIRED if c not in r})
+    ids=[str(r.get("product_id") or "") for r in rows]
+    duplicate_ids=sorted(k for k,n in Counter(ids).items() if k and n>1)
+    identity=[(str(r.get("expiry_date") or "")[:10],str(r.get("option_type") or "").upper(),_num(r.get("strike_price"))) for r in rows]
+    duplicate_identity=sorted(str(k) for k,n in Counter(identity).items() if n>1)
+    snapshot_ids=sorted({str(r.get("snapshot_id")) for r in rows if r.get("snapshot_id") is not None})
+    snapshot_mismatch=snapshot_ids != [str(expected_snapshot_id)]
+    diag={"endpoint":endpoint,"row_count":len(rows),"missing_columns":missing,"snapshot_ids":snapshot_ids,
+        "expected_snapshot_id":str(expected_snapshot_id),"snapshot_id_mismatch":snapshot_mismatch,
+        "duplicate_product_ids":duplicate_ids,"blank_product_id_rows":sum(not x for x in ids),
+        "duplicate_contract_identities":duplicate_identity}
+    if missing or snapshot_mismatch or duplicate_ids or diag["blank_product_id_rows"] or duplicate_identity: return {},diag
+    return {str(r["product_id"]):r for r in rows},diag
+def _conc(values):
+    ranked=sorted(((float(strike),float(oi)) for strike,oi in values.items() if oi>0),
+        key=lambda item:(-item[1],item[0]))
+    total=sum(oi for _,oi in ranked)
+    if total<=0:
+        return {"total_oi":total,"hhi":None,"hhi_0_10000":None,"top5_share_pct":None,
+            "top10_share_pct":None,"top5":[],"top10":[],"strike_count":len(values)}
+    shares=[oi/total for _,oi in ranked]; hhi=sum(x*x for x in shares)
+    def members(limit):
+        return [{"strike_price":strike,"oi_contracts":oi,"share_pct":oi/total*100}
+            for strike,oi in ranked[:limit]]
+    top5,top10=members(5),members(10)
+    return {"total_oi":total,"hhi":hhi,"hhi_0_10000":hhi*10000,
+        "top5_share_pct":sum(x["share_pct"] for x in top5),
+        "top10_share_pct":sum(x["share_pct"] for x in top10),
+        "top5":top5,"top10":top10,"strike_count":len(values)}
+def _distribution(rows):
+    sides={"CALL":{},"PUT":{}}
+    for r in rows:
+        side,strike=r["option_type"],r["strike_price"]; sides[side][strike]=sides[side].get(strike,0.0)+r["oi_contracts"]
+    return {"CALL":_conc(sides["CALL"]),"PUT":_conc(sides["PUT"]),"strike_oi":sides}
+def _migration_summary(rows):
+    result={}
+    for side in ("CALL","PUT","COMBINED"):
+        changes=[r["oi_change"] for r in rows if side=="COMBINED" or r["option_type"]==side]
+        positive=[x for x in changes if x>0]
+        negative=[x for x in changes if x<0]
+        result[side]={"increasing_contract_count":len(positive),
+            "decreasing_contract_count":len(negative),
+            "unchanged_contract_count":sum(x==0 for x in changes),
+            "gross_positive_oi_change":sum(positive),
+            "gross_negative_oi_change":sum(abs(x) for x in negative),
+            "net_oi_change":sum(changes)}
+    return result
+def _expiry(cur,prev,expiry):
+    a={k:v for k,v in cur.items() if str(v.get("expiry_date"))==expiry}; b={k:v for k,v in prev.items() if str(v.get("expiry_date"))==expiry}
+    common=sorted(set(a)&set(b)); valid=[]; invalid=[]
+    for pid in common:
+        x,y=a[pid],b[pid]; side=str(x.get("option_type","")).upper()
+        sx,sy=_num(x.get("strike_price")),_num(y.get("strike_price")); ox,oy=_num(x.get("oi_contracts")),_num(y.get("oi_contracts"))
+        if side not in ("CALL","PUT") or side!=str(y.get("option_type","")).upper() or sx is None or sx!=sy or ox is None or oy is None:
+            invalid.append(pid); continue
+        valid.append({"product_id":pid,"expiry_date":expiry,"option_type":side,"strike_price":sx,"previous_oi":oy,"current_oi":ox,"oi_change":ox-oy})
+    pr=[{"option_type":r["option_type"],"strike_price":r["strike_price"],"oi_contracts":r["previous_oi"]} for r in valid]
+    cr=[{"option_type":r["option_type"],"strike_price":r["strike_price"],"oi_contracts":r["current_oi"]} for r in valid]
+    pdist,cdist=_distribution(pr),_distribution(cr); delta={"CALL":{},"PUT":{}}
+    for r in valid:
+        side,strike=r["option_type"],r["strike_price"]; delta[side][strike]=delta[side].get(strike,0)+r["oi_change"]
+    pt=sum(r["previous_oi"] for r in valid); ct=sum(r["current_oi"] for r in valid); change=sum(r["oi_change"] for r in valid); diff=(ct-pt)-change
+    return {"expiry_date":expiry,"status":"OK" if valid else "INSUFFICIENT_DATA",
+        "coverage":{"current_product_ids":len(a),"previous_product_ids":len(b),"matched_product_ids":len(common),
+            "valid_matched_product_ids":len(valid),"unmatched_current_product_ids":sorted(set(a)-set(b)),
+            "unmatched_previous_product_ids":sorted(set(b)-set(a)),"invalid_matched_product_ids":invalid},
+        "arithmetic_reconciliation":{"previous_matched_cohort_oi":pt,"current_matched_cohort_oi":ct,"net_oi_change":ct-pt,
+            "sum_of_contract_changes":change,"difference":diff,"status":"PASS" if math.isclose(diff,0,rel_tol=1e-12,abs_tol=1e-9) else "FAIL"},
+        "call_oi_change":sum(delta["CALL"].values()),"put_oi_change":sum(delta["PUT"].values()),"combined_oi_change":change,
+        "oi_migration_summary":_migration_summary(valid),
+        "previous_concentration":pdist,"current_concentration":cdist,"strike_oi_change":delta,"matched_contract_changes":valid}
+def calculate_oi_migration(current_rows,previous_rows,*,current_snapshot_id,previous_snapshot_id,current_completed_at,
+    previous_completed_at,selected_expiry,eligible_expiries):
+    """Use only common valid Product IDs; ambiguous duplicate endpoints fail closed."""
+    cur,cd=_index(current_rows,"current",current_snapshot_id); prev,pd=_index(previous_rows,"previous",previous_snapshot_id)
+    provenance={"current_snapshot_id":current_snapshot_id,"previous_snapshot_id":previous_snapshot_id,
+        "current_completed_at":current_completed_at,"previous_completed_at":previous_completed_at}
+    if not cur or not prev: return {"status":"WITHHELD","reason":"ENDPOINT_IDENTITY_VALIDATION_FAILED","provenance":provenance,
+        "endpoint_validation":[cd,pd],"exchange_wide_completeness":"UNVERIFIED"}
+    expiries=sorted(set(map(str,eligible_expiries)))
+    if selected_expiry not in expiries: return {"status":"WITHHELD","reason":"SELECTED_EXPIRY_NOT_ELIGIBLE","provenance":provenance}
+    by_expiry={e:_expiry(cur,prev,e) for e in expiries}; nearest=by_expiry[selected_expiry]
+    cohort=[r for result in by_expiry.values() for r in result["matched_contract_changes"]]
+    pr=[{"option_type":r["option_type"],"strike_price":r["strike_price"],"oi_contracts":r["previous_oi"]} for r in cohort]
+    cr=[{"option_type":r["option_type"],"strike_price":r["strike_price"],"oi_contracts":r["current_oi"]} for r in cohort]
+    pdist,cdist=_distribution(pr),_distribution(cr); delta={"CALL":{},"PUT":{}}
+    for r in cohort:
+        side,strike=r["option_type"],r["strike_price"]; delta[side][strike]=delta[side].get(strike,0)+r["oi_change"]
+    pt=sum(r["previous_oi"] for r in cohort); ct=sum(r["current_oi"] for r in cohort); change=sum(r["oi_change"] for r in cohort)
+    diff=(ct-pt)-change; recon={"previous_matched_cohort_oi":pt,"current_matched_cohort_oi":ct,"net_oi_change":ct-pt,
+        "sum_of_contract_changes":change,"difference":diff,"status":"PASS" if math.isclose(diff,0,rel_tol=1e-12,abs_tol=1e-9) else "FAIL"}
+    now,then=_dt(current_completed_at),_dt(previous_completed_at); elapsed=(now-then).total_seconds() if now and then else None
+    return {"status":"OK" if nearest["status"]=="OK" else "INSUFFICIENT_DATA","methodology_version":VERSION,
+        "provenance":{**provenance,"elapsed_seconds":elapsed,"selected_nearest_expiry":selected_expiry},
+        "validity":{"snapshot_pair_validation":"ADAPTER_VALIDATED","matched_cohort_validity":"VALID" if cohort else "NO_VALID_MATCHED_COHORT",
+            "arithmetic_reconciliation":recon["status"],"exchange_wide_completeness":"UNVERIFIED"},
+        "cross_expiry_arithmetic_reconciliation":recon,"nearest_expiry":nearest,"expiry_specific":by_expiry,
+        "cross_expiry_same_numerical_strike":{"status":"OK" if cohort else "INSUFFICIENT_DATA",
+            "aggregation_basis":"COMMON_VALID_MATCHED_PRODUCT_IDS_ACROSS_ELIGIBLE_EXPIRIES","expiry_breakdown_retained":True,
+            "matched_contract_count":len(cohort),"oi_migration_summary":_migration_summary(cohort),
+            "previous_concentration":pdist,"current_concentration":cdist,"strike_oi_change":delta},
+        "endpoint_validation":[cd,pd]}
