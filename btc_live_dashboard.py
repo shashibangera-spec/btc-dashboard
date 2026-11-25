@@ -236,9 +236,11 @@ hr { border-color: var(--border) !important; margin: 0.6rem 0 !important; }
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 def _extract_option_oi_values(ticker):
-    """Return raw BTC OI and USD OI; Delta 'oi' is authoritative when present."""
-    oi_btc = ticker.get("oi") if "oi" in ticker else ticker.get("oi_contracts")
-    return oi_btc, ticker.get("oi_value_usd")
+    """Return valid raw BTC OI and unchanged USD OI; never use contract counts as fallback."""
+    raw_oi = ticker.get("oi") if isinstance(ticker, dict) and "oi" in ticker else None
+    parsed_oi = _decimal_value(raw_oi)
+    oi_btc = raw_oi if parsed_oi is not None and parsed_oi >= 0 else None
+    return oi_btc, ticker.get("oi_value_usd") if isinstance(ticker, dict) else None
 
 
 def _decimal_value(value):
