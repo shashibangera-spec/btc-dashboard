@@ -398,7 +398,7 @@ def _previous_complete_snapshot(client, expiry_date: str, current_snapshot_id: s
                 )
                 .eq("snapshot_id", snapshot_id)
                 .eq("expiry_date", expiry_date)
-                .order("strike_price")
+                .order("strike_price").order("product_id")
                 .range(start, end)
                 .execute()
             )
