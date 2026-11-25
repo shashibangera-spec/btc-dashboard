@@ -237,9 +237,16 @@ IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 def _extract_option_oi_values(ticker):
     """Return valid raw BTC OI and unchanged USD OI; never use contract counts as fallback."""
+    from decimal import Decimal, InvalidOperation
+
     raw_oi = ticker.get("oi") if isinstance(ticker, dict) and "oi" in ticker else None
-    parsed_oi = _decimal_value(raw_oi)
-    oi_btc = raw_oi if parsed_oi is not None and parsed_oi >= 0 else None
+    parsed_oi = None
+    if raw_oi is not None and not isinstance(raw_oi, bool) and type(raw_oi).__name__ != "bool_":
+        try:
+            parsed_oi = Decimal(str(raw_oi))
+        except (InvalidOperation, TypeError, ValueError):
+            parsed_oi = None
+    oi_btc = raw_oi if parsed_oi is not None and parsed_oi.is_finite() and parsed_oi >= 0 else None
     return oi_btc, ticker.get("oi_value_usd") if isinstance(ticker, dict) else None
 
 
