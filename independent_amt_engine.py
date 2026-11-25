@@ -179,7 +179,7 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
                     direction=ps.rsplit("_",1)[-1]
                     read=f"DISCOVERY_WITH_VALUE_SEPARATION_{direction}" if vs==f"VALUE_SEPARATED_{direction}" else f"PRICE_DISCOVERY_VALUE_NOT_YET_SEPARATED_{direction}"
                 elif ps=="REENTRY_CONFIRMED":read="REENTRY_TO_PRIOR_VALUE"
-                elif balance_evidence:read="BALANCE_EVIDENCE_WITH_VALUE_OVERLAP"
+                elif balance_evidence and ps in {"IN_VALUE","VALUE_EXCURSION"}:read="BALANCE_EVIDENCE_WITH_VALUE_OVERLAP"
                 elif ps=="IN_VALUE":read="IN_VALUE_ROTATION"
                 else:read=ps
             out.append({"engine_version":ENGINE_VERSION,"session_date_ist":day.isoformat(),
