@@ -137,3 +137,14 @@ def test_phase2_utility_is_documented_as_legacy_only_and_archive_provenance_limi
     assert "Do not apply them to v2 BTC-denominated" in doc
     assert "raw_payload" in doc and "metric_version" in doc
     assert "oi_contracts" in (ROOT / "phase2_oi_migration.py").read_text(encoding="utf-8")
+
+
+def test_research_adapter_fails_closed_when_provenance_columns_are_missing(monkeypatch):
+    snap = _canonical_snapshot()
+    monkeypatch.setattr(adapter, "select_canonical_snapshot", lambda *a, **k: (snap, {"status": "OK"}))
+    row = _derived_row()
+    row.pop("gex_contract_multiplier")
+    result = adapter.load_canonical_research_options(_Client(row))
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason"] == "MISSING_DERIVED_FIELDS"
+    assert "gex_contract_multiplier" in result["missing_columns"]

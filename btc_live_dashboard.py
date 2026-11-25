@@ -282,7 +282,11 @@ def _prepare_contract_export(raw_chain_df, selected_expiry, existing_chain_compl
         "OI_BTC", "OI_USD",
     ]
     export_df = raw_chain_df.copy()
-    missing_columns = [column for column in columns if column not in export_df.columns]
+    missing_columns = [
+        column for column in columns
+        if column not in export_df.columns
+        and not (column == "OI_BTC" and "OI_BTC_Source" in export_df.columns)
+    ]
     for column in missing_columns:
         export_df[column] = np.nan
     if "Expiry" in missing_columns and selected_expiry:

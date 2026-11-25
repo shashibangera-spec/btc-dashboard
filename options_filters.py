@@ -468,9 +468,14 @@ def calculate_iv_skew(snapshot: CanonicalSnapshot) -> dict:
 
 def calculate_volume_oi(snapshot: CanonicalSnapshot) -> dict:
     """Withhold Volume/OI until the Delta options volume_24h unit is verified."""
+    reason = (
+        "VOLUME_UNIT_UNVERIFIED" if VOLUME_24H_UNIT is None
+        else "VOLUME_OI_UNIT_MISMATCH" if VOLUME_24H_UNIT != OI_QUANTITY_UNIT
+        else "VOLUME_OI_RATIO_NOT_ENABLED"
+    )
     return _result(
         "24h Volume / OI", "UNAVAILABLE", snapshot,
-        reason="VOLUME_UNIT_UNVERIFIED",
+        reason=reason,
         volume_source_field="volume_24h",
         volume_source_unit=VOLUME_24H_UNIT,
         oi_source_field="oi_contracts",

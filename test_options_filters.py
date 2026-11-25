@@ -619,3 +619,26 @@ def test_filter_results_include_source_metric_provenance():
     assert meta["gex_contract_multiplier"] == 1.0
     assert result["source_metric_version"] == f.EXPECTED_METRIC_VERSION
     assert result["source_gex_contract_multiplier"] == 1.0
+
+
+def test_volume_oi_reports_unavailable_when_source_unit_is_incompatible(monkeypatch):
+    monkeypatch.setattr(f, "VOLUME_24H_UNIT", "CONTRACTS")
+    result = f.calculate_volume_oi(snapshot())
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason"] == "VOLUME_OI_UNIT_MISMATCH"
+    assert result["volume_source_unit"] == "CONTRACTS"
+    assert result["oi_source_unit"] == "BTC"
+    assert result["classification_available"] is False
+
+
+def test_selector_accepts_valid_v2_current_and_previous_with_matching_provenance():
+    db = database()
+    _add_previous_snapshot(db, "valid-v2-previous", "2026-11-16T12:00:00Z")
+    selected, meta = f.select_canonical_snapshot(Client(db), as_of=date(2026, 11, 16))
+    assert selected.snapshot_id == "s1"
+    assert selected.metric_version == f.EXPECTED_METRIC_VERSION
+    assert selected.gex_contract_multiplier == 1.0
+    assert selected.previous_snapshot_id == "valid-v2-previous"
+    assert selected.previous_metric_version == f.EXPECTED_METRIC_VERSION
+    assert selected.previous_gex_contract_multiplier == 1.0
+    assert meta["metric_version"] == meta["previous_metric_version"] == f.EXPECTED_METRIC_VERSION
