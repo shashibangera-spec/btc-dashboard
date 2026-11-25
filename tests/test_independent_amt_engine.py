@@ -87,6 +87,22 @@ class IndependentAMTTests(unittest.TestCase):
             "REENTRY_CANDIDATE","REENTRY_CONFIRMED",
         ])
 
+
+    def test_missing_bar_breaks_discovery_confirmation(self):
+        t=datetime(2026,1,1,0,tzinfo=UTC)
+        bars=[bar(t+timedelta(minutes=30*i),10000,10100,10050) for i in range(48)]
+        bars += [
+            bar(t+timedelta(days=1),10250,10300,10275),
+            bar(t+timedelta(days=1,minutes=60),10250,10300,10275),
+            bar(t+timedelta(days=1,minutes=90),10250,10300,10275),
+        ]
+        got=build_session_snapshots(bars,atr_period=1)
+        self.assertEqual([x["price_state"] for x in got],[
+            "DISCOVERY_CANDIDATE_ABOVE","DISCOVERY_CANDIDATE_ABOVE",
+            "DISCOVERY_CONFIRMED_ABOVE",
+        ])
+        self.assertTrue(got[1]["gap_before"])
+
     def test_two_completed_closes_confirm_discovery(self):
         t=datetime(2026,1,1,0,tzinfo=UTC)
         bars=[bar(t+timedelta(minutes=30*i),10000,10100,10050) for i in range(48)]
