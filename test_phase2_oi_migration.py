@@ -196,10 +196,11 @@ def test_adapter_withholds_when_success_run_timestamp_is_unresolvable(monkeypatc
     assert r["status"]=="WITHHELD" and r["reason"]=="RUN_HISTORY_TIMESTAMP_INVALID"
 
 def test_adapter_accepts_exact_count_matching_complete_history(monkeypatch):
-    loader=load_adapter(monkeypatch); r=loader(Client(adapter_db(invalid_previous=False)),as_of=date(2026,11,25))
+    db=adapter_db(invalid_previous=False)
+    loader=load_adapter(monkeypatch); r=loader(Client(db),as_of=date(2026,11,25))
     assert r["status"]=="OK" and r["pair"]["previous_snapshot_id"]=="immediate-invalid"
-    db_calls=Client
-    assert db_calls is not None
+    assert db["history_query_calls"]==1
+    assert db.get("history_range_calls",0)==0
 
 def test_adapter_withholds_when_exact_history_count_is_missing(monkeypatch):
     db=adapter_db(invalid_previous=False); db["history_count"]=None
