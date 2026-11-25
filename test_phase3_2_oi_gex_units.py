@@ -17,12 +17,15 @@ SPOT = 100_000.0
 def _dashboard_helpers():
     source = (ROOT / "btc_live_dashboard.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    names = {"_extract_option_oi_values", "_validated_delta_spot_price",
+    names = {"_extract_option_oi_values", "_decimal_value", "_validated_delta_spot_price",
              "_dashboard_gex_values", "_select_positive_wall", "_calculate_max_pain"}
     nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     assert {node.name for node in nodes} == names
+    from decimal import Decimal, InvalidOperation
     module = types.ModuleType("phase3_2_dashboard_helpers")
-    module.__dict__.update({"np": np, "pd": pd})
+    module.__dict__.update({
+        "np": np, "pd": pd, "Decimal": Decimal, "InvalidOperation": InvalidOperation,
+    })
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "btc_live_dashboard.py", "exec"), module.__dict__)
     return module
 
@@ -250,3 +253,74 @@ def test_gex_epsilon_only_suppresses_sub_epsilon_values_as_written():
     assert attribution._dominant_driver({
         "gamma": below_threshold, "oi": 0.0, "spot": 0.0,
     }) == "UNATTRIBUTED"
+
+
+@pytest.mark.parametrize("bad_oi", [
+    "not-a-number", True, False, float("nan"), float("inf"), float("-inf"),
+    -0.0001, Decimal("NaN"), Decimal("Infinity"),
+])
+def test_invalid_delta_oi_is_unavailable_in_collector_and_dashboard(bad_oi):
+    helpers = _dashboard_helpers()
+    ticker = {"oi": bad_oi, "oi_contracts": 25, "oi_value_usd": "250000"}
+    assert collector.extract_oi_btc(ticker) is None
+    dashboard_oi, usd_oi = helpers._extract_option_oi_values(ticker)
+    assert dashboard_oi is None
+    assert usd_oi == "250000"
+
+
+def test_delta_btc_oi_extraction_never_falls_back_to_contract_count():
+    helpers = _dashboard_helpers()
+    ticker = {"oi_contracts": 25, "oi_value_usd": "250000"}
+    assert collector.extract_oi_btc(ticker) is None
+    assert helpers._extract_option_oi_values(ticker) == (None, "250000")
+
+
+def test_delta_btc_oi_wins_when_both_source_fields_are_present():
+    helpers = _dashboard_helpers()
+    ticker = {"oi": "0.025", "oi_contracts": 25, "oi_value_usd": "250000"}
+    assert collector.extract_oi_btc(ticker) == pytest.approx(0.025)
+    assert helpers._extract_option_oi_values(ticker) == ("0.025", "250000")
+
+
+def test_zero_delta_btc_oi_is_valid_in_collector_and_dashboard():
+    helpers = _dashboard_helpers()
+    ticker = {"oi": 0, "oi_contracts": 25, "oi_value_usd": 0}
+    assert collector.extract_oi_btc(ticker) == 0.0
+    assert helpers._extract_option_oi_values(ticker) == (0, 0)
+    assert collector._calculate_gex_wall([_row(oi_btc=0.0)], "CALL", SPOT)[2] == "ZERO_GAMMA_ONLY"
+    frame = pd.DataFrame({"Gamma": [0.00002], "OI_BTC": [0.0]})
+    result = helpers._dashboard_gex_values(frame, "Gamma", "OI_BTC", 1.0, SPOT, True)
+    assert result.iloc[0] == 0.0
+
+
+def test_invalid_or_missing_btc_oi_cannot_produce_valid_gex():
+    helpers = _dashboard_helpers()
+    invalid_values = [None, "bad", True, float("nan"), float("inf"), -1.0]
+    for value in invalid_values:
+        ticker = {"oi": value, "oi_contracts": 25}
+        oi_btc = collector.extract_oi_btc(ticker)
+        assert oi_btc is None
+        row = _row(oi_btc=oi_btc)
+        assert collector._calculate_gex_wall([row], "CALL", SPOT)[2] == "MISSING_OR_INVALID_OI"
+        frame = pd.DataFrame({"Gamma": [0.00002], "OI_BTC": [oi_btc]})
+        dashboard_gex = helpers._dashboard_gex_values(
+            frame, "Gamma", "OI_BTC", 1.0, SPOT, True
+        )
+        assert dashboard_gex.isna().all()
+
+
+def test_valid_btc_oi_produces_expected_gex_with_neutral_multiplier():
+    helpers = _dashboard_helpers()
+    oi_btc = collector.extract_oi_btc({"oi": "10", "oi_contracts": 10_000})
+    assert oi_btc == 10.0
+    expected = 0.00002 * 10.0 * SPOT**2 * 0.01
+    strike, collector_gex, status = collector._calculate_gex_wall(
+        [_row(oi_btc=oi_btc)], "CALL", SPOT
+    )
+    assert status == "OK" and strike == 100_000.0
+    assert collector_gex == pytest.approx(expected)
+    frame = pd.DataFrame({"Gamma": [0.00002], "OI_BTC": [oi_btc]})
+    dashboard_gex = helpers._dashboard_gex_values(
+        frame, "Gamma", "OI_BTC", 1.0, SPOT, True
+    )
+    assert dashboard_gex.iloc[0] == pytest.approx(expected)
