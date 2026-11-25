@@ -87,7 +87,7 @@ class Query:
     def execute(self):
         if self.table=="options_collection_runs" and self.count_requested=="exact":
             self.db["history_query_calls"]=self.db.get("history_query_calls",0)+1
-        if self.table=="options_collection_runs" and self.db.get("history_query_raises"):
+        if self.table=="options_collection_runs" and self.count_requested=="exact" and self.db.get("history_query_raises"):
             raise RuntimeError("synthetic history query failure")
         rows=list(self.db.get(self.table,[]))
         for k,v in self.filters: rows=[r for r in rows if r.get(k)==v]
