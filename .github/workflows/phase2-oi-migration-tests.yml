@@ -7,6 +7,8 @@ on:
     paths:
       - ".github/workflows/phase2-oi-migration-tests.yml"
       - "test_phase2_oi_migration.py"
+      - "phase2_oi_migration.py"
+      - "phase2_oi_migration_adapter.py"
 
 permissions:
   contents: read
