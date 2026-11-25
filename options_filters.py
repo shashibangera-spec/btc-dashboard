@@ -126,7 +126,7 @@ def _iso_date(value: Any) -> Optional[date]:
         return None
 
 
-def _metric_provenance(row: dict) -> Tuple[bool, Optional[str], Optional[float]]:
+def _metric_provenance(row: dict) -> Tuple[bool, Optional[str], Optional[str], Optional[float]]:
     """Validate the only supported research metric and its OI unit multiplier."""
     if not isinstance(row, dict):
         return False, "METRIC_PROVENANCE_MISSING", None, None

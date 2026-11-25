@@ -4,12 +4,19 @@ on:
   push:
     branches:
       - "feature/phase3-2-oi-gex-units"
+      - "feature/phase3-8-research-unit-safety"
     paths:
       - ".github/workflows/phase3-2-oi-gex-offline-tests.yml"
       - "options_collector.py"
       - "btc_live_dashboard.py"
       - "gex_attribution.py"
       - "options_filters.py"
+      - "research_options_adapter.py"
+      - "btc_live_research_dashboard.py"
+      - "PHASE3_8_RESEARCH_CONSUMER_UNIT_SAFETY.md"
+      - "test_options_filters.py"
+      - "test_phase3_8_research_unit_safety.py"
+      - "test_research_options_stage_*.py"
       - "pine_state_machine.py"
       - "test_gex_attribution.py"
       - "test_phase3_gex_validation.py"
@@ -56,7 +63,16 @@ jobs:
         run: |
           shopt -s nullglob
           phase3_2_tests=(test_phase3_2_*.py)
-          pytest -q test_gex_attribution.py test_phase3_gex_validation.py test_fast_dashboard_options_ui.py "${phase3_2_tests[@]}"
+          pytest -q \
+            test_gex_attribution.py \
+            test_phase3_gex_validation.py \
+            test_fast_dashboard_options_ui.py \
+            test_options_filters.py \
+            test_research_options_stage_a.py \
+            test_research_options_stage_b.py \
+            test_research_options_stage_c.py \
+            test_phase3_8_research_unit_safety.py \
+            "${phase3_2_tests[@]}"
 
-      - name: Compile Phase 3.2 target modules
-        run: python -m py_compile options_collector.py btc_live_dashboard.py gex_attribution.py
+      - name: Compile Phase 3 target modules
+        run: python -m py_compile options_collector.py btc_live_dashboard.py btc_live_research_dashboard.py options_filters.py research_options_adapter.py gex_attribution.py

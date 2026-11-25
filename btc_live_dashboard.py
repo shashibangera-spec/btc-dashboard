@@ -562,7 +562,7 @@ def _run_contract_export_validation_tests():
     assert snapshot_lines[2] == "=== DELTA OPTIONS CONTRACT EXPORT · NEAREST EXPIRY ONLY ==="
     assert snapshot_lines[3].startswith("EXPORT STATUS: INCOMPLETE — 4 contract rows;")
     assert snapshot_lines[4].startswith("INCOMPLETE REASONS:")
-    assert snapshot_lines[5].split("\t")[-2:] == ["OI_Contracts", "OI_USD"]
+    assert snapshot_lines[5].split("\t")[-2:] == ["OI_BTC", "OI_USD"]
     assert "9007199254740993" in snapshot_lines[6]
     assert snapshot_lines[7].endswith("NULL\tNULL")
     assert "123456789.12345678901234567890123456789" in snapshot_lines[6]

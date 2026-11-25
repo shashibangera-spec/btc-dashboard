@@ -149,7 +149,7 @@ def test_labels_call_quantities_btc_oi_and_preserve_compatibility_fields():
     assert '"OI (BTC)"' in source and "Local BTC OI PCR" in source
     assert "Local BTC OI PCR (±10% spot)" in source
     assert '"OI (Contracts)"' not in source
-    assert '"OI_Contracts"' in source and '"OI_Contracts_Source"' in source
+    assert '"OI_BTC"' in source and '"OI_BTC_Source"' in source
     collector_source = (ROOT / "options_collector.py").read_text(encoding="utf-8")
     assert '"oi_contracts": extract_oi_btc(ticker)' in collector_source
     assert '"gex_contract_multiplier": GEX_OI_SCALE' in collector_source
