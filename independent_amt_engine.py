@@ -174,9 +174,11 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
     return out
 
 def fetch_supabase_candles(page_size:int=1000):
+    if page_size<1:raise AMTInputError("page_size must be positive")
     from supabase import create_client
-    url,key=os.getenv("SUPABASE_URL"),os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required")
+    url=os.getenv("SUPABASE_URL")
+    key=os.getenv("SUPABASE_READ_ONLY_KEY") or os.getenv("SUPABASE_ANON_KEY")
+    if not url or not key:raise RuntimeError("SUPABASE_URL and a read-only SUPABASE_READ_ONLY_KEY (or permitted SUPABASE_ANON_KEY) are required")
     client=create_client(url,key); cols="exchange,market_type,symbol,interval,open_time,close_time,open_price,high_price,low_price,close_price,base_volume"
     rows=[]; start=0
     while True:
