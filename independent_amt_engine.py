@@ -80,7 +80,10 @@ def calculate_tpo_profile(candles:Iterable[Candle],row_size:float=50.0,value_are
     while covered<target and (lower>lo or upper<hi):
         dn=counts.get(lower-1,0) if lower>lo else -1
         up=counts.get(upper+1,0) if upper<hi else -1
-        if dn>=0 and up>=0 and dn==up:\n            lower-=1; covered+=dn\n            if covered<target:\n                upper+=1; covered+=up
+        if dn>=0 and up>=0 and dn==up:
+            lower-=1; covered+=dn
+            if covered<target:
+                upper+=1; covered+=up
         elif up>dn: upper+=1; covered+=up
         elif dn>=0: lower-=1; covered+=dn
         else: upper+=1; covered+=up
@@ -126,7 +129,9 @@ def _price_state(close,prior,buffer,confirmed,candidate,count,reentry):
     if side:
         n=count+1 if candidate==side else 1
         return (f"DISCOVERY_CONFIRMED_{side}",side,None,0,0) if n>=2 else (f"DISCOVERY_CANDIDATE_{side}",None,side,n,0)
-    if prior.val<=close<=prior.vah:return "IN_VALUE",None,None,0,0\n    # A close that does not clear the buffered boundary breaks consecutive confirmation.\n    return "VALUE_EXCURSION",None,None,0,0
+    if prior.val<=close<=prior.vah:return "IN_VALUE",None,None,0,0
+    # A close that does not clear the buffered boundary breaks consecutive confirmation.
+    return "VALUE_EXCURSION",None,None,0,0
 
 def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percent=.70,
                             atr_period=21,minimum_buffer=50.0,atr_multiplier=.50):
