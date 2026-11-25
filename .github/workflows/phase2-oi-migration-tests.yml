@@ -6,6 +6,7 @@ on:
       - "feature/phase2-oi-migration"
     paths:
       - ".github/workflows/phase2-oi-migration-tests.yml"
+      - "test_phase2_oi_migration.py"
 
 permissions:
   contents: read
@@ -22,7 +23,7 @@ jobs:
       - name: Check out exact Phase 2 implementation commit
         uses: actions/checkout@v4
         with:
-          ref: c7df40d2070c254d53407ff9b3373b21d17aeb0b
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: Set up Python
@@ -34,7 +35,13 @@ jobs:
         run: |
           ACTUAL_SHA="$(git rev-parse HEAD)"
           echo "Checked-out commit: $ACTUAL_SHA"
-          test "$ACTUAL_SHA" = "c7df40d2070c254d53407ff9b3373b21d17aeb0b"
+          test "$ACTUAL_SHA" = "$GITHUB_SHA"
+          CALC_BLOB="$(git rev-parse HEAD:phase2_oi_migration.py)"
+          ADAPTER_BLOB="$(git rev-parse HEAD:phase2_oi_migration_adapter.py)"
+          echo "Calculation module blob: $CALC_BLOB"
+          echo "Adapter module blob: $ADAPTER_BLOB"
+          test "$CALC_BLOB" = "b6cb6e7bbde97a3a5dbaf27c70b412b8469d79fd"
+          test "$ADAPTER_BLOB" = "20cb95dacd5bee80081bec3146fd4a08f2957015"
 
       - name: Install offline test dependencies
         run: python -m pip install "pandas>=2.1.0" pytest
