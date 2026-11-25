@@ -155,6 +155,7 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
                 last_poc_side=None; poc_crossings=[]; outside_side=None; outside_streak=0
             dev=calculate_tpo_profile([x for _,x in cur[:j+1]],row_size,value_area_percent)
             atr=atrs[gi]; buf=max(minimum_buffer,atr*atr_multiplier) if atr is not None else None
+            raw_side=None; boundary_retest=None; balance_evidence=False
             if prior is None: ps,vs,read="PRIOR_PROFILE_INCOMPLETE","NOT_CALCULATED","NO_VALID_PRIOR_SESSION_PROFILE"
             elif buf is None: ps,vs,read="WARMUP",classify_value(prior,dev),"INSUFFICIENT_ATR_WARMUP"
             else:
