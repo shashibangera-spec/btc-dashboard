@@ -88,6 +88,29 @@ def validate_contract_identities(tickers):
         return False, "DUPLICATE_SYMBOL"
     return True, "OK"
 
+def validate_contract_identity_mapping(discovery_tickers, received_tickers):
+    """Require each received symbol to retain its exact discovered Product ID."""
+    mappings = []
+    for tickers in (discovery_tickers, received_tickers):
+        valid, reason = validate_contract_identities(tickers)
+        if not valid:
+            return False, reason
+        mapping = {}
+        for row in tickers:
+            symbol = row.get("symbol") or row.get("product_symbol")
+            product_id = to_int(
+                row.get("product_id") if row.get("product_id") is not None else row.get("id")
+            )
+            if not isinstance(symbol, str) or not symbol.strip() or symbol != symbol.strip():
+                return False, "MALFORMED_CONTRACT_IDENTITY"
+            if product_id is None:
+                return False, "MISSING_CONTRACT_IDENTITY"
+            mapping[symbol] = product_id
+        mappings.append(mapping)
+    if mappings[0] != mappings[1]:
+        return False, "DISCOVERY_CHAIN_IDENTITY_MISMATCH"
+    return True, "OK"
+
 
 def validate_snapshot_row_identities(rows):
     product_ids = [to_int(row.get("product_id")) for row in rows]
@@ -559,23 +582,12 @@ def main():
                         "error": discovery_reason if not discovery_valid else chain_reason,
                     })
                     continue
-                expected_ids = {
-                    to_int(row.get("product_id") if row.get("product_id") is not None else row.get("id"))
-                    for row in discovery_expiry
-                }
-                received_ids = {
-                    to_int(row.get("product_id") if row.get("product_id") is not None else row.get("id"))
-                    for row in chain_rows
-                }
-                expected_symbols = {
-                    str(row.get("symbol") or row.get("product_symbol")) for row in discovery_expiry
-                }
-                received_symbols = {
-                    str(row.get("symbol") or row.get("product_symbol")) for row in chain_rows
-                }
-                if expected_ids != received_ids or expected_symbols != received_symbols:
+                mapping_valid, mapping_reason = validate_contract_identity_mapping(
+                    discovery_expiry, chain_rows
+                )
+                if not mapping_valid:
                     failed_expiries.append({
-                        "expiry": expiry_label, "error": "DISCOVERY_CHAIN_IDENTITY_MISMATCH",
+                        "expiry": expiry_label, "error": mapping_reason,
                     })
                     continue
 

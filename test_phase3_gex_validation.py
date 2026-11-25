@@ -398,3 +398,65 @@ def test_historical_retrieval_rejects_legacy_snapshot_without_expected_count_evi
     ])
     result = attribution._previous_complete_snapshot(client, "2026-12-25", "current")
     assert result == (None, None, "MISSING_EXPECTED_CONTRACT_COUNT")
+
+
+@pytest.mark.parametrize(
+    "received,expected",
+    [
+        (
+            [{"product_id": 1, "symbol": "BTC-C1"}, {"product_id": 2, "symbol": "BTC-P1"}],
+            (True, "OK"),
+        ),
+        (
+            [{"product_id": 2, "symbol": "BTC-C1"}, {"product_id": 1, "symbol": "BTC-P1"}],
+            (False, "DISCOVERY_CHAIN_IDENTITY_MISMATCH"),
+        ),
+        (
+            [{"product_id": 99, "symbol": "BTC-C1"}, {"product_id": 2, "symbol": "BTC-P1"}],
+            (False, "DISCOVERY_CHAIN_IDENTITY_MISMATCH"),
+        ),
+        (
+            [{"symbol": "BTC-C1"}, {"product_id": 2, "symbol": "BTC-P1"}],
+            (False, "MISSING_CONTRACT_IDENTITY"),
+        ),
+        (
+            [{"product_id": 1, "symbol": "BTC-C1"}, {"product_id": 1, "symbol": "BTC-P1"}],
+            (False, "DUPLICATE_PRODUCT_ID"),
+        ),
+        (
+            [{"product_id": 1, "symbol": "BTC-C1"}, {"product_id": 2, "symbol": "BTC-C1"}],
+            (False, "DUPLICATE_SYMBOL"),
+        ),
+    ],
+)
+def test_collector_requires_exact_discovery_symbol_to_product_id_mapping(received, expected):
+    discovery = [
+        {"product_id": 1, "symbol": "BTC-C1"},
+        {"product_id": 2, "symbol": "BTC-P1"},
+    ]
+    assert collector.validate_contract_identity_mapping(discovery, received) == expected
+
+
+def test_collector_rejects_swapped_mapping_even_when_counts_and_individual_sets_match():
+    discovery = [
+        {"product_id": 101, "symbol": "BTC-CALL"},
+        {"product_id": 202, "symbol": "BTC-PUT"},
+    ]
+    received = [
+        {"product_id": 202, "symbol": "BTC-CALL"},
+        {"product_id": 101, "symbol": "BTC-PUT"},
+    ]
+    assert len(discovery) == len(received)
+    assert {row["product_id"] for row in discovery} == {row["product_id"] for row in received}
+    assert {row["symbol"] for row in discovery} == {row["symbol"] for row in received}
+    assert collector.validate_contract_identity_mapping(discovery, received) == (
+        False, "DISCOVERY_CHAIN_IDENTITY_MISMATCH"
+    )
+
+
+def test_collector_rejects_malformed_symbol_in_identity_mapping():
+    discovery = [{"product_id": 1, "symbol": " BTC-C1 "}]
+    received = [{"product_id": 1, "symbol": "BTC-C1"}]
+    assert collector.validate_contract_identity_mapping(discovery, received) == (
+        False, "MALFORMED_CONTRACT_IDENTITY"
+    )
