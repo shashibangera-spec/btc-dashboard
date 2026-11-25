@@ -1,0 +1,46 @@
+name: Phase 2 OI migration offline tests
+
+on:
+  push:
+    branches:
+      - "feature/phase2-oi-migration"
+    paths:
+      - ".github/workflows/phase2-oi-migration-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase2-oi-migration-offline-tests
+  cancel-in-progress: false
+
+jobs:
+  phase2-oi-migration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact Phase 2 implementation commit
+        uses: actions/checkout@v4
+        with:
+          ref: c7df40d2070c254d53407ff9b3373b21d17aeb0b
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify checked-out commit
+        run: |
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "Checked-out commit: $ACTUAL_SHA"
+          test "$ACTUAL_SHA" = "c7df40d2070c254d53407ff9b3373b21d17aeb0b"
+
+      - name: Install offline test dependencies
+        run: python -m pip install "pandas>=2.1.0" pytest
+
+      - name: Run Phase 2 OI migration tests
+        run: python -m pytest -q test_phase2_oi_migration.py
+
+      - name: Compile Phase 2 OI migration modules
+        run: python -m py_compile phase2_oi_migration.py phase2_oi_migration_adapter.py test_phase2_oi_migration.py
