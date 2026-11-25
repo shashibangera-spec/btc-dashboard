@@ -67,6 +67,26 @@ class IndependentAMTTests(unittest.TestCase):
             "DISCOVERY_CANDIDATE_ABOVE","DISCOVERY_CONFIRMED_ABOVE",
         ])
 
+
+    def test_midpoint_poc_tie_break(self):
+        p=calculate_tpo_profile([bar(datetime(2026,1,1,tzinfo=UTC),100,200)])
+        self.assertEqual(p.poc,175)
+
+    def test_reentry_requires_two_completed_closes_inside_value(self):
+        t=datetime(2026,1,1,0,tzinfo=UTC)
+        bars=[bar(t+timedelta(minutes=30*i),10000,10100,10050) for i in range(48)]
+        bars += [
+            bar(t+timedelta(days=1),10250,10300,10275),
+            bar(t+timedelta(days=1,minutes=30),10250,10300,10275),
+            bar(t+timedelta(days=1,minutes=60),10000,10100,10050),
+            bar(t+timedelta(days=1,minutes=90),10000,10100,10050),
+        ]
+        got=build_session_snapshots(bars,atr_period=1)
+        self.assertEqual([x["price_state"] for x in got],[
+            "DISCOVERY_CANDIDATE_ABOVE","DISCOVERY_CONFIRMED_ABOVE",
+            "REENTRY_CANDIDATE","REENTRY_CONFIRMED",
+        ])
+
     def test_two_completed_closes_confirm_discovery(self):
         t=datetime(2026,1,1,0,tzinfo=UTC)
         bars=[bar(t+timedelta(minutes=30*i),10000,10100,10050) for i in range(48)]
