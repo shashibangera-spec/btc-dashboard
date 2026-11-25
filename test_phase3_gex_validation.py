@@ -62,8 +62,8 @@ def _ticker(oi_field, value):
     return row
 
 
-@pytest.mark.parametrize("field", ["oi", "oi_contracts"])
-def test_collector_accepts_documented_and_legacy_oi_fields(field):
+@pytest.mark.parametrize("field", ["oi"])
+def test_collector_accepts_documented_btc_oi_field(field):
     row, error = collector.build_snapshot_row(
         _ticker(field, 17), "snapshot", "2026-12-25T00:00:00+00:00",
         dt.date(2026, 12, 25),
@@ -87,10 +87,18 @@ def test_collector_missing_malformed_and_nonfinite_oi_remain_missing(value):
     assert collector.extract_oi_contracts({"oi": value}) is None
 
 
-def test_collector_uses_legacy_field_only_when_documented_field_is_absent():
-    assert collector.extract_oi_contracts({"oi_contracts": "4"}) == 4.0
-    # A present-but-invalid documented field is not silently replaced by stale legacy data.
+def test_collector_never_falls_back_to_contract_count_field():
+    # Contract count alone is not a BTC OI observation.
+    assert collector.extract_oi_contracts({"oi_contracts": "4"}) is None
+    # A present-but-invalid BTC OI field is not replaced by contract count.
     assert collector.extract_oi_contracts({"oi": "bad", "oi_contracts": 99}) is None
+    row, error = collector.build_snapshot_row(
+        _ticker("oi_contracts", 4), "snapshot", "2026-12-25T00:00:00+00:00",
+        dt.date(2026, 12, 25),
+    )
+    assert error is None
+    assert row["oi_contracts"] is None
+    assert row["data_status"].startswith("PARTIAL:oi_contracts")
 
 
 def test_collector_rejects_duplicate_product_ids_and_duplicate_symbols():
