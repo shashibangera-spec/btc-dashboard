@@ -236,11 +236,9 @@ hr { border-color: var(--border) !important; margin: 0.6rem 0 !important; }
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 def _extract_option_oi_values(ticker):
-    """Return source OI values without coercion; zero is a valid primary value."""
-    oi_contracts = ticker.get("oi_contracts")
-    if oi_contracts is None:
-        oi_contracts = ticker.get("oi")
-    return oi_contracts, ticker.get("oi_value_usd")
+    """Return raw BTC OI and USD OI; Delta 'oi' is authoritative when present."""
+    oi_btc = ticker.get("oi") if "oi" in ticker else ticker.get("oi_contracts")
+    return oi_btc, ticker.get("oi_value_usd")
 
 
 def _decimal_value(value):
@@ -719,14 +717,32 @@ def _validate_gamma_side(expected_products, raw_chain, side):
     return "OK"
 
 
+def _validated_delta_spot_price(values):
+    """Require complete, positive, mutually consistent Delta ticker spot prices."""
+    numeric = pd.to_numeric(pd.Series(values), errors="coerce")
+    if numeric.empty or numeric.isna().any():
+        return None
+    spots = numeric.to_numpy(dtype=float)
+    if not np.isfinite(spots).all() or (spots <= 0).any():
+        return None
+    median_spot = float(np.median(spots))
+    if float(spots.max() - spots.min()) > median_spot * 0.002:
+        return None
+    return median_spot
+
+
 def _dashboard_gex_values(frame, gamma_column, oi_column, multiplier, spot, side_complete):
-    """Return NaN for unavailable GEX and numeric zero for valid zero exposure."""
-    if not side_complete or multiplier is None or not np.isfinite(float(multiplier)) or float(multiplier) <= 0:
+    """Return NaN for unavailable GEX and numeric zero for valid zero BTC OI exposure."""
+    if (
+        not side_complete or multiplier is None or spot is None
+        or not np.isfinite(float(multiplier)) or float(multiplier) <= 0
+        or not np.isfinite(float(spot)) or float(spot) <= 0
+    ):
         return pd.Series(np.nan, index=frame.index, dtype=float)
     gamma = pd.to_numeric(frame[gamma_column], errors="coerce")
-    oi = pd.to_numeric(frame[oi_column], errors="coerce")
-    valid = gamma.notna() & oi.notna() & np.isfinite(gamma) & np.isfinite(oi) & (gamma >= 0) & (oi >= 0)
-    values = gamma * oi * float(multiplier) * (float(spot) ** 2) * 0.01
+    oi_btc = pd.to_numeric(frame[oi_column], errors="coerce")
+    valid = gamma.notna() & oi_btc.notna() & np.isfinite(gamma) & np.isfinite(oi_btc) & (gamma >= 0) & (oi_btc >= 0)
+    values = gamma * oi_btc * float(multiplier) * (float(spot) ** 2) * 0.01
     return values.where(valid, np.nan)
 
 
@@ -1661,7 +1677,8 @@ def fetch_delta_options():
         nearest_expiry = nearest["expiry_str"]; expiry_dt = nearest["dt_utc"]; expiry_source = nearest["source"]
         
         filtered_options = [opt for opt in btc_options if len(opt.get("symbol", "").split("-")) >= 4 and opt.get("symbol", "").split("-")[3] == nearest_expiry]
-        contract_size = _validated_btc_contract_multiplier(filtered_options)
+        # Delta 'oi' is BTC OI, so GEX uses a unit scale of 1.0 (no contract multiplier).
+        contract_size = 1.0
 
         tickers, tick_complete = fetch_paginated_data(f"{BASE_URL}/tickers?contract_types=call_options,put_options&page_size=1000")
         ticker_map = {t.get("symbol"): t for t in tickers if t.get("symbol")}
@@ -1692,7 +1709,7 @@ def fetch_delta_options():
                 iv = float(quotes.get("mark_iv") or quotes.get("ask_iv") or "0") * 100
                 ts_val = ticker.get("timestamp") or ticker.get("updated_at")
                 
-                chain.append({"Product_ID": opt.get("id"), "Symbol": sym, "Expiry": nearest_expiry, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "OI_USD_Source": oi_usd_source, "OI_Contracts_Source": oi_contracts_source, "Gamma": gamma, "IV": iv, "Volume": volume, "Timestamp": ts_val})
+                chain.append({"Product_ID": opt.get("id"), "Symbol": sym, "Expiry": nearest_expiry, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "OI_USD_Source": oi_usd_source, "OI_Contracts_Source": oi_contracts_source, "Gamma": gamma, "Spot_Price": ticker.get("spot_price"), "IV": iv, "Volume": volume, "Timestamp": ts_val})
             except (ValueError, TypeError): continue
 
         df = _build_option_chain_frame(chain)
@@ -1829,6 +1846,11 @@ def _render_market_dashboard():
             provisional_vah, provisional_val, provisional_poc = calculate_tpo(provisional_today)
     
     options_df, loaded_expiry, expiry_dt, expiry_source, dynamic_contract_size, raw_chain_df, is_chain_complete = fetch_delta_options()
+    delta_options_spot = (
+        _validated_delta_spot_price(raw_chain_df["Spot_Price"])
+        if raw_chain_df is not None and not raw_chain_df.empty and "Spot_Price" in raw_chain_df.columns
+        else None
+    )
     options_filter_results = fetch_options_filter_results()
     
     true_max_pain, straddle_price, atm_strike, true_max_pain = np.nan, np.nan, 0.0, np.nan
@@ -1840,7 +1862,7 @@ def _render_market_dashboard():
     filtered_options = pd.DataFrame()
     
     if not options_df.empty and latest_price > 0:
-        valid_contract_size = dynamic_contract_size if dynamic_contract_size and dynamic_contract_size > 0 else np.nan
+        valid_contract_size = 1.0  # BTC-denominated OI; retained parameter is a neutral compatibility scale.
         call_gamma_complete = (
             is_chain_complete
             and "GEX_Call_Status" in options_df.columns
@@ -1853,11 +1875,11 @@ def _render_market_dashboard():
         )
         options_df['GEX_Call'] = _dashboard_gex_values(
             options_df, "Gamma_Call", "OI_Contracts_Call",
-            valid_contract_size, latest_price, call_gamma_complete,
+            valid_contract_size, delta_options_spot, call_gamma_complete,
         )
         options_df['GEX_Put'] = _dashboard_gex_values(
             options_df, "Gamma_Put", "OI_Contracts_Put",
-            valid_contract_size, latest_price, put_gamma_complete,
+            valid_contract_size, delta_options_spot, put_gamma_complete,
         )
         options_df['Dist_to_Spot'] = abs(options_df['Strike'] - latest_price)
         
@@ -1885,11 +1907,11 @@ def _render_market_dashboard():
             call_gamma_wall = _select_positive_wall(temp_filt, "GEX_Call")
             put_gamma_wall = _select_positive_wall(temp_filt, "GEX_Put")
 
-            total_calls_contracts = _sum_if_complete(temp_filt["OI_Contracts_Call"])
-            total_puts_contracts = _sum_if_complete(temp_filt["OI_Contracts_Put"])
+            total_calls_btc_oi = _sum_if_complete(temp_filt["OI_Contracts_Call"])
+            total_puts_btc_oi = _sum_if_complete(temp_filt["OI_Contracts_Put"])
             pcr = (
-                total_puts_contracts / total_calls_contracts
-                if pd.notna(total_calls_contracts) and pd.notna(total_puts_contracts) and total_calls_contracts > 0
+                total_puts_btc_oi / total_calls_btc_oi
+                if pd.notna(total_calls_btc_oi) and pd.notna(total_puts_btc_oi) and total_calls_btc_oi > 0
                 else np.nan
             )
             total_calls_vol = _sum_if_complete(temp_filt["Volume_Call"])
@@ -2282,7 +2304,7 @@ def _render_market_dashboard():
             st.markdown(
                 _ui_grid([
                     _ui_card("Max Pain", _ui_num(true_max_pain)),
-                    _ui_card("Local OI PCR · ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A", tone="info"),
+                    _ui_card("Local BTC OI PCR · ±10%", format(pcr, ".2f") if not pd.isna(pcr) else "N/A", tone="info"),
                     _ui_card("Call GEX Wall", call_strike_text, tone="up", tint=True),
                     _ui_card("Put GEX Wall", put_strike_text, tone="down", tint=True),
                 ], "g2"),
@@ -2329,7 +2351,7 @@ def _render_market_dashboard():
     
     with st.expander("Options OI clusters"):
         st.markdown("#### Top 3 Strikes by OI")
-        st.caption("Largest individual Call and Put OI concentrations within ±15% of spot. OI is shown in USD value; distance is measured from current spot.")
+        st.caption("Largest individual Call and Put OI concentrations within ±15% of spot. USD OI is shown in USD; BTC OI quantities are shown separately.")
         if raw_chain_df is not None and not raw_chain_df.empty and latest_price > 0:
             top_band = raw_chain_df.copy()
             top_band["Strike"] = pd.to_numeric(top_band["Strike"], errors="coerce")
@@ -2366,7 +2388,7 @@ def _render_market_dashboard():
                                 "Strike": st.column_config.NumberColumn("Strike", format="$%.0f"),
                                 "OI_USD": st.column_config.NumberColumn("OI (USD M)", format="$%.2fM"),
                                 "OI_Contracts": st.column_config.NumberColumn(
-                                    "OI (Contracts)", format="%.0f"
+                                    "OI (BTC)", format="%.6f"
                                 ),
                                 "Distance ($)": st.column_config.NumberColumn("Distance ($)", format="$%+.0f"),
                                 "Distance (%)": st.column_config.NumberColumn("Distance (%)", format="%+.2f%%"),
@@ -2503,7 +2525,7 @@ def _render_market_dashboard():
     Max Pain: {max_pain}
     Call GEX Wall: {call_wall}
     Put GEX Wall: {put_wall}
-    Local OI PCR (Contracts ±10% spot): {pcr}
+    Local BTC OI PCR (±10% spot): {pcr}
     Delta Futures OI: {oi}
     Perp Basis: {basis}
     OI Direction: Unavailable without comparable prior observation

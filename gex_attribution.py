@@ -11,6 +11,8 @@ import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 TOP_N = 3
+GEX_METRIC_VERSION = "options-derived-v2.0-btc-oi"
+GEX_OI_SCALE = 1.0
 GEX_CHANGE_THRESHOLD_PCT = 2.0
 GEX_EPSILON = 1e-12
 MAX_PREVIOUS_RUNS_TO_CHECK = 20
@@ -321,12 +323,15 @@ def run_attribution_safely(client, current_snapshot_id, expiry_date, current_row
 
 def _valid_derived(derived: Dict[str, Any]) -> bool:
     status = derived.get("metric_status") or {}
+    multiplier = _number(derived.get("gex_contract_multiplier"))
     return (
-        status.get("chain") == "OK"
+        derived.get("metric_version") == GEX_METRIC_VERSION
+        and status.get("chain") == "OK"
         and status.get("call_gex") == "OK"
         and status.get("put_gex") == "OK"
         and _number(derived.get("underlying_spot_price")) is not None
-        and _number(derived.get("gex_contract_multiplier")) is not None
+        and multiplier is not None
+        and math.isclose(multiplier, GEX_OI_SCALE, rel_tol=0.0, abs_tol=1e-12)
     )
 
 
@@ -369,7 +374,7 @@ def _previous_complete_snapshot(client, expiry_date: str, current_snapshot_id: s
             client.table("options_derived_snapshots")
             .select(
                 "snapshot_id,expiry_date,source_collected_at,underlying_spot_price,"
-                "gex_contract_multiplier,metric_status"
+                "gex_contract_multiplier,metric_version,metric_status"
             )
             .eq("snapshot_id", snapshot_id)
             .eq("expiry_date", expiry_date)

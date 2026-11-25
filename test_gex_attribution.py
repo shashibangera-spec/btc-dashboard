@@ -208,7 +208,8 @@ def test_previous_snapshot_selection_skips_partial_and_incomplete_runs():
     valid_derived = {
         "snapshot_id": "valid", "expiry_date": "2026-12-25",
         "source_collected_at": "2026-11-19T10:00:00+00:00",
-        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
+        "underlying_spot_price": 100, "gex_contract_multiplier": 1.0,
+        "metric_version": "options-derived-v2.0-btc-oi",
         "metric_status": {
             "chain": "OK", "call_gex": "OK", "put_gex": "OK",
             "chain_expected_contracts": 2,
@@ -246,7 +247,8 @@ def test_persistence_upserts_comparison_id_and_event_payload():
     prev = {
         "snapshot_id": "00000000-0000-0000-0000-000000000001",
         "source_collected_at": "2026-11-19T10:00:00+00:00",
-        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
+        "underlying_spot_price": 100, "gex_contract_multiplier": 1.0,
+        "metric_version": "options-derived-v2.0-btc-oi",
         "metric_status": {
             "chain": "OK", "call_gex": "OK", "put_gex": "OK",
             "chain_expected_contracts": 6,
@@ -267,7 +269,8 @@ def test_persistence_upserts_comparison_id_and_event_payload():
     current_derived = {
         "snapshot_id": "00000000-0000-0000-0000-000000000002",
         "source_collected_at": "2026-11-19T10:03:00+00:00",
-        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
+        "underlying_spot_price": 100, "gex_contract_multiplier": 1.0,
+        "metric_version": "options-derived-v2.0-btc-oi",
         "metric_status": {
             "chain": "OK", "call_gex": "OK", "put_gex": "OK",
             "chain_expected_contracts": 7,
@@ -316,7 +319,8 @@ def test_database_upsert_error_is_caught_by_non_blocking_wrapper():
     previous_derived = {
         "snapshot_id": "00000000-0000-0000-0000-000000000001",
         "source_collected_at": "2026-11-19T10:00:00+00:00",
-        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
+        "underlying_spot_price": 100, "gex_contract_multiplier": 1.0,
+        "metric_version": "options-derived-v2.0-btc-oi",
         "metric_status": {
             "chain": "OK", "call_gex": "OK", "put_gex": "OK",
             "chain_expected_contracts": 6,
@@ -325,7 +329,8 @@ def test_database_upsert_error_is_caught_by_non_blocking_wrapper():
     current_derived = {
         "snapshot_id": "00000000-0000-0000-0000-000000000002",
         "source_collected_at": "2026-11-19T10:03:00+00:00",
-        "underlying_spot_price": 100, "gex_contract_multiplier": .001,
+        "underlying_spot_price": 100, "gex_contract_multiplier": 1.0,
+        "metric_version": "options-derived-v2.0-btc-oi",
         "metric_status": {
             "chain": "OK", "call_gex": "OK", "put_gex": "OK",
             "chain_expected_contracts": 7,

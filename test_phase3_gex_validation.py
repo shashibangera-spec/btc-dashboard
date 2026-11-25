@@ -17,7 +17,7 @@ import gex_attribution as attribution
 
 ROOT = Path(__file__).resolve().parent
 SPOT = 90_000.0
-MULTIPLIER = 0.001
+MULTIPLIER = 1.0  # BTC OI requires no 0.001 contract-size conversion.
 
 # Immutable shared synthetic fixture used by all three independent calculations.
 BTC_OPTIONS_FIXTURE = tuple(
@@ -39,7 +39,7 @@ BTC_OPTIONS_FIXTURE = tuple(
 def _dashboard_helpers():
     source = (ROOT / "btc_live_dashboard.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    names = {"_validated_btc_contract_multiplier", "_validate_gamma_side", "_dashboard_gex_values", "_listed_ticker_identities_match"}
+    names = {"_validated_btc_contract_multiplier", "_validate_gamma_side", "_dashboard_gex_values", "_listed_ticker_identities_match", "_validated_delta_spot_price"}
     nodes = [
         node for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
@@ -304,6 +304,7 @@ def _valid_derived(expected):
         "snapshot_id": "previous", "expiry_date": "2026-12-25",
         "source_collected_at": "2026-12-25T00:00:00+00:00",
         "underlying_spot_price": SPOT, "gex_contract_multiplier": MULTIPLIER,
+        "metric_version": "options-derived-v2.0-btc-oi",
         "metric_status": {
             "chain": "OK", "call_gex": "OK", "put_gex": "OK",
             "chain_expected_contracts": expected,

@@ -3,9 +3,8 @@ Delta Exchange India — BTC Options OI Collector + Per-Expiry Research Metrics.
 
 GEX convention used here:
   gamma = change in option delta per $1 move in BTC spot (API-provided standard gamma)
-  OI = number of option contracts
-  contract multiplier = 0.001 BTC per contract (user-confirmed Delta Exchange India BTC options)
-  gross GEX per 1% spot move = gamma * OI * multiplier * spot**2 * 0.01
+  OI = BTC-denominated open interest from Delta ticker 'oi'
+  gross GEX per 1% spot move = gamma * BTC_OI * spot**2 * 0.01
 
 This is an unsigned, model-derived concentration measure. It does not infer dealer
 positioning, net gamma, hedging direction, support, resistance, or a price target.
@@ -32,9 +31,9 @@ MAX_RETRIES = 3
 RETRY_DELAY = 2
 EXCHANGE = "DELTA_INDIA"
 UNDERLYING = "BTC"
-GEX_CONTRACT_MULTIPLIER_BTC = 0.001  # Delta Exchange India BTC options: 0.001 BTC per contract.
+GEX_OI_SCALE = 1.0  # Delta ticker OI is already BTC-denominated.
 LOCAL_OI_BAND_PCT = 10.0
-METRIC_VERSION = "options-derived-v1.0"
+METRIC_VERSION = "options-derived-v2.0-btc-oi"
 
 
 def utc_now():
@@ -68,10 +67,14 @@ def to_int(value):
     return int(result)
 
 
-def extract_oi_contracts(ticker):
-    """Prefer documented REST 'oi'; use legacy 'oi_contracts' only if absent."""
+def extract_oi_btc(ticker):
+    """Return Delta ticker OI in BTC; legacy key is fallback only when 'oi' is absent."""
     raw = ticker.get("oi") if "oi" in ticker else ticker.get("oi_contracts")
     return to_float(raw)
+
+
+# Compatibility alias for existing callers; the value is BTC OI, not contract count.
+extract_oi_contracts = extract_oi_btc
 
 
 def validate_contract_identities(tickers):
@@ -270,7 +273,7 @@ def build_snapshot_row(ticker, snapshot_id, collected_at, expiry, taker_buy=None
         "product_id": product_id,
         "symbol": str(symbol),
         "contract_status": ticker.get("state") or ticker.get("status"),
-        "oi_contracts": extract_oi_contracts(ticker),
+        "oi_contracts": extract_oi_btc(ticker),
         "oi_value_usd": to_float(ticker.get("oi_value_usd")),
         "volume_24h": to_float(ticker.get("volume")),
         "turnover_usd": to_float(ticker.get("turnover_usd")),
@@ -407,10 +410,10 @@ def _calculate_gex_wall(rows, option_type, spot):
         return None, None, "MISSING_" + option_type + "_CHAIN"
     exposures = {}
     for row in selected:
-        oi = to_float(row.get("oi_contracts"))
+        oi_btc = to_float(row.get("oi_contracts"))
         greeks = row.get("greeks")
         gamma = to_float(greeks.get("gamma")) if isinstance(greeks, dict) else None
-        if oi is None or oi < 0:
+        if oi_btc is None or oi_btc < 0:
             return None, None, "MISSING_OR_INVALID_OI"
         if gamma is None:
             return None, None, "MISSING_GAMMA"
@@ -419,9 +422,9 @@ def _calculate_gex_wall(rows, option_type, spot):
         strike = to_float(row.get("strike_price"))
         if strike is None:
             return None, None, "MISSING_STRIKE"
-        # API gamma is delta change per $1 BTC move; multiplier is 0.001 BTC/contract.
-        # Unsigned OI-weighted gross GEX per 1% spot move; not dealer/net gamma.
-        gex = gamma * oi * GEX_CONTRACT_MULTIPLIER_BTC * (spot ** 2) * 0.01
+        # OI is already BTC-denominated; do not apply the 0.001 BTC/contract factor.
+        # Unsigned BTC-OI-weighted gross GEX per 1% spot move; not dealer/net gamma.
+        gex = gamma * oi_btc * (spot ** 2) * 0.01
         exposures[strike] = exposures.get(strike, 0.0) + gex
     if not any(value > 0 for value in exposures.values()):
         return None, None, "ZERO_GAMMA_ONLY"
@@ -459,7 +462,7 @@ def build_derived_row(snapshot_id, expiry, rows, expected_count, inserted_count)
         "expiry_date": expiry.isoformat(),
         "source_collected_at": source_collected_at,
         "underlying_spot_price": spot,
-        "gex_contract_multiplier": GEX_CONTRACT_MULTIPLIER_BTC,
+        "gex_contract_multiplier": GEX_OI_SCALE,  # compatibility field; 1.0 means no unit conversion
         "local_oi_band_pct": LOCAL_OI_BAND_PCT,
         "metric_version": METRIC_VERSION,
         "metric_status": status,
