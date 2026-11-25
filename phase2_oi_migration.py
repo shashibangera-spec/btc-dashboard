@@ -30,16 +30,39 @@ def _index(value,endpoint,expected_snapshot_id):
     if missing or snapshot_mismatch or duplicate_ids or diag["blank_product_id_rows"] or duplicate_identity: return {},diag
     return {str(r["product_id"]):r for r in rows},diag
 def _conc(values):
-    positive=sorted((v for v in values.values() if v>0),reverse=True); total=sum(positive)
-    if total<=0: return {"total_oi":total,"hhi":None,"hhi_0_10000":None,"top5_share_pct":None,"top10_share_pct":None,"strike_count":len(values)}
-    shares=[x/total for x in positive]; hhi=sum(x*x for x in shares)
-    return {"total_oi":total,"hhi":hhi,"hhi_0_10000":hhi*10000,"top5_share_pct":sum(shares[:5])*100,
-        "top10_share_pct":sum(shares[:10])*100,"strike_count":len(values)}
+    ranked=sorted(((float(strike),float(oi)) for strike,oi in values.items() if oi>0),
+        key=lambda item:(-item[1],item[0]))
+    total=sum(oi for _,oi in ranked)
+    if total<=0:
+        return {"total_oi":total,"hhi":None,"hhi_0_10000":None,"top5_share_pct":None,
+            "top10_share_pct":None,"top5":[],"top10":[],"strike_count":len(values)}
+    shares=[oi/total for _,oi in ranked]; hhi=sum(x*x for x in shares)
+    def members(limit):
+        return [{"strike_price":strike,"oi_contracts":oi,"share_pct":oi/total*100}
+            for strike,oi in ranked[:limit]]
+    top5,top10=members(5),members(10)
+    return {"total_oi":total,"hhi":hhi,"hhi_0_10000":hhi*10000,
+        "top5_share_pct":sum(x["share_pct"] for x in top5),
+        "top10_share_pct":sum(x["share_pct"] for x in top10),
+        "top5":top5,"top10":top10,"strike_count":len(values)}
 def _distribution(rows):
     sides={"CALL":{},"PUT":{}}
     for r in rows:
         side,strike=r["option_type"],r["strike_price"]; sides[side][strike]=sides[side].get(strike,0.0)+r["oi_contracts"]
     return {"CALL":_conc(sides["CALL"]),"PUT":_conc(sides["PUT"]),"strike_oi":sides}
+def _migration_summary(rows):
+    result={}
+    for side in ("CALL","PUT","COMBINED"):
+        changes=[r["oi_change"] for r in rows if side=="COMBINED" or r["option_type"]==side]
+        positive=[x for x in changes if x>0]
+        negative=[x for x in changes if x<0]
+        result[side]={"increasing_contract_count":len(positive),
+            "decreasing_contract_count":len(negative),
+            "unchanged_contract_count":sum(x==0 for x in changes),
+            "gross_positive_oi_change":sum(positive),
+            "gross_negative_oi_change":sum(abs(x) for x in negative),
+            "net_oi_change":sum(changes)}
+    return result
 def _expiry(cur,prev,expiry):
     a={k:v for k,v in cur.items() if str(v.get("expiry_date"))==expiry}; b={k:v for k,v in prev.items() if str(v.get("expiry_date"))==expiry}
     common=sorted(set(a)&set(b)); valid=[]; invalid=[]
@@ -62,6 +85,7 @@ def _expiry(cur,prev,expiry):
         "arithmetic_reconciliation":{"previous_matched_cohort_oi":pt,"current_matched_cohort_oi":ct,"net_oi_change":ct-pt,
             "sum_of_contract_changes":change,"difference":diff,"status":"PASS" if math.isclose(diff,0,rel_tol=1e-12,abs_tol=1e-9) else "FAIL"},
         "call_oi_change":sum(delta["CALL"].values()),"put_oi_change":sum(delta["PUT"].values()),"combined_oi_change":change,
+        "oi_migration_summary":_migration_summary(valid),
         "previous_concentration":pdist,"current_concentration":cdist,"strike_oi_change":delta,"matched_contract_changes":valid}
 def calculate_oi_migration(current_rows,previous_rows,*,current_snapshot_id,previous_snapshot_id,current_completed_at,
     previous_completed_at,selected_expiry,eligible_expiries):
@@ -91,5 +115,6 @@ def calculate_oi_migration(current_rows,previous_rows,*,current_snapshot_id,prev
         "cross_expiry_arithmetic_reconciliation":recon,"nearest_expiry":nearest,"expiry_specific":by_expiry,
         "cross_expiry_same_numerical_strike":{"status":"OK" if cohort else "INSUFFICIENT_DATA",
             "aggregation_basis":"COMMON_VALID_MATCHED_PRODUCT_IDS_ACROSS_ELIGIBLE_EXPIRIES","expiry_breakdown_retained":True,
-            "matched_contract_count":len(cohort),"previous_concentration":pdist,"current_concentration":cdist,"strike_oi_change":delta},
+            "matched_contract_count":len(cohort),"oi_migration_summary":_migration_summary(cohort),
+            "previous_concentration":pdist,"current_concentration":cdist,"strike_oi_change":delta},
         "endpoint_validation":[cd,pd]}

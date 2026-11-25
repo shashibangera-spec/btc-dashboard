@@ -42,7 +42,7 @@ jobs:
           ADAPTER_BLOB="$(git rev-parse HEAD:phase2_oi_migration_adapter.py)"
           echo "Calculation module blob: $CALC_BLOB"
           echo "Adapter module blob: $ADAPTER_BLOB"
-          test "$CALC_BLOB" = "b6cb6e7bbde97a3a5dbaf27c70b412b8469d79fd"
+          test "$CALC_BLOB" = "b38f23bd425e81660914715f88fe7f3d73b688bb"
           test "$ADAPTER_BLOB" = "20cb95dacd5bee80081bec3146fd4a08f2957015"
 
       - name: Install offline test dependencies

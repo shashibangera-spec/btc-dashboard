@@ -303,3 +303,83 @@ def test_adapter_withholds_invalid_current_or_immediate_predecessor_without_olde
         assert result["pair"]["previous_snapshot_id"]=="immediate-invalid"
         assert result["pair"]["previous_snapshot_id"]!="older-valid"
         assert result["previous_validation"]["reason"]=="RUN_COUNTERS_INVALID"
+
+
+def _synthetic_pair(previous, current):
+    rows_previous, rows_current = [], []
+    for side in ("CALL", "PUT"):
+        strikes = sorted(set(previous.get(side, {})) | set(current.get(side, {})))
+        for strike in strikes:
+            pid = f"{EXPIRIES[0]}-{side}-{strike}"
+            rows_previous.append({"snapshot_id":"previous","expiry_date":EXPIRIES[0],
+                "product_id":pid,"option_type":side,"strike_price":strike,
+                "oi_contracts":previous.get(side, {}).get(strike, 0)})
+            rows_current.append({"snapshot_id":"current","expiry_date":EXPIRIES[0],
+                "product_id":pid,"option_type":side,"strike_price":strike,
+                "oi_contracts":current.get(side, {}).get(strike, 0)})
+    return rows_current, rows_previous
+
+
+def test_top5_top10_membership_uses_oi_rank_and_ascending_strike_ties_at_both_endpoints():
+    previous = {"CALL":{90:10,100:10,110:0,120:5,130:5},
+                "PUT":{180:4,190:4,200:0}}
+    current = {"CALL":{90:0,100:12,110:12,120:6,130:0},
+               "PUT":{180:4,190:4,200:0}}
+    cur, prev = _synthetic_pair(previous, current)
+    result = calc(cur, prev)["nearest_expiry"]
+    prev_call = result["previous_concentration"]["CALL"]
+    curr_call = result["current_concentration"]["CALL"]
+    prev_put = result["previous_concentration"]["PUT"]
+    curr_put = result["current_concentration"]["PUT"]
+    assert [(x["strike_price"],x["oi_contracts"]) for x in prev_call["top5"]] == [(90,10),(100,10),(120,5),(130,5)]
+    assert [(x["strike_price"],x["oi_contracts"]) for x in curr_call["top5"]] == [(100,12),(110,12),(120,6)]
+    assert [(x["strike_price"],x["oi_contracts"]) for x in prev_put["top5"]] == [(180,4),(190,4)]
+    assert [(x["strike_price"],x["oi_contracts"]) for x in curr_put["top5"]] == [(180,4),(190,4)]
+    assert [(x["strike_price"],x["oi_contracts"]) for x in curr_call["top10"]] == [(100,12),(110,12),(120,6)]
+    assert [(x["strike_price"],x["oi_contracts"]) for x in curr_put["top10"]] == [(180,4),(190,4)]
+    assert curr_call["top5"][0]["share_pct"] == pytest.approx(40)
+    assert curr_call["top5_share_pct"] == pytest.approx(100)
+
+
+def test_zero_oi_strikes_are_excluded_from_ranked_membership_and_zero_only_has_empty_lists():
+    cur, prev = _synthetic_pair({"CALL":{90:0,100:0},"PUT":{190:0}},
+                                {"CALL":{90:0,100:0},"PUT":{190:0}})
+    result = calc(cur, prev)["nearest_expiry"]["current_concentration"]
+    for side in ("CALL","PUT"):
+        assert result[side]["top5"] == []
+        assert result[side]["top10"] == []
+        assert result[side]["top5_share_pct"] is None
+        assert result[side]["top10_share_pct"] is None
+
+
+def test_oi_migration_summary_reports_increasing_decreasing_unchanged_and_gross_net_changes():
+    previous = {"CALL":{100:10,110:10,120:10,130:0},
+                "PUT":{200:10,210:10,220:10,230:0}}
+    current = {"CALL":{100:15,110:7,120:10,130:0},
+               "PUT":{200:8,210:10,220:12,230:0}}
+    cur, prev = _synthetic_pair(previous, current)
+    result = calc(cur, prev)["nearest_expiry"]["oi_migration_summary"]
+    assert result["CALL"] == {"increasing_contract_count":1,"decreasing_contract_count":1,
+        "unchanged_contract_count":2,"gross_positive_oi_change":5,"gross_negative_oi_change":3,
+        "net_oi_change":2}
+    assert result["PUT"] == {"increasing_contract_count":1,"decreasing_contract_count":1,
+        "unchanged_contract_count":2,"gross_positive_oi_change":2,"gross_negative_oi_change":2,
+        "net_oi_change":0}
+    assert result["COMBINED"] == {"increasing_contract_count":2,"decreasing_contract_count":2,
+        "unchanged_contract_count":4,"gross_positive_oi_change":7,"gross_negative_oi_change":5,
+        "net_oi_change":2}
+
+
+def test_oi_migration_summary_arithmetic_reconciles_for_calls_puts_and_combined_cohort():
+    previous = {"CALL":{100:10,110:10,120:10,130:0},
+                "PUT":{200:10,210:10,220:10,230:0}}
+    current = {"CALL":{100:15,110:7,120:10,130:0},
+               "PUT":{200:8,210:10,220:12,230:0}}
+    cur, prev = _synthetic_pair(previous, current)
+    result = calc(cur, prev)["nearest_expiry"]
+    summary = result["oi_migration_summary"]
+    for side in ("CALL","PUT","COMBINED"):
+        assert summary[side]["gross_positive_oi_change"] - summary[side]["gross_negative_oi_change"] == pytest.approx(summary[side]["net_oi_change"])
+    reconciliation = result["arithmetic_reconciliation"]
+    assert reconciliation["status"] == "PASS"
+    assert reconciliation["current_matched_cohort_oi"] - reconciliation["previous_matched_cohort_oi"] == pytest.approx(summary["COMBINED"]["net_oi_change"])
