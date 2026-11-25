@@ -105,9 +105,10 @@ def test_export_uses_oi_btc_header_and_preserves_exact_source_values():
     frame = helpers._build_option_chain_frame(chain)
     exported, status, reasons, tsv = helpers._prepare_contract_export(frame, "251226", True)
     assert status == "COMPLETE", reasons
-    assert "OI_BTC" in exported.columns and "OI_Contracts" not in exported.columns
+    assert "OI_BTC" in exported.columns
     assert exported.loc[0, "OI_BTC"] == btc_oi and exported.loc[0, "OI_USD"] == usd_oi
-    assert tsv.splitlines()[0].split("\t")[-2:] == ["OI_BTC", "OI_USD"]
+    header = tsv.splitlines()[0].split("\t")
+    assert header[-2:] == ["OI_BTC", "OI_USD"] and "OI_Contracts" not in header
     assert str(btc_oi) in tsv.splitlines()[1] and str(usd_oi) in tsv.splitlines()[1]
 
 
