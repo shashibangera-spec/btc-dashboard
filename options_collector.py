@@ -68,9 +68,13 @@ def to_int(value):
 
 
 def extract_oi_btc(ticker):
-    """Return Delta ticker OI in BTC; legacy key is fallback only when 'oi' is absent."""
-    raw = ticker.get("oi") if "oi" in ticker else ticker.get("oi_contracts")
-    return to_float(raw)
+    """Return valid Delta ticker BTC OI; never substitute the contract-count field."""
+    if not isinstance(ticker, dict) or "oi" not in ticker:
+        return None
+    oi_btc = to_float(ticker.get("oi"))
+    if oi_btc is None or oi_btc < 0:
+        return None
+    return oi_btc
 
 
 # Compatibility alias for existing callers; the value is BTC OI, not contract count.
