@@ -2,7 +2,10 @@
 from datetime import date
 from typing import Any
 import pandas as pd
-from options_filters import _execute, _missing_record_keys, select_canonical_snapshot, calculate_all_filters
+from options_filters import (
+    _execute, _missing_record_keys, _metric_provenance, select_canonical_snapshot,
+    calculate_all_filters,
+)
 
 
 def parse_optional_float(value):
@@ -89,6 +92,7 @@ def load_canonical_research_options(client: Any, *, as_of: date | None = None) -
                 "snapshot_id": snapshot.snapshot_id, "expiry_date": snapshot.expiry_date}
     row = rows[0]
     required = ("snapshot_id", "expiry_date", "underlying_spot_price", "metric_status",
+                "metric_version", "gex_contract_multiplier",
                 "max_pain_strike", "atm_strike", "atm_straddle_price", "atm_straddle_pct_spot",
                 "local_oi_pcr", "call_gex_wall_strike", "call_gex_wall_value",
                 "put_gex_wall_strike", "put_gex_wall_value")
@@ -98,6 +102,12 @@ def load_canonical_research_options(client: Any, *, as_of: date | None = None) -
                 "missing_columns": missing["missing_columns"]}
     if str(row["snapshot_id"]) != snapshot.snapshot_id or str(row["expiry_date"]) != snapshot.expiry_date:
         return {"status": "UNAVAILABLE", "reason": "DERIVED_IDENTITY_MISMATCH"}
+    provenance_ok, provenance_reason, metric_version, multiplier = _metric_provenance(row)
+    if (not provenance_ok or metric_version != snapshot.metric_version
+            or multiplier != snapshot.gex_contract_multiplier):
+        return {"status": "UNAVAILABLE", "reason": "INVALID_DERIVED_METRIC_PROVENANCE",
+                "metric_reason": provenance_reason, "metric_version": row.get("metric_version"),
+                "gex_contract_multiplier": row.get("gex_contract_multiplier")}
     if not isinstance(row["metric_status"], dict) or row["metric_status"].get("chain") != "OK":
         return {"status": "UNAVAILABLE", "reason": "DERIVED_CHAIN_NOT_VALID"}
     spot = pd.to_numeric(pd.Series([row["underlying_spot_price"]]), errors="coerce").iloc[0]
@@ -106,4 +116,6 @@ def load_canonical_research_options(client: Any, *, as_of: date | None = None) -
     row = dict(row)
     row["status"] = "OK"
     row["run_completed_at"] = snapshot.completed_at
+    row["source_metric_version"] = metric_version
+    row["source_gex_contract_multiplier"] = multiplier
     return {"status": "OK", "snapshot": snapshot, "derived": row, "filters": calculate_all_filters(snapshot), "selection": selection}

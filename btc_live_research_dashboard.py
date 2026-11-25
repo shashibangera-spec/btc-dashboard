@@ -512,8 +512,8 @@ Note: OI/GEX concentrations are descriptive positioning measurements. Gross GEX 
                 if options_metrics.get("put_gex_wall_value") is not None else "N/A",
             )
             st.caption(
-                "GEX is model-derived using a 0.001 BTC-per-contract multiplier and standard API gamma. "
-                "Gross unsigned OI concentration only; this does not identify dealer positioning or net gamma."
+                "GEX is model-derived from BTC-denominated OI (Delta ticker oi) with multiplier 1.0 and standard API gamma. "
+                "Gross unsigned exposure concentration only; it is not signed gamma or directional positioning."
             )
             st.caption(
                 f"ATM strike: ${float(options_metrics['atm_strike']):,.0f}"

@@ -267,7 +267,7 @@ def _build_option_chain_frame(chain):
     # DataFrame inference can coerce [large_int, None] to float64 and round the
     # integer. Rebuild source-only columns from the original records as object
     # dtype; calculation columns remain the float-normalized values in each row.
-    for column in ("OI_Contracts_Source", "OI_USD_Source"):
+    for column in ("OI_BTC_Source", "OI_USD_Source"):
         if any(column in row for row in chain):
             frame[column] = pd.Series(
                 [row.get(column) for row in chain], index=frame.index, dtype=object
@@ -279,7 +279,7 @@ def _prepare_contract_export(raw_chain_df, selected_expiry, existing_chain_compl
     """Run the production snapshot export preparation, validation and TSV serialization."""
     columns = [
         "Product_ID", "Symbol", "Expiry", "Type", "Strike",
-        "OI_Contracts", "OI_USD",
+        "OI_BTC", "OI_USD",
     ]
     export_df = raw_chain_df.copy()
     missing_columns = [column for column in columns if column not in export_df.columns]
@@ -290,9 +290,9 @@ def _prepare_contract_export(raw_chain_df, selected_expiry, existing_chain_compl
 
     # Source columns are deliberately object dtype, preserving API int/Decimal/
     # string values; calculation columns remain the existing float-normalized data.
-    if "OI_Contracts_Source" in export_df.columns:
-        export_df["OI_Contracts"] = pd.Series(
-            export_df["OI_Contracts_Source"].tolist(), index=export_df.index, dtype=object
+    if "OI_BTC_Source" in export_df.columns:
+        export_df["OI_BTC"] = pd.Series(
+            export_df["OI_BTC_Source"].tolist(), index=export_df.index, dtype=object
         )
     if "OI_USD_Source" in export_df.columns:
         export_df["OI_USD"] = pd.Series(
@@ -314,7 +314,7 @@ def _prepare_contract_export(raw_chain_df, selected_expiry, existing_chain_compl
 
 def _validate_contract_export(frame, selected_expiry, existing_chain_complete=True):
     """Return (complete, reasons) after validating every required exported field."""
-    required = ["Product_ID", "Symbol", "Expiry", "Type", "Strike", "OI_Contracts", "OI_USD"]
+    required = ["Product_ID", "Symbol", "Expiry", "Type", "Strike", "OI_BTC", "OI_USD"]
     reasons = []
     if not existing_chain_complete:
         reasons.append("existing API/product pagination completeness check failed")
@@ -390,7 +390,7 @@ def _validate_contract_export(frame, selected_expiry, existing_chain_complete=Tr
             except (InvalidOperation, TypeError, ValueError):
                 reasons.append(f"row {row_index}: invalid strike encoded in Symbol")
 
-        for column in ("OI_Contracts", "OI_USD"):
+        for column in ("OI_BTC", "OI_USD"):
             value = _decimal_value(row[column])
             if value is None or value < 0:
                 reasons.append(f"row {row_index}: {column} must be numeric, finite and non-negative")
@@ -433,25 +433,25 @@ def _run_contract_export_validation_tests():
     base = {
         "Product_ID": 101, "Symbol": "C-BTC-100000-301226",
         "Expiry": "301226", "Type": "Call", "Strike": Decimal("100000"),
-        "OI_Contracts": Decimal("0"), "OI_USD": Decimal("0"),
+        "OI_BTC": Decimal("0"), "OI_USD": Decimal("0"),
     }
     valid, reasons = _validate_contract_export(pd.DataFrame([base]), "301226")
     assert valid, reasons
 
-    contracts, usd = _extract_option_oi_values({"oi_contracts": 0, "oi": 77, "oi_value_usd": 0})
-    assert contracts == 0 and usd == 0
+    oi_btc, usd = _extract_option_oi_values({"oi_contracts": 0, "oi": 77, "oi_value_usd": 0})
+    assert oi_btc == 77 and usd == 0
     assert _extract_option_oi_values({"oi_contracts": None, "oi": 77})[0] == 77
     assert _extract_option_oi_values({"oi": 0})[0] == 0
     assert _extract_option_oi_values({"oi_contracts": None, "oi": 77.25})[0] == 77.25
 
-    for field in ("Product_ID", "Symbol", "Expiry", "Type", "Strike", "OI_Contracts", "OI_USD"):
+    for field in ("Product_ID", "Symbol", "Expiry", "Type", "Strike", "OI_BTC", "OI_USD"):
         bad = dict(base)
         bad[field] = None
         assert not _validate_contract_export(pd.DataFrame([bad]), "301226")[0], field
 
     for field, value in (
-        ("Strike", Decimal("Infinity")), ("OI_Contracts", Decimal("NaN")),
-        ("OI_USD", Decimal("Infinity")), ("OI_Contracts", Decimal("-0.01")),
+        ("Strike", Decimal("Infinity")), ("OI_BTC", Decimal("NaN")),
+        ("OI_USD", Decimal("Infinity")), ("OI_BTC", Decimal("-0.01")),
         ("OI_USD", Decimal("-0.01")),
     ):
         bad = dict(base)
@@ -492,37 +492,37 @@ def _run_contract_export_validation_tests():
             "Product_ID": 201, "Symbol": "C-BTC-100000-301226",
             "Expiry": "301226", "Type": "Call", "Strike": 100000.0,
             "OI_Contracts": float(huge_integer), "OI_USD": 1.0,
-            "OI_Contracts_Source": huge_integer,
+            "OI_BTC_Source": huge_integer,
             "OI_USD_Source": long_decimal,
         },
         {
             "Product_ID": 202, "Symbol": "P-BTC-101000-301226",
             "Expiry": "301226", "Type": "Put", "Strike": 101000.0,
             "OI_Contracts": np.nan, "OI_USD": np.nan,
-            "OI_Contracts_Source": None, "OI_USD_Source": None,
+            "OI_BTC_Source": None, "OI_USD_Source": None,
         },
         {
             "Product_ID": 203, "Symbol": "C-BTC-102000-301226",
             "Expiry": "301226", "Type": "Call", "Strike": 102000.0,
             "OI_Contracts": 123.0, "OI_USD": 456.0,
-            "OI_Contracts_Source": Decimal("123.000000000000000000123456789"),
+            "OI_BTC_Source": Decimal("123.000000000000000000123456789"),
             "OI_USD_Source": "4567890123456789.1234567890123456789",
         },
         {
             "Product_ID": 204, "Symbol": "P-BTC-103000-301226",
             "Expiry": "301226", "Type": "Put", "Strike": 103000.0,
             "OI_Contracts": 789.0, "OI_USD": 987.0,
-            "OI_Contracts_Source": "7890000000000000.0000000000000000007",
+            "OI_BTC_Source": "7890000000000000.0000000000000000007",
             "OI_USD_Source": 9876543210987654321,
         },
     ]
     fetched_frame = _build_option_chain_frame(source_chain)
-    assert fetched_frame["OI_Contracts_Source"].dtype == object
-    assert fetched_frame.loc[0, "OI_Contracts_Source"] == huge_integer
-    assert type(fetched_frame.loc[0, "OI_Contracts_Source"]) is int
-    assert fetched_frame.loc[1, "OI_Contracts_Source"] is None
-    assert fetched_frame.loc[2, "OI_Contracts_Source"] == Decimal("123.000000000000000000123456789")
-    assert fetched_frame.loc[3, "OI_Contracts_Source"] == "7890000000000000.0000000000000000007"
+    assert fetched_frame["OI_BTC_Source"].dtype == object
+    assert fetched_frame.loc[0, "OI_BTC_Source"] == huge_integer
+    assert type(fetched_frame.loc[0, "OI_BTC_Source"]) is int
+    assert fetched_frame.loc[1, "OI_BTC_Source"] is None
+    assert fetched_frame.loc[2, "OI_BTC_Source"] == Decimal("123.000000000000000000123456789")
+    assert fetched_frame.loc[3, "OI_BTC_Source"] == "7890000000000000.0000000000000000007"
     assert fetched_frame.loc[0, "OI_Contracts"] == float(huge_integer)
 
     exported_frame, export_status, export_reasons, tsv = _prepare_contract_export(
@@ -531,7 +531,7 @@ def _run_contract_export_validation_tests():
     assert export_status == "INCOMPLETE"
     assert any("completeness check failed" in reason for reason in export_reasons)
     tsv_lines = tsv.splitlines()
-    assert tsv_lines[0].split("\t")[-2:] == ["OI_Contracts", "OI_USD"]
+    assert tsv_lines[0].split("\t")[-2:] == ["OI_BTC", "OI_USD"]
     assert "9007199254740993" in tsv_lines[1]
     assert "123456789.12345678901234567890123456789" in tsv_lines[1]
     assert tsv_lines[2].endswith("NULL\tNULL")
@@ -569,7 +569,7 @@ def _run_contract_export_validation_tests():
 
     # Float calculation columns remain distinct from exact source columns.
     assert fetched_frame.loc[0, "OI_Contracts"] == float(huge_integer)
-    assert fetched_frame.loc[0, "OI_Contracts_Source"] == huge_integer
+    assert fetched_frame.loc[0, "OI_BTC_Source"] == huge_integer
     print("PASS: validator safeguards; fetch-chain object source preservation; mixed int/string/Decimal/missing OI; exact production TSV export; float calculation columns unchanged")
 
 def _sum_if_complete(series):
@@ -1718,7 +1718,7 @@ def fetch_delta_options():
                 iv = float(quotes.get("mark_iv") or quotes.get("ask_iv") or "0") * 100
                 ts_val = ticker.get("timestamp") or ticker.get("updated_at")
                 
-                chain.append({"Product_ID": opt.get("id"), "Symbol": sym, "Expiry": nearest_expiry, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "OI_USD_Source": oi_usd_source, "OI_Contracts_Source": oi_contracts_source, "Gamma": gamma, "Spot_Price": ticker.get("spot_price"), "IV": iv, "Volume": volume, "Timestamp": ts_val})
+                chain.append({"Product_ID": opt.get("id"), "Symbol": sym, "Expiry": nearest_expiry, "Strike": strike, "Type": opt_type, "Bid": bid, "Ask": ask, "Mark": mark, "OI_USD": oi_usd, "OI_Contracts": oi_contracts, "OI_USD_Source": oi_usd_source, "OI_BTC_Source": oi_contracts_source, "Gamma": gamma, "Spot_Price": ticker.get("spot_price"), "IV": iv, "Volume": volume, "Timestamp": ts_val})
             except (ValueError, TypeError): continue
 
         df = _build_option_chain_frame(chain)
