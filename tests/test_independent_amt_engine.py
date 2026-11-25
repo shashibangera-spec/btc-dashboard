@@ -32,7 +32,7 @@ class IndependentAMTTests(unittest.TestCase):
         got=build_session_snapshots([bar(t,10000,10100,10050),bar(t+timedelta(days=1),10250,10300,10275)],atr_period=1)
         self.assertEqual(got[0]["price_state"],"PRIOR_PROFILE_INCOMPLETE")
         self.assertIsNone(got[0]["prior_value"])
-    def test_two_completed_closes_confirm_discovery(self):
+    def test_nonqualifying_close_resets_discovery_candidate(self):\n        t=datetime(2026,1,1,0,tzinfo=UTC)\n        bars=[bar(t+timedelta(minutes=30*i),10000,10100,10050) for i in range(48)]\n        bars += [\n            bar(t+timedelta(days=1),10200,10300,10200),\n            bar(t+timedelta(days=1,minutes=30),10125,10175,10150),\n            bar(t+timedelta(days=1,minutes=60),10200,10300,10200),\n            bar(t+timedelta(days=1,minutes=90),10200,10300,10200),\n        ]\n        got=build_session_snapshots(bars,atr_period=1)\n        self.assertEqual([x["price_state"] for x in got], [\n            "DISCOVERY_CANDIDATE_ABOVE","VALUE_EXCURSION",\n            "DISCOVERY_CANDIDATE_ABOVE","DISCOVERY_CONFIRMED_ABOVE"])\n\n    def test_two_completed_closes_confirm_discovery(self):
         t=datetime(2026,1,1,0,tzinfo=UTC)
         bars=[bar(t+timedelta(minutes=30*i),10000,10100,10050) for i in range(48)]
         bars += [bar(t+timedelta(days=1),10250,10300,10275),bar(t+timedelta(days=1,minutes=30),10250,10300,10275)]
