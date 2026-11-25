@@ -147,9 +147,12 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
           and all(b.open_time-a.open_time==timedelta(minutes=30) for a,b in zip(prev,prev[1:])))
         prior=calculate_tpo_profile(prev,row_size,value_area_percent) if complete else None
         cur=sessions[day]; confirmed=candidate=None; count=reentry=0; last_open=None
+        last_poc_side=None; poc_crossings=[]; outside_side=None; outside_streak=0
         for j,(gi,c) in enumerate(cur):
             gap=last_open is not None and c.open_time-last_open>timedelta(minutes=30,seconds=1)
-            if gap:candidate,count,reentry=None,0,0
+            if gap:
+                candidate,count,reentry=None,0,0
+                last_poc_side=None; poc_crossings=[]; outside_side=None; outside_streak=0
             dev=calculate_tpo_profile([x for _,x in cur[:j+1]],row_size,value_area_percent)
             atr=atrs[gi]; buf=max(minimum_buffer,atr*atr_multiplier) if atr is not None else None
             if prior is None: ps,vs,read="PRIOR_PROFILE_INCOMPLETE","NOT_CALCULATED","NO_VALID_PRIOR_SESSION_PROFILE"
@@ -157,10 +160,22 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
             else:
                 ps,confirmed,candidate,count,reentry=_price_state(c.close,prior,buf,confirmed,candidate,count,reentry)
                 vs=classify_value(prior,dev)
+                raw_side="ABOVE" if c.close>prior.vah else "BELOW" if c.close<prior.val else None
+                if raw_side is None: outside_side,outside_streak=None,0
+                elif raw_side==outside_side: outside_streak+=1
+                else: outside_side,outside_streak=raw_side,1
+                boundary_retest=(\n                    "RETEST_RECLAIM_ABOVE" if raw_side=="ABOVE" and c.low<=prior.vah else\n                    "RETEST_REJECTION_BELOW" if raw_side=="BELOW" and c.high>=prior.val else None\n                )
+                poc_side="ABOVE" if dev.poc>prior.poc else "BELOW" if dev.poc<prior.poc else None
+                if poc_side is not None:
+                    if last_poc_side is not None and poc_side!=last_poc_side: poc_crossings.append(j)
+                    last_poc_side=poc_side
+                poc_crossings=[k for k in poc_crossings if j-k<5]
+                balance_evidence=(len(poc_crossings)>=2 and dev.val<=prior.vah and dev.vah>=prior.val)
                 if ps.startswith("DISCOVERY_CONFIRMED_"):
                     direction=ps.rsplit("_",1)[-1]
                     read=f"DISCOVERY_WITH_VALUE_SEPARATION_{direction}" if vs==f"VALUE_SEPARATED_{direction}" else f"PRICE_DISCOVERY_VALUE_NOT_YET_SEPARATED_{direction}"
                 elif ps=="REENTRY_CONFIRMED":read="REENTRY_TO_PRIOR_VALUE"
+                elif balance_evidence:read="BALANCE_EVIDENCE_WITH_VALUE_OVERLAP"
                 elif ps=="IN_VALUE":read="IN_VALUE_ROTATION"
                 else:read=ps
             out.append({"engine_version":ENGINE_VERSION,"session_date_ist":day.isoformat(),
@@ -169,7 +184,7 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
               "low":c.low,"close":c.close,"volume":c.volume,"atr":atr,"discovery_buffer":buf,
               "prior_profile_quality":"COMPLETE" if complete else "INCOMPLETE",
               "prior_value":prior.as_dict() if prior else None,"developing_value":dev.as_dict(),
-              "price_state":ps,"value_state":vs,"auction_read":read,"gap_before":gap})
+              "price_state":ps,"value_state":vs,"auction_read":read,"gap_before":gap,\n              "outside_prior_value_side":raw_side if prior else None,\n              "outside_value_close_streak":outside_streak if prior else 0,\n              "boundary_retest":boundary_retest if prior else None,\n              "poc_side_crossings_in_5":len(poc_crossings) if prior else 0,\n              "balance_evidence":balance_evidence if prior else False})
             last_open=c.open_time
     return out
 
