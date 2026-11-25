@@ -131,6 +131,9 @@ def test_research_gex_caption_describes_unsigned_v2_methodology():
     assert "Gross unsigned exposure concentration only" in source
     assert "0.001 BTC-per-contract multiplier" not in caption
     assert "dealer positioning or net gamma" not in caption
+    assert 'OI Concentration Map (BTC)' in source
+    assert 'BTC-denominated OI concentration across the same 10 nearest strikes' in source
+    assert 'OI (BTC; Call left / Put right)' in source
 
 
 def test_phase2_utility_is_documented_as_legacy_only_and_archive_provenance_limitation():
