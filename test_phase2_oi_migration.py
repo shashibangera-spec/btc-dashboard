@@ -72,10 +72,10 @@ def test_matched_cohort_arithmetic_reconciles_but_exchange_completeness_is_unver
     assert r["cross_expiry_arithmetic_reconciliation"]["difference"]==pytest.approx(0)
     assert r["validity"]["exchange_wide_completeness"]=="UNVERIFIED"
 class Response:
-    def __init__(self,data): self.data=data
+    def __init__(self,data,count=None): self.data,self.count=data,count
 class Query:
     def __init__(self,db,table): self.db,self.table,self.filters,self.sort=db,table,[],None
-    def select(self,*_): return self
+    def select(self,*_,**kwargs): self.count_requested=kwargs.get("count"); return self
     def eq(self,k,v): self.filters.append((k,v)); return self
     def order(self,k,desc=False):
         if self.sort is None: self.sort=[]
@@ -83,14 +83,22 @@ class Query:
     def limit(self,n): self.maximum=n; return self
     def range(self,a,b): self.bounds=(a,b); return self
     def execute(self):
+        if self.table=="options_collection_runs" and self.db.get("history_query_raises"):
+            raise RuntimeError("synthetic history query failure")
         rows=list(self.db.get(self.table,[]))
         for k,v in self.filters: rows=[r for r in rows if r.get(k)==v]
         if self.sort:
             for key,desc in reversed(self.sort):
                 rows.sort(key=lambda r:r.get(key) or "",reverse=desc)
+        exact_count=len(rows) if self.count_requested=="exact" else None
+        if self.table=="options_collection_runs" and self.count_requested=="exact":
+            if "history_count" in self.db: exact_count=self.db["history_count"]
+            if self.db.get("history_response_limit") is not None:
+                rows=rows[:self.db["history_response_limit"]]
         if hasattr(self,"maximum"): rows=rows[:self.maximum]
         if hasattr(self,"bounds"): rows=rows[self.bounds[0]:self.bounds[1]+1]
-        return Response(rows)
+        return Response(rows,exact_count)
+
 class Client:
     def __init__(self,db): self.db=db
     def table(self,name): return Query(self.db,name)
@@ -182,3 +190,29 @@ def test_adapter_withholds_when_success_run_timestamp_is_unresolvable(monkeypatc
         "snapshot_id":"bad-time","completed_at":"not-a-timestamp"})
     loader=load_adapter(monkeypatch); r=loader(Client(db),as_of=date(2026,11,25))
     assert r["status"]=="WITHHELD" and r["reason"]=="RUN_HISTORY_TIMESTAMP_INVALID"
+
+def test_adapter_accepts_exact_count_matching_complete_history(monkeypatch):
+    loader=load_adapter(monkeypatch); r=loader(Client(adapter_db(invalid_previous=False)),as_of=date(2026,11,25))
+    assert r["status"]=="OK" and r["pair"]["previous_snapshot_id"]=="immediate-invalid"
+
+def test_adapter_withholds_when_exact_history_count_is_missing(monkeypatch):
+    db=adapter_db(invalid_previous=False); db["history_count"]=None
+    loader=load_adapter(monkeypatch); r=loader(Client(db),as_of=date(2026,11,25))
+    assert r["status"]=="WITHHELD" and r["reason"]=="RUN_HISTORY_EXACT_COUNT_UNAVAILABLE"
+
+def test_adapter_withholds_when_exact_history_count_mismatches_rows(monkeypatch):
+    db=adapter_db(invalid_previous=False); db["history_count"]=999
+    loader=load_adapter(monkeypatch); r=loader(Client(db),as_of=date(2026,11,25))
+    assert r["status"]=="WITHHELD" and r["reason"]=="RUN_HISTORY_INCOMPLETE"
+    assert r["exact_count"]==999 and r["received_rows"]==len(db["options_collection_runs"])
+
+def test_adapter_withholds_when_history_response_is_truncated(monkeypatch):
+    db=adapter_db(invalid_previous=False); db["history_response_limit"]=1
+    loader=load_adapter(monkeypatch); r=loader(Client(db),as_of=date(2026,11,25))
+    assert r["status"]=="WITHHELD" and r["reason"]=="RUN_HISTORY_INCOMPLETE"
+    assert r["exact_count"]>r["received_rows"]
+
+def test_adapter_withholds_when_history_query_fails(monkeypatch):
+    db=adapter_db(invalid_previous=False); db["history_query_raises"]=True
+    loader=load_adapter(monkeypatch); r=loader(Client(db),as_of=date(2026,11,25))
+    assert r["status"]=="WITHHELD" and r["reason"]=="RUN_HISTORY_QUERY_FAILED"

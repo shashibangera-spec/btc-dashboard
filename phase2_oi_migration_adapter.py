@@ -35,16 +35,25 @@ def load_phase2_oi_migration(client,*,as_of:date|None=None):
     current=current_rows[0]; current_valid=_validate_run(current)
     if current_valid["status"]!="OK": return {"status":"WITHHELD","reason":"CURRENT_RUN_INVALID","current_validation":current_valid}
     underlying=str(current.get("underlying") or "BTCUSD")
-    # Exhaustively page through successful runs; never infer adjacency from a fixed window.
-    history_query=(client.table("options_collection_runs").select(",".join(RUN_COLUMNS))
-        .eq("status","SUCCESS").eq("underlying",underlying)
-        .order("completed_at",desc=True).order("snapshot_id"))
-    history=[]; offset=0; page_size=500
-    while True:
-        page=_execute(history_query.range(offset,offset+page_size-1))
-        history.extend(page)
-        if len(page)<page_size: break
-        offset+=page_size
+    # One statement snapshot plus exact count: never page mutable history by offset.
+    try:
+        history_query=(client.table("options_collection_runs")
+            .select(",".join(RUN_COLUMNS),count="exact")
+            .eq("status","SUCCESS").eq("underlying",underlying)
+            .order("completed_at",desc=True).order("snapshot_id"))
+        history_response=history_query.execute()
+        history=getattr(history_response,"data",None)
+        exact_count=getattr(history_response,"count",None)
+    except Exception:
+        return {"status":"WITHHELD","reason":"RUN_HISTORY_QUERY_FAILED"}
+    if not isinstance(history,list):
+        return {"status":"WITHHELD","reason":"RUN_HISTORY_RESPONSE_INVALID"}
+    if isinstance(exact_count,bool) or not isinstance(exact_count,int) or exact_count<0:
+        return {"status":"WITHHELD","reason":"RUN_HISTORY_EXACT_COUNT_UNAVAILABLE",
+            "received_rows":len(history)}
+    if exact_count!=len(history):
+        return {"status":"WITHHELD","reason":"RUN_HISTORY_INCOMPLETE",
+            "exact_count":exact_count,"received_rows":len(history)}
     missing=_missing_record_keys(history,tuple(c for c in RUN_COLUMNS if c!="underlying"))
     if missing["missing_columns"]: return {"status":"WITHHELD","reason":"RUN_HISTORY_INVALID",**missing}
     parsed=[]
