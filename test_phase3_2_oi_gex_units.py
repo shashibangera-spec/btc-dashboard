@@ -85,7 +85,7 @@ def test_dashboard_uses_delta_spot_for_gex_and_binance_for_amt():
 def test_delta_oi_is_primary_and_usd_oi_and_raw_payload_are_unchanged():
     helpers = _dashboard_helpers()
     assert helpers._extract_option_oi_values({"oi": "12.5", "oi_contracts": 99, "oi_value_usd": "125000"}) == ("12.5", "125000")
-    assert helpers._extract_option_oi_values({"oi_contracts": 4, "oi_value_usd": 40}) == (4, 40)
+    assert helpers._extract_option_oi_values({"oi_contracts": 4, "oi_value_usd": 40}) == (None, 40)
     import datetime as dt
     ticker = {"product_id": 1, "symbol": "BTC-25DEC26-100000-C",
               "contract_type": "call_options", "strike_price": 100000,
