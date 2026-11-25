@@ -1,5 +1,5 @@
 """Phase 3.8 offline regression tests for research unit safety and export labels."""
-from datetime import datetime
+import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import ast
@@ -125,10 +125,11 @@ def test_export_does_not_treat_legacy_oi_contracts_field_as_oi_btc():
 
 def test_research_gex_caption_describes_unsigned_v2_methodology():
     source = (ROOT / "btc_live_research_dashboard.py").read_text(encoding="utf-8")
-    assert "BTC-denominated OI (Delta ticker oi) with multiplier 1.0" in source
+    caption = next(line for line in source.splitlines() if "GEX is model-derived from BTC-denominated" in line)
+    assert "BTC-denominated OI (Delta ticker oi) with multiplier 1.0" in caption
     assert "Gross unsigned exposure concentration only" in source
-    assert "0.001 BTC-per-contract multiplier" not in source
-    assert "dealer positioning or net gamma" not in source
+    assert "0.001 BTC-per-contract multiplier" not in caption
+    assert "dealer positioning or net gamma" not in caption
 
 
 def test_phase2_utility_is_documented_as_legacy_only_and_archive_provenance_limitation():

@@ -12,7 +12,7 @@ The legacy nearby-OI code used a strict `OI > 500` gate on the raw `oi_contracts
 
 ## Volume/OI withholding
 
-Delta's public v2 ticker documentation lists `volume` as trading volume but does not define the unit for the options ticker's `volume_24h` field. The Phase 3.5 evidence available for this project verified OI units, not `volume_24h` units. No verified historical payload evidence in this phase establishes a compatible volume unit. Therefore Volume/OI ratios and their classifications are withheld with `VOLUME_UNIT_UNVERIFIED`. Raw `volume_24h` values are not modified. This research metric must remain unavailable until the source unit is established and documented.
+Delta's [official v2 REST API ticker documentation](https://docs.delta.exchange/#get-tickers-for-products) lists `volume` as trading volume but does not define the unit for the options ticker's `volume_24h` field. The Phase 3.5 evidence available for this project verified OI units, not `volume_24h` units. No verified historical payload evidence in this phase establishes a compatible volume unit. Therefore Volume/OI ratios and their classifications are withheld with `VOLUME_UNIT_UNVERIFIED`. Raw `volume_24h` values are not modified. This research metric must remain unavailable until the source unit is established and documented.
 
 ## GEX description
 
