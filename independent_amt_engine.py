@@ -72,14 +72,15 @@ def calculate_tpo_profile(candles:Iterable[Candle],row_size:float=50.0,value_are
     for c in bars:
         for i in range(math.floor(c.low/row_size),math.floor(c.high/row_size)+1): counts[i]=counts.get(i,0)+1
     lo,hi=min(counts),max(counts); total=sum(counts.values()); maximum=max(counts.values())
-    mid=(min(c.low for c in bars)+max(c.high for c in bars))/2
     tied=[i for i in range(lo,hi+1) if counts.get(i,0)==maximum]
-    poc=min(tied,key=lambda i:(abs((i+.5)*row_size-mid),i))
+    # Match the documented Pine profile tie-break: midpoint of the bucket index span.
+    profile_mid=(hi-lo)/2.0
+    poc=min(tied,key=lambda i:(abs((i-lo)-profile_mid),i))
     target=math.ceil(total*value_area_percent); covered=counts[poc]; lower=upper=poc
     while covered<target and (lower>lo or upper<hi):
         dn=counts.get(lower-1,0) if lower>lo else -1
         up=counts.get(upper+1,0) if upper<hi else -1
-        if dn>=0 and up>=0 and dn==up: lower-=1; upper+=1; covered+=dn+up
+        if dn>=0 and up>=0 and dn==up:\n            lower-=1; covered+=dn\n            if covered<target:\n                upper+=1; covered+=up
         elif up>dn: upper+=1; covered+=up
         elif dn>=0: lower-=1; covered+=dn
         else: upper+=1; covered+=up
@@ -125,8 +126,7 @@ def _price_state(close,prior,buffer,confirmed,candidate,count,reentry):
     if side:
         n=count+1 if candidate==side else 1
         return (f"DISCOVERY_CONFIRMED_{side}",side,None,0,0) if n>=2 else (f"DISCOVERY_CANDIDATE_{side}",None,side,n,0)
-    if prior.val<=close<=prior.vah:return "IN_VALUE",None,None,0,0
-    return "VALUE_EXCURSION",None,None,0,0
+    if prior.val<=close<=prior.vah:return "IN_VALUE",None,None,0,0\n    # A close that does not clear the buffered boundary breaks consecutive confirmation.\n    return "VALUE_EXCURSION",None,None,0,0
 
 def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percent=.70,
                             atr_period=21,minimum_buffer=50.0,atr_multiplier=.50):
