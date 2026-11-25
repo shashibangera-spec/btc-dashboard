@@ -39,7 +39,7 @@ BTC_OPTIONS_FIXTURE = tuple(
 def _dashboard_helpers():
     source = (ROOT / "btc_live_dashboard.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    names = {"_validated_btc_contract_multiplier", "_validate_gamma_side", "_dashboard_gex_values"}
+    names = {"_validated_btc_contract_multiplier", "_validate_gamma_side", "_dashboard_gex_values", "_listed_ticker_identities_match"}
     nodes = [
         node for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
@@ -160,6 +160,29 @@ def test_dashboard_zero_oi_missing_gamma_remains_invalid_under_existing_policy()
     assert helpers._validate_gamma_side(_products_for_side("Call"), raw, "Call") == "MISSING_GAMMA"
 
 
+def test_dashboard_ticker_product_ids_must_match_listed_products_by_symbol():
+    helpers = _dashboard_helpers()
+    products = [
+        {"id": 101, "symbol": "BTC-CALL"},
+        {"id": 202, "symbol": "BTC-PUT"},
+    ]
+    matching = [
+        {"product_id": 202, "symbol": "BTC-PUT"},
+        {"product_id": 101, "symbol": "BTC-CALL"},
+    ]
+    assert helpers._listed_ticker_identities_match(products, matching)
+
+    wrong_id_for_symbol = [
+        {"product_id": 999, "symbol": "BTC-CALL"},
+        {"product_id": 202, "symbol": "BTC-PUT"},
+    ]
+    assert not helpers._listed_ticker_identities_match(products, wrong_id_for_symbol)
+    assert not helpers._listed_ticker_identities_match(products, matching[:1])
+
+    duplicate_symbol = matching + [{"product_id": 303, "symbol": "BTC-CALL"}]
+    assert not helpers._listed_ticker_identities_match(products, duplicate_symbol)
+
+
 def test_dashboard_multiplier_requires_explicit_btc_units_and_consistent_metadata():
     helpers = _dashboard_helpers()
     assert helpers._validated_btc_contract_multiplier([
@@ -252,10 +275,12 @@ class _Query:
     def __init__(self, client, table):
         self.client, self.table_name = client, table
         self.start, self.end = None, None
+    def order(self, column, **kwargs):
+        self.client.orders.append((self.table_name, column, kwargs.get("desc", False)))
+        return self
     def select(self, *args, **kwargs): return self
     def eq(self, *args, **kwargs): return self
     def neq(self, *args, **kwargs): return self
-    def order(self, *args, **kwargs): return self
     def limit(self, *args, **kwargs): return self
     def range(self, start, end):
         self.start, self.end = start, end
@@ -269,6 +294,7 @@ class _Client:
     def __init__(self, responses):
         self.responses = list(responses)
         self.ranges = []
+        self.orders = []
     def table(self, name):
         return _Query(self, name)
 
@@ -310,6 +336,10 @@ def test_historical_retrieval_paginates_and_reconciles_exact_expected_count():
     assert len(fetched) == 1001
     assert reason == "OK"
     assert client.ranges == [(0, 999), (1000, 1000)]
+    assert client.orders[-2:] == [
+        ("options_oi_snapshots", "strike_price", False),
+        ("options_oi_snapshots", "product_id", False),
+    ]
 
 
 def test_historical_retrieval_refuses_more_than_configured_cap():
