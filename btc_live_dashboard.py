@@ -649,6 +649,27 @@ def _normalize_listed_option_oi(product_universe, received_chain, universe_compl
     return pd.DataFrame(rows, columns=columns)
 
 
+def _listed_ticker_identities_match(products, tickers):
+    """Require each listed option symbol to map to its exact ticker Product ID."""
+    product_by_symbol = {}
+    for product in products:
+        symbol = product.get("symbol")
+        product_id = product.get("id")
+        if not symbol or product_id is None or str(symbol) in product_by_symbol:
+            return False
+        product_by_symbol[str(symbol)] = str(product_id)
+
+    ticker_by_symbol = {}
+    for ticker in tickers:
+        symbol = ticker.get("symbol")
+        ticker_id = ticker.get("product_id") if ticker.get("product_id") is not None else ticker.get("id")
+        if not symbol or ticker_id is None or str(symbol) in ticker_by_symbol:
+            return False
+        ticker_by_symbol[str(symbol)] = str(ticker_id)
+
+    return product_by_symbol == ticker_by_symbol
+
+
 def _validated_btc_contract_multiplier(products):
     """Use contract_value only when every selected product declares BTC units."""
     values = []
@@ -1691,6 +1712,7 @@ def fetch_delta_options():
             and all(value is not None for value in ticker_ids)
             and len(set(str(value) for value in ticker_ids)) == len(ticker_ids)
             and len(ticker_symbols) == len(set(ticker_symbols))
+            and _listed_ticker_identities_match(filtered_options, ticker_subset)
         )
         is_chain_complete = (prod_complete and tick_complete and identities_unique and expected_symbol_set == received_symbol_set and len(df) == len(expected_symbol_set) and oi_values.notna().all() and np.isfinite(oi_values.to_numpy(dtype=float)).all() and (oi_values >= 0).all())
         call_gamma_status = _validate_gamma_side(filtered_options, df, "Call")
