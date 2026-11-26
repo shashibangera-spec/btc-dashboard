@@ -161,7 +161,6 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
             else:
                 previously_confirmed=confirmed
                 ps,confirmed,candidate,count,reentry=_price_state(c.close,prior,buf,confirmed,candidate,count,reentry)
-                ps,confirmed,candidate,count,reentry=_price_state(c.close,prior,buf,confirmed,candidate,count,reentry)
                 discovery_event_start=previously_confirmed is None and confirmed is not None
                 vs=classify_value(prior,dev)
                 raw_side="ABOVE" if c.close>prior.vah else "BELOW" if c.close<prior.val else None
