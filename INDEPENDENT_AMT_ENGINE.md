@@ -50,7 +50,7 @@ Balance evidence is a separate observation, not a replacement for price state:
 
 ## Historical data validation — refreshed 26 Nov 2026
 Read-only checks against Supabase were repeated using the current archive:
-- Raw Binance spot BTCUSDT 30m archive: **1,212 candles** (1 Nov through 26 Nov 2026).
+- Raw Binance spot BTCUSDT 30m archive: **1,212 candles** (1 Nov through 26 Nov 2026), covering only **26 UTC dates**. The `session_ohlc_history` table contains session aggregates, not a substitute 30m raw-candle history. The current Supabase raw archive therefore cannot support a longer direct replay yet; broader validation requires continued collection or a separately identified public Binance historical fixture.
 - 1–25 Nov: **25 complete sessions**, each with 48 consecutive candles.
 - 26 Nov: **12 archived completed candles** at the time of the latest read-only query (00:00–05:30 UTC).
 - No missing or irregular 30-minute intervals were found in the raw archive.
