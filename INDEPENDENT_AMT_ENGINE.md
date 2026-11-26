@@ -44,7 +44,7 @@ Price discovery is not treated as proof that new value has developed.
 Balance evidence is a separate observation, not a replacement for price state:
 - Track changes in the side of developing POC relative to frozen prior POC.
 - Two or more side crossings in a rolling five-valid-candle window, while developing value overlaps prior value, sets `balance_evidence=true`.
-- Boundary retest evidence is also reported separately; it is not silently converted into acceptance.
+- Boundary retest evidence is reported separately and is not silently converted into acceptance. It requires the preceding completed candle to have closed outside the same unbuffered prior-value boundary, the current candle to test back through that boundary, and the current close to remain outside. A gap invalidates the retest sequence.
 - This balance heuristic is not yet historically validated as a reliable balance/rotation classifier.
 
 ## Historical data validation — refreshed 26 Nov 2026
