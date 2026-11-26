@@ -121,6 +121,24 @@ Examples show why the state label must be read literally:
 
 This confirms that the classifier's POC-first label can point in a direction that does not describe the movement of the full value area, and can even be opposite the discovery direction. But the audit found no episode where POC alone aligned while both edges did not. The recurring issue is **split POC/edge migration**, not a pure POC-only profile shift. Do not infer broad value migration from a POC label.
 
+A follow-up timing audit measured whether all three developing levels (VAH, POC, VAL) remained displaced in the discovery direction after the first four completed candles following discovery confirmation. Offset 0 is the confirmation candle; offsets 1–4 are the first four subsequent candles; offset 5 onward is after those four. The active interval ends immediately before confirmed price re-entry, consistent with the persistence audit above. This measures level-position alignment against frozen prior value, not trade-volume acceptance or a trading outcome.
+
+Across the 30 episodes:
+- **24/30** had all three levels aligned at confirmation.
+- **27/30** had all three aligned at least once within the first four subsequent candles.
+- **21/30** had all three aligned at least once after the first four subsequent candles, while discovery remained active.
+- **28/30** had full three-level alignment at some point during the active interval.
+- Across the 440 eligible active candles at offset 5 or later, **385/440 (87.5%)** had all three levels aligned with discovery. Across the full 579 active candles, the figure was **502/579 (86.7%)**.
+
+By re-entry cohort:
+- **Rapid re-entry (5 episodes):** no episode had an active candle after offset 4; these episodes re-entered too early for this persistence test.
+- **Slower re-entry (12 episodes):** 11/12 had full alignment after the first four subsequent candles; all 149/149 eligible active candles were aligned.
+- **No confirmed re-entry in the review window (13 episodes):** 10/13 had full alignment after the first four subsequent candles; 236/291 eligible active candles (81.1%) were aligned.
+
+Interpretation: broad three-level migration is often present early, but it is **not merely an early-session profile response** in this sample. It remained aligned well beyond the first four subsequent candles in 21 episodes, and most eligible active candles after that point retained the alignment. Persistence was strongest in the slower-re-entry cohort. The rapid-re-entry cohort cannot be judged on later persistence because its active interval ended before the measurement window began.
+
+This is descriptive evidence from 30 historical episodes, not a predictive result, profitability test, or reason to alter AMT state logic. The timing and cohort counts are asserted in the historical replay test. GitHub Actions Run #128: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775650880 (**19 tests passed**). Session OHLC Writer Run #101: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775650744 and Binance OHLC Archive Run #93: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775650889 also passed.
+
 The direction-signature counts, active-interval shape counts, and the exact episode lists are asserted in the historical replay test. GitHub Actions Run #123: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775143458 (**19 tests passed**). Session OHLC Writer Run #98: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775143544 and Binance OHLC Archive Run #90: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775143543 also passed.
 
 The focused trace ran in GitHub Actions Run #108: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45774029962 (**19 tests passed**).
