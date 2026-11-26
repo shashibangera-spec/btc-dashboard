@@ -222,6 +222,10 @@ class IndependentAMTTests(unittest.TestCase):
         rapid_reentries = 0
         no_reentry_by_session_end = 0
         opposite_discovery_transitions = 0
+        aligned_at_confirmation = 0
+        aligned_within_4_bars = 0
+        aligned_any_window = 0
+        opposite_value_any_window = 0
         for event_number, (i, event) in enumerate(episode_rows):
             end = len(snapshots)
             for k in range(i + 1, len(snapshots)):
@@ -248,10 +252,29 @@ class IndependentAMTTests(unittest.TestCase):
             )
             if opposite_at is not None:
                 opposite_discovery_transitions += 1
+            aligned_states = {
+                f"BROAD_MIGRATION_{direction}", f"POC_MIGRATION_{direction}",
+                f"PARTIAL_MIGRATION_{direction}", f"VALUE_SEPARATED_{direction}",
+            }
+            opposite_states = {
+                f"BROAD_MIGRATION_{opposite_direction}", f"POC_MIGRATION_{opposite_direction}",
+                f"PARTIAL_MIGRATION_{opposite_direction}", f"VALUE_SEPARATED_{opposite_direction}",
+            }
+            alignment_offsets = [k for k, x in enumerate(segment) if x["value_state"] in aligned_states]
+            opposite_value_offsets = [k for k, x in enumerate(segment) if x["value_state"] in opposite_states]
             separation_offsets = [k for k, x in enumerate(segment)
                                   if x["value_state"] == f"VALUE_SEPARATED_{direction}"]
             reentry_at = reentry_offsets[0] if reentry_offsets else None
             separation_at = separation_offsets[0] if separation_offsets else None
+            alignment_at = alignment_offsets[0] if alignment_offsets else None
+            if event["value_state"] in aligned_states:
+                aligned_at_confirmation += 1
+            if alignment_at is not None:
+                aligned_any_window += 1
+                if alignment_at <= 4:
+                    aligned_within_4_bars += 1
+            if opposite_value_offsets:
+                opposite_value_any_window += 1
             if reentry_at is not None and reentry_at <= 4:
                 rapid_reentries += 1
             if reentry_at is None:
@@ -266,7 +289,9 @@ class IndependentAMTTests(unittest.TestCase):
                 "value_state=", event["value_state"],
                 "bars_until_reentry=", reentry_at,
                 "bars_until_opposite_discovery=", opposite_at,
+                "bars_until_directional_value_alignment=", alignment_at,
                 "bars_until_value_separation=", separation_at,
+                "opposite_value_alignment_seen=", bool(opposite_value_offsets),
                 "final_value_state=", segment[-1]["value_state"],
                 "bars_in_episode_window=", len(segment),
                 "last_state=", segment[-1]["price_state"],
@@ -284,6 +309,11 @@ class IndependentAMTTests(unittest.TestCase):
               "no_reentry_by_session_end_or_next_episode=", no_reentry_by_session_end,
               "episodes_with_same_side_value_separation=", separated_after_confirmation,
               "opposite_discovery_transitions=", opposite_discovery_transitions)
+        print("VALUE_ALIGNMENT_SUMMARY", "aligned_at_confirmation=", aligned_at_confirmation,
+              "aligned_within_4_bars=", aligned_within_4_bars,
+              "aligned_any_time_in_window=", aligned_any_window,
+              "opposite_value_alignment_any_time=", opposite_value_any_window,
+              "no_directional_value_alignment=", len(episode_rows)-aligned_any_window)
         self.assertEqual(rapid_reentries, 5)
         self.assertEqual(opposite_discovery_transitions, 2)
         self.assertEqual(no_reentry_by_session_end, 13)
