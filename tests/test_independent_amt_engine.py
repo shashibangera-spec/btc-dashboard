@@ -329,7 +329,7 @@ class IndependentAMTTests(unittest.TestCase):
                         "offset=", offset,
                         "time=", row["candle_open_time_utc"],
                         "price_state=", row["price_state"],
-                        "close=", row["close"],
+                        "ohlc=", (row["open"], row["high"], row["low"], row["close"]),
                         "value_state=", row["value_state"],
                         "developing=",
                         (row["developing_value"]["vah"], row["developing_value"]["poc"],
