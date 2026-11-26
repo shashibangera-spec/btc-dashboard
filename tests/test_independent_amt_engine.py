@@ -221,6 +221,7 @@ class IndependentAMTTests(unittest.TestCase):
         episode_rows = [(i, x) for i, x in enumerate(snapshots) if x["discovery_event_start"]]
         rapid_reentries = 0
         no_reentry_by_session_end = 0
+        opposite_discovery_transitions = 0
         for event_number, (i, event) in enumerate(episode_rows):
             end = len(snapshots)
             for k in range(i + 1, len(snapshots)):
@@ -232,15 +233,24 @@ class IndependentAMTTests(unittest.TestCase):
                     break
             segment = snapshots[i:end]
             reentry_offsets = [k for k, x in enumerate(segment) if k > 0 and x["price_state"] == "REENTRY_CONFIRMED"]
-            opposite = [k for k, x in enumerate(segment) if k > 0 and x["price_state"] == (
-                "DISCOVERY_CONFIRMED_BELOW" if event["price_state"].endswith("_ABOVE")
-                else "DISCOVERY_CONFIRMED_ABOVE"
-            )]
             direction = "ABOVE" if event["price_state"].endswith("_ABOVE") else "BELOW"
+            opposite_direction = "BELOW" if direction == "ABOVE" else "ABOVE"
+            # The next discovery event is the exclusive end of this episode's
+            # observation window. Inspect that boundary row separately so an
+            # opposite-side transition is not silently excluded from the ledger.
+            next_event = snapshots[end] if end < len(snapshots) else None
+            opposite_at = (
+                end - i if next_event is not None
+                and next_event["session_date_ist"] == event["session_date_ist"]
+                and next_event["discovery_event_start"]
+                and next_event["price_state"] == f"DISCOVERY_CONFIRMED_{opposite_direction}"
+                else None
+            )
+            if opposite_at is not None:
+                opposite_discovery_transitions += 1
             separation_offsets = [k for k, x in enumerate(segment)
                                   if x["value_state"] == f"VALUE_SEPARATED_{direction}"]
             reentry_at = reentry_offsets[0] if reentry_offsets else None
-            opposite_at = opposite[0] if opposite else None
             separation_at = separation_offsets[0] if separation_offsets else None
             if reentry_at is not None and reentry_at <= 4:
                 rapid_reentries += 1
@@ -272,8 +282,10 @@ class IndependentAMTTests(unittest.TestCase):
         )
         print("EPISODE_SUMMARY", "rapid_reentries_within_4_bars=", rapid_reentries,
               "no_reentry_by_session_end_or_next_episode=", no_reentry_by_session_end,
-              "episodes_with_same_side_value_separation=", separated_after_confirmation)
+              "episodes_with_same_side_value_separation=", separated_after_confirmation,
+              "opposite_discovery_transitions=", opposite_discovery_transitions)
         self.assertEqual(rapid_reentries, 5)
+        self.assertEqual(opposite_discovery_transitions, 2)
         self.assertEqual(no_reentry_by_session_end, 13)
         self.assertEqual(separated_after_confirmation, 12)
         events = [x for x in snapshots if x["discovery_event_start"]]
