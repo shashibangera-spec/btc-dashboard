@@ -76,6 +76,15 @@ A read-only fixture containing the archived raw Binance BTCUSDT spot 30m OHLC ca
 - The corrected episode-boundary audit also found **2 same-session opposite-direction discovery transitions** (2 Nov upside→downside and 4 Nov downside→upside). The prior report omitted these because it excluded the next episode's first candle from the preceding episode's observation window. The ledger now inspects that boundary candle explicitly.
 - GitHub Actions Run #82 executed the expanded offline suite after the episode-boundary correction: **19 tests passed**, including the full raw-history replay, two opposite-transition assertions, synthetic balance/gap tests, historical retest-sequence count assertions, and the missing-first-session-candle test.
 
+A follow-up persistence audit now separates the discovery-active interval from the post-re-entry interval. The active interval ends immediately before the candle that confirms re-entry; the post-re-entry interval begins on that confirmation candle. Across the 30 episodes:
+- Same-direction value migration appeared while discovery remained active in **28/30** episodes. It was already present at confirmation in **27/30**, and present again within the next four completed candles in **27/30**.
+- **3/30** showed opposite-direction migration while discovery remained active. One of those later migrated in the discovery direction; the other two never showed same-direction migration in their review window. No episode showed a same-direction-to-opposite-direction migration reversal while discovery remained active.
+- After confirmed re-entry, **17** episodes still showed same-direction migration at some point, and **1** showed opposite-direction migration. Because the developing profile is cumulative, this post-re-entry movement must not be treated as continued price acceptance outside prior value.
+- The five rapid re-entry episodes (confirmed re-entry within four bars) all had same-direction migration at confirmation, within the next four bars, and while discovery remained active (**5/5**); none showed opposite migration while active. Among the other 25 episodes, **22/25** had same-direction migration at confirmation and in the next four bars, while **23/25** showed it at some point before re-entry or the episode-window boundary. Three showed opposite migration while active.
+- These are small-sample descriptive comparisons, not a quality score or a basis for trading rules.
+
+The persistence audit and its historical assertions ran in GitHub Actions Run #97: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45772987591 (**19 tests passed**).
+
 These are descriptive historical state counts only. They do not establish false-confirmation rates, predictive value, or profitability. Automated assertions spot-check three rapid re-entry sequences (4 Nov, 17 Nov, 22 Nov) and two sustained discovery sequences (21 Nov downside, 26 Nov upside); the CI ledger provides the full 30-episode review trail.
 
 ## State-machine validation still required
