@@ -162,6 +162,34 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertIsNone(got[0]["boundary_retest"])
         self.assertEqual(got[1]["boundary_retest"],"RETEST_REJECTION_BELOW")
 
+    def test_balance_evidence_requires_two_poc_side_crossings(self):
+        t = datetime(2026, 1, 1, 0, tzinfo=UTC)
+        prior = [bar(t + timedelta(minutes=30*i), 9900, 10100, 10000) for i in range(48)]
+        current = [
+            bar(t + timedelta(days=1), 10050, 10050, 10050),
+            bar(t + timedelta(days=1, minutes=30), 9950, 9950, 9950),
+            bar(t + timedelta(days=1, minutes=60), 10050, 10050, 10050),
+            bar(t + timedelta(days=1, minutes=90), 9950, 9950, 9950),
+        ]
+        got = build_session_snapshots(prior + current, atr_period=1)
+        self.assertEqual([x["poc_side_crossings_in_5"] for x in got], [0, 1, 2, 3])
+        self.assertEqual([x["balance_evidence"] for x in got], [False, False, True, True])
+        self.assertTrue(all(x["price_state"] == "IN_VALUE" for x in got))
+
+    def test_gap_resets_balance_crossing_window(self):
+        t = datetime(2026, 1, 1, 0, tzinfo=UTC)
+        prior = [bar(t + timedelta(minutes=30*i), 9900, 10100, 10000) for i in range(48)]
+        current = [
+            bar(t + timedelta(days=1), 10050, 10050, 10050),
+            bar(t + timedelta(days=1, minutes=30), 9950, 9950, 9950),
+            bar(t + timedelta(days=1, minutes=90), 10050, 10050, 10050),
+            bar(t + timedelta(days=1, minutes=120), 9950, 9950, 9950),
+        ]
+        got = build_session_snapshots(prior + current, atr_period=1)
+        self.assertEqual([x["poc_side_crossings_in_5"] for x in got], [0, 1, 0, 1])
+        self.assertFalse(any(x["balance_evidence"] for x in got))
+        self.assertTrue(got[2]["gap_before"])
+
     def test_historical_raw_archive_replay_counts(self):
         fixture = Path(__file__).parent / "fixtures" / "btcusdt_spot_30m_2026-11-01_2026-11-26.json"
         data = json.loads(fixture.read_text(encoding="utf-8"))
