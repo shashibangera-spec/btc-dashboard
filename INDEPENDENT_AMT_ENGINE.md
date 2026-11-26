@@ -46,7 +46,7 @@ Balance evidence is a separate observation, not a replacement for price state:
 - Track changes in the side of developing POC relative to frozen prior POC.
 - Two or more side crossings in a rolling five-valid-candle window, while developing value overlaps prior value, sets `balance_evidence=true`.
 - Boundary retest evidence is reported separately and is not silently converted into acceptance. It requires the preceding completed candle to have closed outside the same unbuffered prior-value boundary, the current candle to test back through that boundary, and the current close to remain outside. A gap invalidates the retest sequence.
-- This balance heuristic is not yet historically validated as a reliable balance/rotation classifier.
+- This balance heuristic is not yet historically validated as a reliable balance/rotation classifier. Synthetic tests now verify that two qualifying POC-side crossings can trigger it while price remains inside prior value, and that a missing candle resets the crossing window. It did not trigger in the historical sample.
 
 ## Historical data validation — refreshed 26 Nov 2026
 Read-only checks against Supabase were repeated using the current archive:
@@ -70,14 +70,15 @@ A read-only fixture containing the archived raw Binance BTCUSDT spot 30m OHLC ca
 - At confirmation, **7/30** episodes had fully separated developing value. The other **23/30** had value migration/POC-migration classifications but had not yet achieved full value separation.
 - There were 17 confirmed re-entry transitions and 53 boundary-retest-labelled candles. The latter is a candle count, not a count of unique retest sequences.
 - The balance heuristic did not trigger. The maximum observed was **one developing-POC side crossing in any rolling five-candle window**; the required two crossings never occurred. This does not prove the market was never balanced. It shows the current heuristic was non-operative in this sample and should not be treated as a validated balance classifier.
-- GitHub Actions Run #50 executed the complete offline suite: **16 tests passed**, including `test_historical_raw_archive_replay_counts`.
+- The historical episode ledger was emitted from the Python engine in CI and reviewed across all 30 episodes. Within each episode's remaining session window (or until the next confirmed episode), **17/30** reached confirmed re-entry: **5 within four candles**, another **12 after more than four candles**. The remaining **13/30** did not reach confirmed re-entry before that window ended. This is an outcome description, not a false-positive label; a session boundary or new episode ends the review window.
+- GitHub Actions Run #59 executed the expanded offline suite: **18 tests passed**, including the full raw-history replay and synthetic balance/gap tests.
 
-These are descriptive historical state counts only. They do not establish false-confirmation rates, predictive value, or profitability. The offline Python test also spot-checks three rapid re-entry sequences (4 Nov, 17 Nov, 22 Nov) and two sustained discovery sequences (21 Nov downside, 26 Nov upside). Complete manual review of all 30 episodes remains open.
+These are descriptive historical state counts only. They do not establish false-confirmation rates, predictive value, or profitability. Automated assertions spot-check three rapid re-entry sequences (4 Nov, 17 Nov, 22 Nov) and two sustained discovery sequences (21 Nov downside, 26 Nov upside); the CI ledger provides the full 30-episode review trail.
 
 ## State-machine validation still required
 - Manually review the 30 discovery episodes against completed candles, especially quick re-entry and opposite-side transitions.
 - Review candidate cancellation, opposite-side transitions, re-entry, and session rollover manually against completed candles.
-- Validate balance evidence and boundary retests against actual auction sequences.
+- Review whether the balance heuristic's POC-crossing condition is a useful description of rotation on a larger historical sample; synthetic mechanics tests alone do not validate the market interpretation.
 - Measure false confirmations and cases where price discovery is not accompanied by value development.
 - Resolve raw OHLC archive lag before claiming current-session replay completeness.
 
