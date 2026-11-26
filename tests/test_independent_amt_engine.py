@@ -250,6 +250,16 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(sum(x["price_state"].endswith("_BELOW") for x in events), 24)
         self.assertEqual(sum(x["price_state"] == "REENTRY_CONFIRMED" for x in snapshots), 17)
         self.assertEqual(sum(x["boundary_retest"] is not None for x in snapshots), 53)
+        retest_rows = [(i, x["boundary_retest"]) for i, x in enumerate(snapshots)
+                       if x["boundary_retest"] is not None]
+        retest_sequences = [
+            (i, label) for n, (i, label) in enumerate(retest_rows)
+            if n == 0 or retest_rows[n-1][1] != label or retest_rows[n-1][0] != i-1
+        ]
+        print("RETEST_SUMMARY", "labelled_candles=", len(retest_rows),
+              "sequence_starts=", len(retest_sequences),
+              "above_sequence_starts=", sum(label == "RETEST_RECLAIM_ABOVE" for _, label in retest_sequences),
+              "below_sequence_starts=", sum(label == "RETEST_REJECTION_BELOW" for _, label in retest_sequences))
         self.assertEqual(sum(x["balance_evidence"] for x in snapshots), 0)
         index_by_time = {x["candle_open_time_utc"]: i for i, x in enumerate(snapshots)}
 
