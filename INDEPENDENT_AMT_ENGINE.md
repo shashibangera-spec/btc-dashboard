@@ -72,7 +72,7 @@ A read-only fixture containing the archived raw Binance BTCUSDT spot 30m OHLC ca
 - The balance heuristic did not trigger. The maximum observed was **one developing-POC side crossing in any rolling five-candle window**; the required two crossings never occurred. This does not prove the market was never balanced. It shows the current heuristic was non-operative in this sample and should not be treated as a validated balance classifier.
 - GitHub Actions Run #50 executed the complete offline suite: **16 tests passed**, including `test_historical_raw_archive_replay_counts`.
 
-These are descriptive historical state counts only. They do not establish false-confirmation rates, predictive value, or profitability. Manual sequence review remains open, particularly for episodes that quickly transitioned into re-entry.
+These are descriptive historical state counts only. They do not establish false-confirmation rates, predictive value, or profitability. The offline Python test also spot-checks three rapid re-entry sequences (4 Nov, 17 Nov, 22 Nov) and two sustained discovery sequences (21 Nov downside, 26 Nov upside). Complete manual review of all 30 episodes remains open.
 
 ## State-machine validation still required
 - Manually review the 30 discovery episodes against completed candles, especially quick re-entry and opposite-side transitions.
