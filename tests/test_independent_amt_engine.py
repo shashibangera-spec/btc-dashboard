@@ -183,6 +183,32 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(sum(x["price_state"] == "REENTRY_CONFIRMED" for x in snapshots), 17)
         self.assertEqual(sum(x["boundary_retest"] is not None for x in snapshots), 53)
         self.assertEqual(sum(x["balance_evidence"] for x in snapshots), 0)
+        index_by_time = {x["candle_open_time_utc"]: i for i, x in enumerate(snapshots)}
+
+        def state_at(open_time, offset=0):
+            return snapshots[index_by_time[open_time] + offset]["price_state"]
+
+        # A downside confirmation that quickly re-entered and later reversed.
+        nov4 = "2026-11-04T03:00:00+00:00"
+        self.assertEqual(state_at(nov4), "DISCOVERY_CONFIRMED_BELOW")
+        self.assertEqual(state_at(nov4, 1), "VALUE_EXCURSION")
+        self.assertEqual(state_at(nov4, 2), "REENTRY_CANDIDATE")
+        self.assertEqual(state_at(nov4, 3), "REENTRY_CONFIRMED")
+        self.assertEqual(state_at(nov4, 8), "DISCOVERY_CONFIRMED_ABOVE")
+
+        # Two other fast re-entry examples on opposite directions.
+        nov17 = "2026-11-17T10:30:00+00:00"
+        self.assertEqual(state_at(nov17, 1), "REENTRY_CANDIDATE")
+        self.assertEqual(state_at(nov17, 2), "REENTRY_CONFIRMED")
+        nov22 = "2026-11-22T16:30:00+00:00"
+        self.assertEqual(state_at(nov22, 1), "REENTRY_CANDIDATE")
+        self.assertEqual(state_at(nov22, 2), "REENTRY_CONFIRMED")
+
+        # Contrasting sustained downside/upside discovery examples.
+        nov21 = "2026-11-21T01:30:00+00:00"
+        self.assertEqual(state_at(nov21, 8), "DISCOVERY_CONFIRMED_BELOW")
+        nov26 = "2026-11-26T00:30:00+00:00"
+        self.assertEqual(state_at(nov26, 8), "DISCOVERY_CONFIRMED_ABOVE")
 
 if __name__=="__main__":
     unittest.main()
