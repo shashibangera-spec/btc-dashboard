@@ -316,20 +316,26 @@ class IndependentAMTTests(unittest.TestCase):
             first_same_signature = level_signature(first_same_row) if first_same_row else None
             active_relative_signatures = [relative_signature(level_signature(row))
                                           for row in active_segment]
-            active_poc_only = any(
-                sig[1] == "WITH" and sig[0] != "WITH" and sig[2] != "WITH"
-                for sig in active_relative_signatures
-            )
-            active_poc_one_edge = any(
-                sig[1] == "WITH" and (sig[0] == "WITH") != (sig[2] == "WITH")
-                for sig in active_relative_signatures
-            )
-            active_poc_full = any(sig == ("WITH", "WITH", "WITH")
-                                  for sig in active_relative_signatures)
-            active_edges_with_poc_not = any(
-                sig[1] != "WITH" and (sig[0] == "WITH" or sig[2] == "WITH")
-                for sig in active_relative_signatures
-            )
+            active_poc_only_offsets = [
+                k for k, sig in enumerate(active_relative_signatures)
+                if sig[1] == "WITH" and sig[0] != "WITH" and sig[2] != "WITH"
+            ]
+            active_poc_one_edge_offsets = [
+                k for k, sig in enumerate(active_relative_signatures)
+                if sig[1] == "WITH" and (sig[0] == "WITH") != (sig[2] == "WITH")
+            ]
+            active_poc_full_offsets = [
+                k for k, sig in enumerate(active_relative_signatures)
+                if sig == ("WITH", "WITH", "WITH")
+            ]
+            active_edges_with_poc_not_offsets = [
+                k for k, sig in enumerate(active_relative_signatures)
+                if sig[1] != "WITH" and (sig[0] == "WITH" or sig[2] == "WITH")
+            ]
+            active_poc_only = bool(active_poc_only_offsets)
+            active_poc_one_edge = bool(active_poc_one_edge_offsets)
+            active_poc_full = bool(active_poc_full_offsets)
+            active_edges_with_poc_not = bool(active_edges_with_poc_not_offsets)
             persistence_rows.append({
                 "confirmation_signature": confirmation_signature,
                 "confirmation_relative_signature": relative_signature(confirmation_signature),
@@ -340,6 +346,12 @@ class IndependentAMTTests(unittest.TestCase):
                 "active_poc_one_edge": active_poc_one_edge,
                 "active_poc_full": active_poc_full,
                 "active_edges_with_poc_not": active_edges_with_poc_not,
+                "active_poc_one_edge_first": active_poc_one_edge_offsets[0]
+                    if active_poc_one_edge_offsets else None,
+                "active_edges_without_poc_first": active_edges_with_poc_not_offsets[0]
+                    if active_edges_with_poc_not_offsets else None,
+                "event_time": event["candle_open_time_utc"],
+                "event_direction": direction,
                 "reentry_at": reentry_at,
                 "rapid": reentry_at is not None and reentry_at <= 4,
                 "slow_reentry": reentry_at is not None and reentry_at > 4,
@@ -443,6 +455,14 @@ class IndependentAMTTests(unittest.TestCase):
               "poc_plus_one_edge=", sum(x["active_poc_one_edge"] for x in persistence_rows),
               "poc_plus_both_edges=", sum(x["active_poc_full"] for x in persistence_rows),
               "edge_alignment_without_poc=", sum(x["active_edges_with_poc_not"] for x in persistence_rows))
+        print("ACTIVE_PROFILE_SHAPE_EPISODES_POC_PLUS_ONE_EDGE", [
+            (x["event_time"], x["event_direction"], x["active_poc_one_edge_first"])
+            for x in persistence_rows if x["active_poc_one_edge"]
+        ])
+        print("ACTIVE_PROFILE_SHAPE_EPISODES_EDGES_WITHOUT_POC", [
+            (x["event_time"], x["event_direction"], x["active_edges_without_poc_first"])
+            for x in persistence_rows if x["active_edges_with_poc_not"]
+        ])
         for cohort_name, cohort in (
             ("RAPID_REENTRY", [x for x in persistence_rows if x["rapid"]]),
             ("SLOW_REENTRY", [x for x in persistence_rows if x["slow_reentry"]]),
