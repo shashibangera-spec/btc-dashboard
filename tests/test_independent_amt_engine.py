@@ -116,5 +116,27 @@ class IndependentAMTTests(unittest.TestCase):
         ])
         self.assertEqual(got[0]["prior_profile_quality"],"COMPLETE")
 
+    def test_initial_upside_breakout_is_not_mislabeled_as_retest(self):
+        t=datetime(2026,1,1,0,tzinfo=UTC)
+        bars=[bar(t+timedelta(minutes=30*i),10000,10100,10050) for i in range(48)]
+        bars += [
+            bar(t+timedelta(days=1),10000,11100,11000),
+            bar(t+timedelta(days=1,minutes=30),10000,11100,11000),
+        ]
+        got=build_session_snapshots(bars,atr_period=1)
+        self.assertIsNone(got[0]["boundary_retest"])
+        self.assertEqual(got[1]["boundary_retest"],"RETEST_RECLAIM_ABOVE")
+
+    def test_initial_downside_breakout_is_not_mislabeled_as_retest(self):
+        t=datetime(2026,1,1,0,tzinfo=UTC)
+        bars=[bar(t+timedelta(minutes=30*i),10000,10100,10050) for i in range(48)]
+        bars += [
+            bar(t+timedelta(days=1),8900,10100,9000),
+            bar(t+timedelta(days=1,minutes=30),8900,10100,9000),
+        ]
+        got=build_session_snapshots(bars,atr_period=1)
+        self.assertIsNone(got[0]["boundary_retest"])
+        self.assertEqual(got[1]["boundary_retest"],"RETEST_REJECTION_BELOW")
+
 if __name__=="__main__":
     unittest.main()
