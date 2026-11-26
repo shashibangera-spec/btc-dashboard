@@ -68,7 +68,7 @@ A separate JavaScript replay of the current Python state-machine rules was run a
 - The replay identified **30 distinct discovery-confirmation episodes**: 6 upside and 24 downside. Episode counting used the transition from no confirmed side to a confirmed side, not repeated per-candle confirmed labels.
 - At confirmation, **7/30** episodes had fully separated developing value. The other **23/30** had value migration/POC migration classifications but had not yet achieved full value separation.
 - There were 17 confirmed re-entry transitions and 53 boundary-retest-labelled candles. The latter is a candle count, not a count of unique retest sequences.
-- The balance heuristic did not trigger on any evaluated candle. This does not prove the market was never balanced; it means the current two-POC-side-crossings-in-five-bars condition was not met in this sample and requires further review.
+- The balance heuristic did not trigger on any evaluated candle. The maximum observed was **one developing-POC side crossing in any rolling five-candle window**; the required two crossings never occurred. This does not prove the market was never balanced. It shows the current heuristic was non-operative in this sample and should not be treated as a validated balance classifier.
 - These are descriptive state counts only. They do not establish false-confirmation rates, predictive value, or profitability. Several episodes show price-state weakening within the next few bars and require manual sequence review.
 
 
