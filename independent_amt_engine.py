@@ -39,7 +39,7 @@ class Candle:
         except (KeyError,TypeError,ValueError,OverflowError) as e: raise AMTInputError(f"Invalid OHLC record: {e}") from e
         if not all(math.isfinite(x) for x in (c.open,c.high,c.low,c.close,c.volume)): raise AMTInputError("Non-finite OHLCV")
         if c.volume<0 or not c.low<=min(c.open,c.close)<=max(c.open,c.close)<=c.high: raise AMTInputError("Invalid OHLCV range")
-        if c.close_time<c.open_time or c.close_time-c.open_time>timedelta(minutes=30,seconds=1): raise AMTInputError("Invalid candle duration")
+        if c.close_time<=c.open_time or c.close_time-c.open_time>timedelta(minutes=30,seconds=1): raise AMTInputError("Invalid candle duration")
         return c
     @property
     def session_date(self)->date:
