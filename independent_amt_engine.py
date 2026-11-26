@@ -159,7 +159,8 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
             if prior is None: ps,vs,read="PRIOR_PROFILE_INCOMPLETE","NOT_CALCULATED","NO_VALID_PRIOR_SESSION_PROFILE"
             elif buf is None: ps,vs,read="WARMUP",classify_value(prior,dev),"INSUFFICIENT_ATR_WARMUP"
             else:
-                ps,confirmed,candidate,count,reentry=previously_confirmed=confirmed
+                previously_confirmed=confirmed
+                ps,confirmed,candidate,count,reentry=_price_state(c.close,prior,buf,confirmed,candidate,count,reentry)
                 ps,confirmed,candidate,count,reentry=_price_state(c.close,prior,buf,confirmed,candidate,count,reentry)
                 discovery_event_start=previously_confirmed is None and confirmed is not None
                 vs=classify_value(prior,dev)
