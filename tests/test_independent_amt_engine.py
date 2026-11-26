@@ -320,6 +320,10 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(opposite_discovery_transitions, 2)
         self.assertEqual(no_reentry_by_session_end, 13)
         self.assertEqual(separated_after_confirmation, 12)
+        self.assertEqual(aligned_at_confirmation, 27)
+        self.assertEqual(aligned_within_4_bars, 27)
+        self.assertEqual(aligned_any_window, 28)
+        self.assertEqual(opposite_value_any_window, 4)
         events = [x for x in snapshots if x["discovery_event_start"]]
         self.assertEqual(sum(
             x["value_state"] == ("VALUE_SEPARATED_ABOVE" if x["price_state"].endswith("_ABOVE")
