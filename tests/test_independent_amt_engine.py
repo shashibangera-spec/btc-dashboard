@@ -313,6 +313,28 @@ class IndependentAMTTests(unittest.TestCase):
                 "same_after_reentry": bool(post_same_offsets),
                 "opposite_after_reentry": bool(post_opposite_offsets),
             })
+            # Focused candle-by-candle trace for the three active opposite-
+            # migration episodes, the two no-alignment cases, and the
+            # 16 Nov post-re-entry opposite migration case.
+            focus_times = {
+                "2026-11-02T16:00:00+00:00",
+                "2026-11-04T06:30:00+00:00",
+                "2026-11-08T21:30:00+00:00",
+                "2026-11-16T12:30:00+00:00",
+            }
+            if event["candle_open_time_utc"] in focus_times:
+                for offset, row in enumerate(segment):
+                    print(
+                        "FOCUS_CANDLE", event["candle_open_time_utc"],
+                        "offset=", offset,
+                        "time=", row["candle_open_time_utc"],
+                        "price_state=", row["price_state"],
+                        "close=", row["close"],
+                        "value_state=", row["value_state"],
+                        "developing=",
+                        (row["developing_value"]["vah"], row["developing_value"]["poc"],
+                         row["developing_value"]["val"]),
+                    )
             print(
                 "VALUE_PERSISTENCE",
                 event["candle_open_time_utc"],
