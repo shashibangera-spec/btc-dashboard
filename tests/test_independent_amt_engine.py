@@ -314,12 +314,32 @@ class IndependentAMTTests(unittest.TestCase):
                 active_segment[active_same_offsets[0]] if active_same_offsets else None
             )
             first_same_signature = level_signature(first_same_row) if first_same_row else None
+            active_relative_signatures = [relative_signature(level_signature(row))
+                                          for row in active_segment]
+            active_poc_only = any(
+                sig[1] == "WITH" and sig[0] != "WITH" and sig[2] != "WITH"
+                for sig in active_relative_signatures
+            )
+            active_poc_one_edge = any(
+                sig[1] == "WITH" and (sig[0] == "WITH") != (sig[2] == "WITH")
+                for sig in active_relative_signatures
+            )
+            active_poc_full = any(sig == ("WITH", "WITH", "WITH")
+                                  for sig in active_relative_signatures)
+            active_edges_with_poc_not = any(
+                sig[1] != "WITH" and (sig[0] == "WITH" or sig[2] == "WITH")
+                for sig in active_relative_signatures
+            )
             persistence_rows.append({
                 "confirmation_signature": confirmation_signature,
                 "confirmation_relative_signature": relative_signature(confirmation_signature),
                 "first_same_signature": first_same_signature,
                 "first_same_relative_signature": relative_signature(first_same_signature)
                     if first_same_signature else None,
+                "active_poc_only": active_poc_only,
+                "active_poc_one_edge": active_poc_one_edge,
+                "active_poc_full": active_poc_full,
+                "active_edges_with_poc_not": active_edges_with_poc_not,
                 "reentry_at": reentry_at,
                 "rapid": reentry_at is not None and reentry_at <= 4,
                 "slow_reentry": reentry_at is not None and reentry_at > 4,
@@ -418,6 +438,11 @@ class IndependentAMTTests(unittest.TestCase):
         print("LEVEL_DIRECTION_RELATIVE_TO_DISCOVERY_AT_CONFIRMATION", sorted(confirmation_relative.items()))
         print("LEVEL_DIRECTION_AT_FIRST_SAME_MIGRATION", sorted(first_same_signatures.items()))
         print("LEVEL_DIRECTION_RELATIVE_TO_DISCOVERY_AT_FIRST_SAME_MIGRATION", sorted(first_same_relative.items()))
+        print("ACTIVE_PROFILE_SHAPE_COUNTS",
+              "poc_only=", sum(x["active_poc_only"] for x in persistence_rows),
+              "poc_plus_one_edge=", sum(x["active_poc_one_edge"] for x in persistence_rows),
+              "poc_plus_both_edges=", sum(x["active_poc_full"] for x in persistence_rows),
+              "edge_alignment_without_poc=", sum(x["active_edges_with_poc_not"] for x in persistence_rows))
         for cohort_name, cohort in (
             ("RAPID_REENTRY", [x for x in persistence_rows if x["rapid"]]),
             ("SLOW_REENTRY", [x for x in persistence_rows if x["slow_reentry"]]),
@@ -462,10 +487,12 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(confirmation_signatures[("FLAT", "UP", "DOWN")], 1)
         self.assertEqual(confirmation_signatures[("UP", "UP", "FLAT")], 1)
         self.assertEqual(confirmation_signatures[("UP", "UP", "UP")], 5)
-        self.assertEqual(sum(x["confirmation_relative_signature"][1] == "WITH"
-                             and x["confirmation_relative_signature"][0] != "WITH"
-                             and x["confirmation_relative_signature"][2] != "WITH"
-                             for x in persistence_rows), 1)
+        self.assertEqual(confirmation_relative[("WITH", "WITH", "WITH")], 24)
+        self.assertEqual(confirmation_relative[("WITH", "WITH", "AGAINST")], 2)
+        self.assertEqual(confirmation_relative[("WITH", "WITH", "FLAT")], 1)
+        self.assertEqual(confirmation_relative[("FLAT", "AGAINST", "WITH")], 1)
+        self.assertEqual(confirmation_relative[("AGAINST", "AGAINST", "AGAINST")], 1)
+        self.assertEqual(confirmation_relative[("AGAINST", "AGAINST", "FLAT")], 1)
         rapid_cohort = [x for x in persistence_rows if x["rapid"]]
         slow_cohort = [x for x in persistence_rows if x["slow_reentry"]]
         no_reentry_cohort = [x for x in persistence_rows if x["no_reentry"]]
