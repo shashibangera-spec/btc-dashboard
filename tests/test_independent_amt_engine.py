@@ -61,12 +61,13 @@ class IndependentAMTTests(unittest.TestCase):
             bar(t+timedelta(days=1,minutes=60),10200,10300,10200),
             bar(t+timedelta(days=1,minutes=90),10200,10300,10200),
         ]
-        got=build_session_snapshots(bars,atr_period=1)
+        # Isolate the fixed $50 floor: the first breakout candle's true range
+        # includes the overnight gap and would otherwise raise the ATR buffer.
+        got=build_session_snapshots(bars,atr_period=1,atr_multiplier=0)
         self.assertEqual([x["price_state"] for x in got],[
             "DISCOVERY_CANDIDATE_ABOVE","VALUE_EXCURSION",
             "DISCOVERY_CANDIDATE_ABOVE","DISCOVERY_CONFIRMED_ABOVE",
         ])
-
 
     def test_midpoint_poc_tie_break(self):
         p=calculate_tpo_profile([bar(datetime(2026,1,1,tzinfo=UTC),100,200)])
@@ -86,7 +87,6 @@ class IndependentAMTTests(unittest.TestCase):
             "DISCOVERY_CANDIDATE_ABOVE","DISCOVERY_CONFIRMED_ABOVE",
             "REENTRY_CANDIDATE","REENTRY_CONFIRMED",
         ])
-
 
     def test_missing_bar_breaks_discovery_confirmation(self):
         t=datetime(2026,1,1,0,tzinfo=UTC)
