@@ -146,13 +146,56 @@ def _load_dashboard_math_helpers():
     import types
 
     tree = ast.parse(_source())
-    names = {"_sum_if_complete", "_normalize_listed_option_oi", "_select_positive_wall", "_calculate_max_pain"}
+    names = {"_sum_if_complete", "_normalize_listed_option_oi", "_select_positive_wall", "_calculate_max_pain", "_select_balanced_strikes"}
     nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     assert {node.name for node in nodes} == names
     module = types.ModuleType("dashboard_math_helpers")
     module.__dict__.update({"np": np, "pd": pd})
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(DASHBOARD), "exec"), module.__dict__)
     return module
+
+
+def test_balanced_strike_window_selects_ten_each_side_and_counts_atm_below():
+    helpers = _load_dashboard_math_helpers()
+    strikes = [90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190,
+               200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300]
+    selected = helpers._select_balanced_strikes(strikes, 200, per_side=10)
+    assert selected == [110, 120, 130, 140, 150, 160, 170, 180, 190, 200,
+                        210, 220, 230, 240, 250, 260, 270, 280, 290, 300]
+    assert len(selected) == 20
+    assert selected.count(200.0) == 1
+
+
+def test_balanced_strike_window_handles_between_strikes_duplicates_and_uneven_sides():
+    helpers = _load_dashboard_math_helpers()
+    selected = helpers._select_balanced_strikes(
+        [100, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210],
+        115, per_side=10,
+    )
+    assert selected == [100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210]
+    assert len(selected) == len(set(selected))
+
+
+def test_balanced_strike_window_ignores_invalid_values_and_invalid_spot():
+    helpers = _load_dashboard_math_helpers()
+    assert helpers._select_balanced_strikes([None, "bad", 100, 110], 105, 10) == [100.0, 110.0]
+    assert helpers._select_balanced_strikes([100, 110], float("nan"), 10) == []
+    assert helpers._select_balanced_strikes([100, 110], 105, 0) == []
+
+
+def test_nearest_strike_chart_uses_balanced_window_and_preserves_missing_oi():
+    source = _source()
+    start = source.index('# ---------- 3 · CONTEXT ----------')
+    end = source.index('with ctx_right:', start)
+    chart = source[start:end]
+    assert '_select_balanced_strikes(' in chart
+    assert 'per_side=10' in chart
+    assert 'dropna(subset=["Strike"])' in chart
+    assert 'dropna(subset=["Strike", "OI_USD"])' not in chart
+    assert 'call_data.get(strike, np.nan)' in chart
+    assert 'put_data.get(strike, np.nan)' in chart
+    assert '10 BELOW / 10 ABOVE CMP' in chart
+    assert 'height=620' in chart
 
 
 def test_options_aggregates_preserve_observed_zero_and_reject_missing_values():
