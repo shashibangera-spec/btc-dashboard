@@ -176,6 +176,19 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual([x["balance_evidence"] for x in got], [False, False, True, True])
         self.assertTrue(all(x["price_state"] == "IN_VALUE" for x in got))
 
+    def test_first_observed_bar_after_session_reset_is_marked_gap(self):
+        t = datetime(2026, 1, 1, 0, tzinfo=UTC)
+        prior = [bar(t + timedelta(minutes=30*i), 9900, 10100, 10000) for i in range(48)]
+        current = [
+            bar(t + timedelta(days=1, minutes=30), 10050, 10050, 10050),
+            bar(t + timedelta(days=1, minutes=60), 9950, 9950, 9950),
+        ]
+        got = build_session_snapshots(prior + current, atr_period=1)
+        self.assertTrue(got[0]["session_start_gap"])
+        self.assertTrue(got[0]["gap_before"])
+        self.assertFalse(got[1]["session_start_gap"])
+        self.assertFalse(got[1]["gap_before"])
+
     def test_gap_resets_balance_crossing_window(self):
         t = datetime(2026, 1, 1, 0, tzinfo=UTC)
         prior = [bar(t + timedelta(minutes=30*i), 9900, 10100, 10000) for i in range(48)]
