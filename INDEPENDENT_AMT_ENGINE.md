@@ -175,3 +175,21 @@ These are descriptive historical state counts only. They do not establish false-
 - Read-only Supabase credential required: `SUPABASE_READ_ONLY_KEY`, or an `SUPABASE_ANON_KEY` with SELECT permission.
 - No service-role credential is required or used by this module.
 - This branch is research-only. Do not connect it to the production dashboard, collector, alerts, Playbook or trading workflow until state-machine validation and explicit release approval.
+
+
+
+## Full price-path and price-acceptance audit (30 discovery episodes)
+
+A second, independent replay audit follows the completed 30-minute OHLC path from each discovery-confirmation candle. The measurement window ends immediately before the first two-close confirmed re-entry, or at the next discovery event/session boundary if no confirmed re-entry occurs first. This prevents post-re-entry movement or a later discovery episode from being attributed to the original episode. The confirmation candle is included as offset zero. Directional excursions are measured from its close; wick excursions use the full candle highs/lows. “Outside prior value” means a completed close beyond frozen prior VAH/VAL without the ATR buffer; “beyond buffer” additionally clears the candle-specific discovery buffer.
+
+The audit independently reconstructs the raw fixture and confirms **1,212 completed raw candles**, **1,164 replay snapshots**, and **30 discovery event starts** (6 upside, 24 downside). Across the 30 active windows:
+- **17/30** reached confirmed two-close re-entry before the review window ended; **5/30** did so within four candles. The other 13 did not re-enter before a session boundary or a new episode.
+- The active windows contain **576 candles** in total (median 17 candles per episode; range 2–47).
+- **19/30** episodes ended with price net against the discovery direction and **11/30** ended net with it. The median episode-end signed move from the confirmation close was approximately **−$310.66**; the mean was approximately **+$127.90**, showing that a small number of large favourable moves materially affect the aggregate.
+- Median maximum favourable close excursion was about **$548**, versus median maximum adverse close excursion of about **$319**. These are path excursions, not realised or executable trade returns. Wick-based excursions were larger: median favourable wick excursion about **$722**, median adverse wick excursion about **$490**.
+- **558/576 (96.9%)** active-window closes were beyond the frozen prior value boundary in the discovery direction; **510/576 (88.5%)** also cleared the candle-specific discovery buffer. **12/30** episodes had every active-window close outside prior value. This is expected in part because the confirmation condition itself requires two consecutive buffered closes; it must not be read as independent validation of acceptance.
+- Across successive close-to-close steps inside the active windows, **269** moved with discovery and **278** moved against it (remaining steps unchanged). Directional progress was therefore not a one-way path, even where price stayed outside prior value.
+
+Interpretation: price can remain outside prior value while making little net progress, retracing substantially, or ultimately returning to value. Conversely, several episodes produced large favourable excursions and remained outside value to the session boundary. “Outside value”, “discovery confirmed”, “value migration”, and “continued directional progress” are different observations. None alone establishes a trade edge. The audit does not change the engine, state machine, dashboard, or trading rules.
+
+Methodological caution: this is an OHLC-based replay using the branch's $50 row / 70% TPO approximation and the current two-close state definition. Intrabar ordering is unknowable from 30-minute OHLC, so wick excursions are maximum ranges, not a path sequence. A close returning inside prior value is not itself confirmed re-entry; the engine requires two consecutive closes. The 30 episodes are a small, selected sample from roughly 25 sessions, and the discovery events are not independent observations. The findings are descriptive and do not establish predictive value, causal acceptance, or profitability. Tick/trade-level TPO and a longer untouched sample would be needed to validate actual distribution acceptance and robustness.
