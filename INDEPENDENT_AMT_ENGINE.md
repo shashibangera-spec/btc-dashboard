@@ -193,3 +193,30 @@ The audit independently reconstructs the raw fixture and confirms **1,212 comple
 Interpretation: price can remain outside prior value while making little net progress, retracing substantially, or ultimately returning to value. Conversely, several episodes produced large favourable excursions and remained outside value to the session boundary. “Outside value”, “discovery confirmed”, “value migration”, and “continued directional progress” are different observations. None alone establishes a trade edge. The audit does not change the engine, state machine, dashboard, or trading rules.
 
 Methodological caution: this is an OHLC-based replay using the branch's $50 row / 70% TPO approximation and the current two-close state definition. Intrabar ordering is unknowable from 30-minute OHLC, so wick excursions are maximum ranges, not a path sequence. A close returning inside prior value is not itself confirmed re-entry; the engine requires two consecutive closes. The 30 episodes are a small, selected sample from roughly 25 sessions, and the discovery events are not independent observations. The findings are descriptive and do not establish predictive value, causal acceptance, or profitability. Tick/trade-level TPO and a longer untouched sample would be needed to validate actual distribution acceptance and robustness.
+
+
+
+## TPO parameter sensitivity audit (12 configurations)
+
+The historical replay was repeated over the same 1,212 completed raw Binance spot 30-minute candles, changing only TPO row size and value-area percentage. All other mechanics were held constant, including the 05:30 IST session, ATR(21), the $50 minimum discovery buffer, 0.5×ATR buffer multiplier, two consecutive completed closes, and the same gap/session handling. The baseline is $50 rows / 70% value area. Event overlap is measured by exact match of session date, confirmation candle timestamp, and discovery direction against the 30 baseline event starts.
+
+| TPO row | Value area | Discovery starts | Up / down | Baseline event matches |
+|---:|---:|---:|---:|---:|
+| $25 | 65% | 28 | 5 / 23 | 17/30 (56.7%) |
+| $25 | 70% | 26 | 5 / 21 | 20/30 (66.7%) |
+| $25 | 75% | 25 | 5 / 20 | 15/30 (50.0%) |
+| $50 | 65% | 29 | 6 / 23 | 22/30 (73.3%) |
+| **$50** | **70%** | **30** | **6 / 24** | **30/30 (100%)** |
+| $50 | 75% | 27 | 6 / 21 | 20/30 (66.7%) |
+| $75 | 65% | 28 | 5 / 23 | 21/30 (70.0%) |
+| $75 | 70% | 27 | 4 / 23 | 22/30 (73.3%) |
+| $75 | 75% | 26 | 4 / 22 | 17/30 (56.7%) |
+| $100 | 65% | 32 | 7 / 25 | 18/30 (60.0%) |
+| $100 | 70% | 29 | 7 / 22 | 19/30 (63.3%) |
+| $100 | 75% | 30 | 7 / 23 | 18/30 (60.0%) |
+
+Across the 12 configurations, discovery counts range from **25 to 32**, and exact event overlap with the baseline ranges from **50.0% to 73.3%** outside the baseline configuration. The baseline's 100% overlap is expected because it is being compared with itself. The number of broad value-separation labels at the confirmation candle also changes: **4 to 10** across the alternatives, versus **7** at baseline. Confirmed re-entry candle counts range from **12 to 17**.
+
+Interpretation: the broad conceptual distinction remains valid—price-state confirmation and developing-value migration are separate classifications—but the identity and count of individual discovery episodes are materially sensitive to the TPO row and value-area settings. Consequently, the earlier 30-episode price-path statistics are conditional on the $50 / 70% construction, not parameter-invariant market facts. We should not promote their exact proportions, episode timestamps, or re-entry frequencies as robust until a longer sample and independent tick/trade-level profile comparison are available.
+
+This is a sensitivity check, not a search for the “best” row size. No alternative configuration is recommended as a replacement. The Pine production reference and the dashboard's locked settings are unchanged.
