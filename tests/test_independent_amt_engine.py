@@ -331,6 +331,26 @@ class IndependentAMTTests(unittest.TestCase):
             full_first_four_offsets = [k for k in active_poc_full_offsets if 1 <= k <= 4]
             full_after_first_four_offsets = [k for k in active_poc_full_offsets if k >= 5]
             active_bars_after_first_four = max(0, len(active_segment) - 5)
+            # Descriptive price-path audit: compare completed-candle close
+            # progress on broad-alignment bars with the immediately preceding
+            # completed close. Positive means movement in discovery direction.
+            aligned_price_steps = []
+            other_price_steps = []
+            for offset, row in enumerate(active_segment):
+                previous_close = snapshots[i + offset - 1]["close"] if i + offset > 0 else None
+                if previous_close is None:
+                    continue
+                signed_step = (
+                    row["close"] - previous_close
+                    if direction == "ABOVE" else previous_close - row["close"]
+                )
+                if row["value_state"] in {
+                    f"BROAD_MIGRATION_{value_direction}",
+                    f"VALUE_SEPARATED_{direction}",
+                }:
+                    aligned_price_steps.append(signed_step)
+                else:
+                    other_price_steps.append(signed_step)
             active_edges_with_poc_not_offsets = [
                 k for k, sig in enumerate(active_relative_signatures)
                 if sig[1] != "WITH" and (sig[0] == "WITH" or sig[2] == "WITH")
@@ -359,6 +379,8 @@ class IndependentAMTTests(unittest.TestCase):
                 "active_bar_count": len(active_segment),
                 "active_bars_after_first_four": active_bars_after_first_four,
                 "active_full_bars_after_first_four": len(full_after_first_four_offsets),
+                "aligned_price_steps": aligned_price_steps,
+                "other_price_steps": other_price_steps,
                 "active_edges_with_poc_not": active_edges_with_poc_not,
                 "active_poc_one_edge_first": active_poc_one_edge_offsets[0]
                     if active_poc_one_edge_offsets else None,
@@ -475,6 +497,23 @@ class IndependentAMTTests(unittest.TestCase):
              x["active_full_bars_after_first_four"], x["active_bars_after_first_four"])
             for x in persistence_rows if x["full_after_first_four"]
         ])
+        for label, rows in (
+            ("BROAD_ALIGNED", [x for x in persistence_rows]),
+        ):
+            aligned_steps = [step for x in rows for step in x["aligned_price_steps"]]
+            other_steps = [step for x in rows for step in x["other_price_steps"]]
+            def step_summary(values):
+                return {
+                    "n": len(values),
+                    "with_direction": sum(v > 0 for v in values),
+                    "against_direction": sum(v < 0 for v in values),
+                    "unchanged": sum(v == 0 for v in values),
+                    "net_signed_close_change": round(sum(values), 2),
+                    "median_signed_step": round(sorted(values)[len(values)//2], 2) if values else None,
+                }
+            print("PRICE_PROGRESS_BY_VALUE_STATE", label,
+                  "broad_aligned=", step_summary(aligned_steps),
+                  "other_active_states=", step_summary(other_steps))
         print("BROAD_MIGRATION_ACTIVE_BAR_TOTALS",
               "full_active_bars=", sum(x["active_full_bar_count"] for x in persistence_rows),
               "all_active_bars=", sum(x["active_bar_count"] for x in persistence_rows),
