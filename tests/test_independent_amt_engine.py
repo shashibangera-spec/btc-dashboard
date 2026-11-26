@@ -263,12 +263,12 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(rapid_reentries, 5)
         self.assertEqual(no_reentry_by_session_end, 13)
         self.assertEqual(separated_after_confirmation, 12)
+        events = [x for x in snapshots if x["discovery_event_start"]]
         self.assertEqual(sum(
             x["value_state"] == ("VALUE_SEPARATED_ABOVE" if x["price_state"].endswith("_ABOVE")
                                  else "VALUE_SEPARATED_BELOW")
             for x in events
         ), 7)
-        events = [x for x in snapshots if x["discovery_event_start"]]
         self.assertEqual(len(events), 30)
         self.assertEqual(sum(x["price_state"].endswith("_ABOVE") for x in events), 6)
         self.assertEqual(sum(x["price_state"].endswith("_BELOW") for x in events), 24)
