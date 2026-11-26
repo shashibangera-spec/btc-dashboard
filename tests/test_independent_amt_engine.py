@@ -260,6 +260,16 @@ class IndependentAMTTests(unittest.TestCase):
               "sequence_starts=", len(retest_sequences),
               "above_sequence_starts=", sum(label == "RETEST_RECLAIM_ABOVE" for _, label in retest_sequences),
               "below_sequence_starts=", sum(label == "RETEST_REJECTION_BELOW" for _, label in retest_sequences))
+        self.assertEqual(len(retest_sequences), 35)
+        self.assertEqual(sum(label == "RETEST_RECLAIM_ABOVE" for _, label in retest_sequences), 6)
+        self.assertEqual(sum(label == "RETEST_REJECTION_BELOW" for _, label in retest_sequences), 29)
+        for i, label in retest_sequences:
+            item = snapshots[i]
+            prior = item["prior_value"]
+            boundary = prior["vah"] if label == "RETEST_RECLAIM_ABOVE" else prior["val"]
+            print("RETEST", item["candle_open_time_utc"], label,
+                  "boundary=", boundary, "low=", item["low"],
+                  "high=", item["high"], "close=", item["close"])
         self.assertEqual(sum(x["balance_evidence"] for x in snapshots), 0)
         index_by_time = {x["candle_open_time_utc"]: i for i, x in enumerate(snapshots)}
 
