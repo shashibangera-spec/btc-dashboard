@@ -880,6 +880,38 @@ class HistoricalTpoSensitivityAuditTests(unittest.TestCase):
             reentries = sum(
                 x["price_state"] == "REENTRY_CONFIRMED" for x in snapshots
             )
+            event_indices = [i for i, x in enumerate(snapshots) if x["discovery_event_start"]]
+            episode_nets = []
+            active_bars = 0
+            for event_number, start in enumerate(event_indices):
+                event = snapshots[start]
+                next_event = event_indices[event_number + 1] if event_number + 1 < len(event_indices) else len(snapshots)
+                session_end = next(
+                    (i for i in range(start + 1, len(snapshots))
+                     if snapshots[i]["session_date_ist"] != event["session_date_ist"]),
+                    len(snapshots),
+                )
+                boundary = min(next_event, session_end)
+                reentry = next(
+                    (i for i in range(start + 1, boundary)
+                     if snapshots[i]["price_state"] == "REENTRY_CONFIRMED"),
+                    None,
+                )
+                end = reentry if reentry is not None else boundary
+                path = snapshots[start:end]
+                if not path:
+                    continue
+                direction = 1 if event["price_state"].endswith("_ABOVE") else -1
+                episode_nets.append((path[-1]["close"] - event["close"]) * direction)
+                active_bars += len(path)
+            positive_episode_nets = sum(x > 0 for x in episode_nets)
+            negative_episode_nets = sum(x < 0 for x in episode_nets)
+            sorted_nets = sorted(episode_nets)
+            median_episode_net = (
+                sorted_nets[len(sorted_nets) // 2]
+                if len(sorted_nets) % 2 else
+                (sorted_nets[len(sorted_nets) // 2 - 1] + sorted_nets[len(sorted_nets) // 2]) / 2
+            ) if sorted_nets else 0.0
             broad_at_confirmation = sum(
                 x["value_state"] in {"VALUE_SEPARATED_ABOVE", "VALUE_SEPARATED_BELOW"}
                 for x in events
@@ -891,6 +923,10 @@ class HistoricalTpoSensitivityAuditTests(unittest.TestCase):
                 "up_events": sum(x["price_state"].endswith("_ABOVE") for x in events),
                 "down_events": sum(x["price_state"].endswith("_BELOW") for x in events),
                 "confirmed_reentry_candles": reentries,
+                "active_episode_bars": active_bars,
+                "positive_episode_net": positive_episode_nets,
+                "negative_episode_net": negative_episode_nets,
+                "median_episode_net_usd": round(median_episode_net, 2),
                 "broad_value_separation_at_confirmation": broad_at_confirmation,
                 "baseline_event_overlap": None,
                 "event_keys": keys,
