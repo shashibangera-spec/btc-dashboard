@@ -50,14 +50,14 @@ Balance evidence is a separate observation, not a replacement for price state:
 
 ## Historical data validation — refreshed 26 Nov 2026
 Read-only checks against Supabase were repeated using the current archive:
-- Raw Binance spot BTCUSDT 30m archive: **1,210 candles** (1 Nov through 26 Nov 2026).
+- Raw Binance spot BTCUSDT 30m archive: **1,212 candles** (1 Nov through 26 Nov 2026).
 - 1–25 Nov: **25 complete sessions**, each with 48 consecutive candles.
-- 26 Nov: 10 archived completed candles at the time of the query.
+- 26 Nov: **12 archived completed candles** at the time of the latest read-only query (00:00–05:30 UTC).
 - No missing or irregular 30-minute intervals were found in the raw archive.
 - Independent $50 / 70% profile calculation matched stored prior VAH/POC/VAL on **729 of 729 comparable snapshot rows**.
 - Developing VAH/POC/VAL matched **682 of 682 comparable populated rows**.
 - **47** AMT snapshot rows have null developing-value fields despite `data_status=VALID`.
-- Two latest AMT snapshots (26 Nov 05:00 and 05:30 UTC) did not yet have matching raw OHLC archive rows. At query time, the raw archive ended at 04:30 UTC while AMT snapshots extended to 05:30 UTC. The independent replay therefore does not include those two newer candles. This is an archive-coverage lag to investigate, not a reason to substitute AMT snapshot OHLC into the independent input.
+- A refreshed read-only join of all 732 AMT snapshots from 1 Nov onward found **one unmatched snapshot**: 26 Nov 06:00 UTC. The earlier 05:00 and 05:30 UTC snapshots are now present in the raw OHLC archive. The raw archive currently ends at 05:30 UTC, while the latest AMT snapshot is 06:00 UTC (collected at 06:31:26 UTC). This is a one-candle archive-coverage lag; do not substitute AMT snapshot OHLC into the independent input.
 
 These results establish profile arithmetic parity for the comparable rows only. They do not establish state-machine accuracy, predictive value, profitability, or tick-level Market Profile equivalence. The historical archive contained no missing 30-minute intervals, so gap-reset behaviour is covered by synthetic tests rather than a naturally occurring historical gap.
 
