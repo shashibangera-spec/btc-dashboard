@@ -45,14 +45,27 @@ Balance evidence is a separate observation, not a replacement for price state:
 - Track changes in the side of developing POC relative to frozen prior POC.
 - Two or more side crossings in a rolling five-valid-candle window, while developing value overlaps prior value, sets `balance_evidence=true`.
 - Boundary retest evidence is also reported separately; it is not silently converted into acceptance.
+- This balance heuristic is not yet historically validated as a reliable balance/rotation classifier.
 
-## Validation completed so far
-- Raw Binance archive checked: 1,189 candles from 1–25 Nov 2026.
-- 24 complete sessions and one partial session (37 candles).
-- No missing 30-minute intervals in the archive.
-- Independent profile calculation matched stored prior VAH/POC/VAL on all 708 comparable AMT snapshot rows.
-- Developing VAH/POC/VAL matched all 661 rows where the existing snapshot actually contains values. 47 other snapshots have null developing values despite `data_status=VALID`; the independent replay calculates these from raw candles.
-- These are profile arithmetic/data-parity checks, not proof that the state classifications are profitable or ready for trading.
+## Historical data validation — refreshed 26 Nov 2026
+Read-only checks against Supabase were repeated using the current archive:
+- Raw Binance spot BTCUSDT 30m archive: **1,210 candles** (1 Nov through 26 Nov 2026).
+- 1–25 Nov: **25 complete sessions**, each with 48 consecutive candles.
+- 26 Nov: 10 archived completed candles at the time of the query.
+- No missing or irregular 30-minute intervals were found in the raw archive.
+- Independent $50 / 70% profile calculation matched stored prior VAH/POC/VAL on **729 of 729 comparable snapshot rows**.
+- Developing VAH/POC/VAL matched **682 of 682 comparable populated rows**.
+- **47** AMT snapshot rows have null developing-value fields despite `data_status=VALID`.
+- Two latest AMT snapshots (26 Nov 05:00 and 05:30 UTC) did not yet have matching raw OHLC archive rows. At query time, the raw archive ended at 04:30 UTC while AMT snapshots extended to 05:30 UTC. The independent replay therefore does not include those two newer candles. This is an archive-coverage lag to investigate, not a reason to substitute AMT snapshot OHLC into the independent input.
+
+These results establish profile arithmetic parity for the comparable rows only. They do not establish state-machine accuracy, predictive value, profitability, or tick-level Market Profile equivalence. The historical archive contained no missing 30-minute intervals, so gap-reset behaviour is covered by synthetic tests rather than a naturally occurring historical gap.
+
+## State-machine validation still required
+- Count distinct discovery episodes (not repeated per-candle confirmed-state labels).
+- Review candidate cancellation, opposite-side transitions, re-entry, and session rollover manually against completed candles.
+- Validate balance evidence and boundary retests against actual auction sequences.
+- Measure false confirmations and cases where price discovery is not accompanied by value development.
+- Resolve raw OHLC archive lag before claiming current-session replay completeness.
 
 ## Safety and release
 - Read-only Supabase credential required: `SUPABASE_READ_ONLY_KEY`, or an `SUPABASE_ANON_KEY` with SELECT permission.
