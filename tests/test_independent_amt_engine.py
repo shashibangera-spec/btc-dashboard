@@ -303,6 +303,10 @@ class IndependentAMTTests(unittest.TestCase):
                 "opposite_while_active": bool(active_opposite_offsets),
                 "active_reversal": bool(active_same_offsets and active_opposite_offsets
                                         and min(active_same_offsets) < min(active_opposite_offsets)),
+                "active_opposite_to_same_recovery": bool(
+                    active_same_offsets and active_opposite_offsets
+                    and min(active_opposite_offsets) < min(active_same_offsets)
+                ),
                 "same_after_reentry": bool(post_same_offsets),
                 "opposite_after_reentry": bool(post_opposite_offsets),
             })
@@ -364,6 +368,7 @@ class IndependentAMTTests(unittest.TestCase):
                   "same_while_active=", sum(x["same_while_active"] for x in cohort),
                   "opposite_while_active=", sum(x["opposite_while_active"] for x in cohort),
                   "active_same_to_opposite_reversals=", sum(x["active_reversal"] for x in cohort),
+                  "active_opposite_to_same_recoveries=", sum(x["active_opposite_to_same_recovery"] for x in cohort),
                   "same_after_reentry=", sum(x["same_after_reentry"] for x in cohort),
                   "opposite_after_reentry=", sum(x["opposite_after_reentry"] for x in cohort))
         print("EPISODE_SUMMARY", "rapid_reentries_within_4_bars=", rapid_reentries,
@@ -383,6 +388,24 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(aligned_within_4_bars, 27)
         self.assertEqual(aligned_any_window, 28)
         self.assertEqual(opposite_value_any_window, 4)
+        self.assertEqual(sum(x["same_while_active"] for x in persistence_rows), 28)
+        self.assertEqual(sum(x["opposite_while_active"] for x in persistence_rows), 3)
+        self.assertEqual(sum(x["active_reversal"] for x in persistence_rows), 0)
+        self.assertEqual(sum(x["active_opposite_to_same_recovery"] for x in persistence_rows), 1)
+        self.assertEqual(sum(x["same_after_reentry"] for x in persistence_rows), 17)
+        self.assertEqual(sum(x["opposite_after_reentry"] for x in persistence_rows), 1)
+        rapid_cohort = [x for x in persistence_rows if x["rapid"]]
+        longer_cohort = [x for x in persistence_rows if not x["rapid"]]
+        self.assertEqual(len(rapid_cohort), 5)
+        self.assertEqual(sum(x["same_at_confirmation"] for x in rapid_cohort), 5)
+        self.assertEqual(sum(x["same_first_four_after"] for x in rapid_cohort), 5)
+        self.assertEqual(sum(x["same_while_active"] for x in rapid_cohort), 5)
+        self.assertEqual(sum(x["opposite_while_active"] for x in rapid_cohort), 0)
+        self.assertEqual(len(longer_cohort), 25)
+        self.assertEqual(sum(x["same_at_confirmation"] for x in longer_cohort), 22)
+        self.assertEqual(sum(x["same_first_four_after"] for x in longer_cohort), 22)
+        self.assertEqual(sum(x["same_while_active"] for x in longer_cohort), 23)
+        self.assertEqual(sum(x["opposite_while_active"] for x in longer_cohort), 3)
         events = [x for x in snapshots if x["discovery_event_start"]]
         self.assertEqual(sum(
             x["value_state"] == ("VALUE_SEPARATED_ABOVE" if x["price_state"].endswith("_ABOVE")
