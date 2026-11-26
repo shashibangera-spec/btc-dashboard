@@ -85,7 +85,7 @@ A follow-up persistence audit now separates the discovery-active interval from t
 - The 13 episodes with no confirmed re-entry before the next episode or session boundary showed same-direction migration at confirmation in **10/13**, in the next four bars in **10/13**, and at some point while discovery remained active in **11/13**. Three showed opposite migration while active; one of these later shifted back toward the discovery direction.
 - These are small-sample descriptive comparisons, not a quality score or a basis for trading rules.
 
-The persistence audit and its historical assertions ran in GitHub Actions Run #97: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45772987591 (**19 tests passed**).
+The persistence audit, separate rapid/slow/no-re-entry cohort assertions, and full historical replay ran in GitHub Actions Run #102: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45773110378 (**19 tests passed**).
 
 These are descriptive historical state counts only. They do not establish false-confirmation rates, predictive value, or profitability. Automated assertions spot-check three rapid re-entry sequences (4 Nov, 17 Nov, 22 Nov) and two sustained discovery sequences (21 Nov downside, 26 Nov upside); the CI ledger provides the full 30-episode review trail.
 
