@@ -61,19 +61,21 @@ Read-only checks against Supabase were repeated using the current archive:
 
 These results establish profile arithmetic parity for the comparable rows only. They do not establish state-machine accuracy, predictive value, profitability, or tick-level Market Profile equivalence. The historical archive contained no missing 30-minute intervals, so gap-reset behaviour is covered by synthetic tests rather than a naturally occurring historical gap.
 
-## Historical state-machine screening — source-equivalent replay
-A separate JavaScript replay of the current Python state-machine rules was run against the 1,212 raw OHLC candles (1–26 Nov). This is **not yet a direct execution of the Python module against Supabase**; it is a screening replay and must not be represented as Python-engine historical verification.
+## Direct Python historical replay — offline fixture
+A read-only fixture containing the archived raw Binance BTCUSDT spot 30m OHLC candles was added under `tests/fixtures/`. GitHub Actions executed the actual Python engine against all 1,212 records; no live database connection or database write was used in the test.
 
-- 1,164 output bars were evaluated across 25 complete prior sessions plus the partial 26 Nov session; no natural data gaps were found.
-- The replay identified **30 distinct discovery-confirmation episodes**: 6 upside and 24 downside. Episode counting used the transition from no confirmed side to a confirmed side, not repeated per-candle confirmed labels.
-- At confirmation, **7/30** episodes had fully separated developing value. The other **23/30** had value migration/POC migration classifications but had not yet achieved full value separation.
+- The fixture covers 1–26 Nov 2026 and uses a fixed as-of time of 26 Nov 07:00 UTC so all 1,212 archived candles are completed.
+- The Python engine produced **1,164 output bars** across 25 complete prior sessions plus the partial 26 Nov session; no natural data gaps were present.
+- It identified **30 distinct discovery-confirmation episodes**: 6 upside and 24 downside. Episode counting uses `discovery_event_start`, not repeated per-candle confirmed-state labels.
+- At confirmation, **7/30** episodes had fully separated developing value. The other **23/30** had value migration/POC-migration classifications but had not yet achieved full value separation.
 - There were 17 confirmed re-entry transitions and 53 boundary-retest-labelled candles. The latter is a candle count, not a count of unique retest sequences.
-- The balance heuristic did not trigger on any evaluated candle. The maximum observed was **one developing-POC side crossing in any rolling five-candle window**; the required two crossings never occurred. This does not prove the market was never balanced. It shows the current heuristic was non-operative in this sample and should not be treated as a validated balance classifier.
-- These are descriptive state counts only. They do not establish false-confirmation rates, predictive value, or profitability. Several episodes show price-state weakening within the next few bars and require manual sequence review.
+- The balance heuristic did not trigger. The maximum observed was **one developing-POC side crossing in any rolling five-candle window**; the required two crossings never occurred. This does not prove the market was never balanced. It shows the current heuristic was non-operative in this sample and should not be treated as a validated balance classifier.
+- GitHub Actions Run #50 executed the complete offline suite: **16 tests passed**, including `test_historical_raw_archive_replay_counts`.
 
+These are descriptive historical state counts only. They do not establish false-confirmation rates, predictive value, or profitability. Manual sequence review remains open, particularly for episodes that quickly transitioned into re-entry.
 
 ## State-machine validation still required
-- Count distinct discovery episodes using `discovery_event_start` (not repeated per-candle confirmed-state labels); manually review the resulting episodes against completed candles.
+- Manually review the 30 discovery episodes against completed candles, especially quick re-entry and opposite-side transitions.
 - Review candidate cancellation, opposite-side transitions, re-entry, and session rollover manually against completed candles.
 - Validate balance evidence and boundary retests against actual auction sequences.
 - Measure false confirmations and cases where price discovery is not accompanied by value development.
