@@ -95,6 +95,34 @@ Key observations:
 
 Interpretation caveat: classify_value() prioritizes POC migration before partial VAH/VAL migration. Therefore POC_MIGRATION_UP means POC is at least one row higher; it does not mean VAH, POC, and VAL all moved up. The 2 Nov and 8 Nov episodes illustrate why the label must be read as a POC-specific statement. Broad migration requires all three levels to move in the same direction. This audit does not change the classifier or trading rules.
 
+A full 30-episode audit compared the developing VAH, POC, and VAL independently with the frozen prior-session levels, always relative to each episode's discovery direction. Direction means strictly higher, lower, or unchanged; this is a level-position comparison, not a measure of volume acceptance.
+
+At the discovery-confirmation candle:
+- **24/30** had all three levels moving in the discovery direction.
+- **2/30** had VAH and POC moving with discovery while VAL moved against it.
+- **1/30** had VAH and POC moving with discovery while VAL was unchanged.
+- **1/30** had VAH unchanged, POC against discovery, and VAL with discovery.
+- **1/30** had all three levels against discovery.
+- **1/30** had VAH and POC against discovery while VAL was unchanged.
+
+Across the full discovery-active interval (from confirmation up to but excluding confirmed re-entry, or the episode-window boundary if no re-entry):
+- Strict **POC-only alignment** (POC with discovery while neither VAH nor VAL is with discovery) occurred in **0/30** episodes.
+- POC aligned with exactly one value-area edge at some point in **5/30** episodes.
+- All three levels aligned with discovery at some point in **28/30** episodes.
+- At least one value-area edge aligned while POC did not in **3/30** episodes.
+These are overlapping episode-level flags, not mutually exclusive categories.
+
+The five POC-plus-one-edge episodes were 4 Nov (15:00 UTC), 12 Nov (14:00 UTC), 16 Nov (12:30 UTC), 17 Nov (16:00 UTC), and 18 Nov (14:00 UTC). The three edge-without-POC episodes were 2 Nov (17:30 UTC), 4 Nov (08:00 UTC), and 8 Nov (21:30 UTC). The 4 Nov discovery appears in both sets at different candles, illustrating that the profile can change shape during one episode.
+
+Examples show why the state label must be read literally:
+- **2 Nov 17:30 UTC:** label `POC_MIGRATION_UP`; relative to downside discovery, VAH and POC were against while VAL was with (prior 78,125 / 77,975 / 77,775; developing 78,525 / 78,025 / 77,725).
+- **4 Nov 08:00 UTC:** label `POC_MIGRATION_DOWN`; relative to upside discovery, VAH was with while POC and VAL were against (prior 77,625 / 77,125 / 76,625; developing 77,675 / 77,075 / 76,075).
+- **8 Nov 21:30 UTC:** label `POC_MIGRATION_UP`; relative to downside discovery, VAH was unchanged, POC was against, and VAL was with (prior 76,075 / 75,825 / 75,775; developing 76,075 / 75,875 / 75,725).
+
+This confirms that the classifier's POC-first label can point in a direction that does not describe the movement of the full value area, and can even be opposite the discovery direction. But the audit found no episode where POC alone aligned while both edges did not. The recurring issue is **split POC/edge migration**, not a pure POC-only profile shift. Do not infer broad value migration from a POC label.
+
+The direction-signature counts, active-interval shape counts, and the exact episode lists are asserted in the historical replay test. GitHub Actions Run #123: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775143458 (**19 tests passed**). Session OHLC Writer Run #98: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775143544 and Binance OHLC Archive Run #90: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775143543 also passed.
+
 The focused trace ran in GitHub Actions Run #108: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45774029962 (**19 tests passed**).
 
 The persistence audit, separate rapid/slow/no-re-entry cohort assertions, and full historical replay ran in GitHub Actions Run #102: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45773110378 (**19 tests passed**).
