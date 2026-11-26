@@ -176,6 +176,24 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertTrue(all(x["prior_profile_quality"] == "COMPLETE" for x in snapshots))
         self.assertFalse(any(x["gap_before"] for x in snapshots))
 
+        # Emit a compact, reproducible episode ledger in CI logs for manual review.
+        for event in (x for x in snapshots if x["discovery_event_start"]):
+            i = index_by_time.get(event["candle_open_time_utc"]) if "index_by_time" in locals() else None
+            if i is None:
+                i = next(k for k, item in enumerate(snapshots)
+                         if item["candle_open_time_utc"] == event["candle_open_time_utc"])
+            window = snapshots[i:i+9]
+            print(
+                "EPISODE",
+                event["candle_open_time_utc"],
+                event["price_state"],
+                "close=", event["close"],
+                "prior=", (event["prior_value"]["vah"], event["prior_value"]["poc"], event["prior_value"]["val"]),
+                "developing=", (event["developing_value"]["vah"], event["developing_value"]["poc"], event["developing_value"]["val"]),
+                "value_state=", event["value_state"],
+                "next_states=", [x["price_state"] for x in window[1:]],
+                "next_closes=", [x["close"] for x in window[1:]],
+            )
         events = [x for x in snapshots if x["discovery_event_start"]]
         self.assertEqual(len(events), 30)
         self.assertEqual(sum(x["price_state"].endswith("_ABOVE") for x in events), 6)
