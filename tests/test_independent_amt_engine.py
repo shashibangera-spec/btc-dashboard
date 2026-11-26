@@ -1,4 +1,6 @@
 import unittest
+import json
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from independent_amt_engine import (
     AMTInputError, Candle, build_session_snapshots,
@@ -159,6 +161,28 @@ class IndependentAMTTests(unittest.TestCase):
         got=build_session_snapshots(bars,atr_period=1)
         self.assertIsNone(got[0]["boundary_retest"])
         self.assertEqual(got[1]["boundary_retest"],"RETEST_REJECTION_BELOW")
+
+    def test_historical_raw_archive_replay_counts(self):
+        fixture = Path(__file__).parent / "fixtures" / "btcusdt_spot_30m_2026-11-01_2026-11-26.json"
+        data = json.loads(fixture.read_text(encoding="utf-8"))
+        candles = normalize_candles(
+            data["candles"],
+            datetime(2026, 11, 26, 7, 0, tzinfo=UTC),
+        )
+        self.assertEqual(len(candles), 1212)
+
+        snapshots = build_session_snapshots(candles)
+        self.assertEqual(len(snapshots), 1164)
+        self.assertTrue(all(x["prior_profile_quality"] == "COMPLETE" for x in snapshots))
+        self.assertFalse(any(x["gap_before"] for x in snapshots))
+
+        events = [x for x in snapshots if x["discovery_event_start"]]
+        self.assertEqual(len(events), 30)
+        self.assertEqual(sum(x["price_state"].endswith("_ABOVE") for x in events), 6)
+        self.assertEqual(sum(x["price_state"].endswith("_BELOW") for x in events), 24)
+        self.assertEqual(sum(x["price_state"] == "REENTRY_CONFIRMED" for x in snapshots), 17)
+        self.assertEqual(sum(x["boundary_retest"] is not None for x in snapshots), 53)
+        self.assertEqual(sum(x["balance_evidence"] for x in snapshots), 0)
 
 if __name__=="__main__":
     unittest.main()
