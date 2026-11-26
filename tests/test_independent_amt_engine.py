@@ -415,6 +415,17 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(sum(x["same_first_four_after"] for x in longer_cohort), 22)
         self.assertEqual(sum(x["same_while_active"] for x in longer_cohort), 23)
         self.assertEqual(sum(x["opposite_while_active"] for x in longer_cohort), 3)
+        self.assertEqual(sum(x["same_at_confirmation"] for x in slow_cohort), 12)
+        self.assertEqual(sum(x["same_first_four_after"] for x in slow_cohort), 12)
+        self.assertEqual(sum(x["same_while_active"] for x in slow_cohort), 12)
+        self.assertEqual(sum(x["opposite_while_active"] for x in slow_cohort), 0)
+        self.assertEqual(sum(x["same_after_reentry"] for x in slow_cohort), 12)
+        self.assertEqual(sum(x["same_at_confirmation"] for x in no_reentry_cohort), 10)
+        self.assertEqual(sum(x["same_first_four_after"] for x in no_reentry_cohort), 10)
+        self.assertEqual(sum(x["same_while_active"] for x in no_reentry_cohort), 11)
+        self.assertEqual(sum(x["opposite_while_active"] for x in no_reentry_cohort), 3)
+        self.assertEqual(sum(x["active_opposite_to_same_recovery"] for x in no_reentry_cohort), 1)
+        self.assertEqual(sum(x["same_after_reentry"] for x in no_reentry_cohort), 0)
         events = [x for x in snapshots if x["discovery_event_start"]]
         self.assertEqual(sum(
             x["value_state"] == ("VALUE_SEPARATED_ABOVE" if x["price_state"].endswith("_ABOVE")
