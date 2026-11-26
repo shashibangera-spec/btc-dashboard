@@ -149,7 +149,8 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
         cur=sessions[day]; confirmed=candidate=None; count=reentry=0; last_open=None; last_close=None
         last_poc_side=None; poc_crossings=[]; outside_side=None; outside_streak=0
         for j,(gi,c) in enumerate(cur):
-            gap=last_open is not None and c.open_time-last_open>timedelta(minutes=30,seconds=1)
+            session_start_gap = (j == 0 and c.open_time.astimezone(IST).time().replace(tzinfo=None) != SESSION_RESET)
+            gap = session_start_gap or (last_open is not None and c.open_time-last_open>timedelta(minutes=30,seconds=1))
             if gap:
                 candidate,count,reentry=None,0,0
                 last_poc_side=None; poc_crossings=[]; outside_side=None; outside_streak=0
@@ -192,7 +193,7 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
               "low":c.low,"close":c.close,"volume":c.volume,"atr":atr,"discovery_buffer":buf,
               "prior_profile_quality":"COMPLETE" if complete else "INCOMPLETE",
               "prior_value":prior.as_dict() if prior else None,"developing_value":dev.as_dict(),
-              "price_state":ps,"discovery_event_start":discovery_event_start,"value_state":vs,"auction_read":read,"gap_before":gap,
+              "price_state":ps,"discovery_event_start":discovery_event_start,"value_state":vs,"auction_read":read,"gap_before":gap,"session_start_gap":session_start_gap,
               "outside_prior_value_side":raw_side if prior else None,
               "outside_value_close_streak":outside_streak if prior else 0,
               "boundary_retest":boundary_retest if prior else None,
