@@ -296,7 +296,10 @@ class IndependentAMTTests(unittest.TestCase):
             same_in_first_four_after = any(x["value_state"] in aligned_states
                                            for x in first_four_after)
             persistence_rows.append({
+                "reentry_at": reentry_at,
                 "rapid": reentry_at is not None and reentry_at <= 4,
+                "slow_reentry": reentry_at is not None and reentry_at > 4,
+                "no_reentry": reentry_at is None,
                 "same_at_confirmation": event["value_state"] in aligned_states,
                 "same_first_four_after": same_in_first_four_after,
                 "same_while_active": bool(active_same_offsets),
@@ -360,7 +363,9 @@ class IndependentAMTTests(unittest.TestCase):
         )
         for cohort_name, cohort in (
             ("RAPID_REENTRY", [x for x in persistence_rows if x["rapid"]]),
-            ("LONGER_OR_NO_REENTRY", [x for x in persistence_rows if not x["rapid"]]),
+            ("SLOW_REENTRY", [x for x in persistence_rows if x["slow_reentry"]]),
+            ("NO_REENTRY_IN_WINDOW", [x for x in persistence_rows if x["no_reentry"]]),
+            ("LONGER_OR_NO_REENTRY_COMBINED", [x for x in persistence_rows if not x["rapid"]]),
         ):
             print("VALUE_PERSISTENCE_COHORT", cohort_name, "n=", len(cohort),
                   "same_at_confirmation=", sum(x["same_at_confirmation"] for x in cohort),
@@ -395,8 +400,12 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(sum(x["same_after_reentry"] for x in persistence_rows), 17)
         self.assertEqual(sum(x["opposite_after_reentry"] for x in persistence_rows), 1)
         rapid_cohort = [x for x in persistence_rows if x["rapid"]]
+        slow_cohort = [x for x in persistence_rows if x["slow_reentry"]]
+        no_reentry_cohort = [x for x in persistence_rows if x["no_reentry"]]
         longer_cohort = [x for x in persistence_rows if not x["rapid"]]
         self.assertEqual(len(rapid_cohort), 5)
+        self.assertEqual(len(slow_cohort), 12)
+        self.assertEqual(len(no_reentry_cohort), 13)
         self.assertEqual(sum(x["same_at_confirmation"] for x in rapid_cohort), 5)
         self.assertEqual(sum(x["same_first_four_after"] for x in rapid_cohort), 5)
         self.assertEqual(sum(x["same_while_active"] for x in rapid_cohort), 5)
