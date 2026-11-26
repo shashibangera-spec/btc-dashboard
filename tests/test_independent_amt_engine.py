@@ -226,6 +226,7 @@ class IndependentAMTTests(unittest.TestCase):
         aligned_within_4_bars = 0
         aligned_any_window = 0
         opposite_value_any_window = 0
+        persistence_rows = []
         for event_number, (i, event) in enumerate(episode_rows):
             end = len(snapshots)
             for k in range(i + 1, len(snapshots)):
@@ -269,6 +270,52 @@ class IndependentAMTTests(unittest.TestCase):
             reentry_at = reentry_offsets[0] if reentry_offsets else None
             separation_at = separation_offsets[0] if separation_offsets else None
             alignment_at = alignment_offsets[0] if alignment_offsets else None
+
+            # Keep discovery-active behaviour separate from post-re-entry
+            # profile drift. The confirmed re-entry candle begins the latter.
+            active_end = reentry_at if reentry_at is not None else len(segment)
+            active_segment = segment[:active_end]
+            post_reentry_segment = segment[reentry_at:] if reentry_at is not None else []
+            active_same_offsets = [
+                k for k, x in enumerate(active_segment)
+                if x["value_state"] in aligned_states
+            ]
+            active_opposite_offsets = [
+                k for k, x in enumerate(active_segment)
+                if x["value_state"] in opposite_states
+            ]
+            post_same_offsets = [
+                k for k, x in enumerate(post_reentry_segment, start=reentry_at or 0)
+                if x["value_state"] in aligned_states
+            ]
+            post_opposite_offsets = [
+                k for k, x in enumerate(post_reentry_segment, start=reentry_at or 0)
+                if x["value_state"] in opposite_states
+            ]
+            first_four_after = segment[1:5]
+            same_in_first_four_after = any(x["value_state"] in aligned_states
+                                           for x in first_four_after)
+            persistence_rows.append({
+                "rapid": reentry_at is not None and reentry_at <= 4,
+                "same_at_confirmation": event["value_state"] in aligned_states,
+                "same_first_four_after": same_in_first_four_after,
+                "same_while_active": bool(active_same_offsets),
+                "opposite_while_active": bool(active_opposite_offsets),
+                "active_reversal": bool(active_same_offsets and active_opposite_offsets
+                                        and min(active_same_offsets) < min(active_opposite_offsets)),
+                "same_after_reentry": bool(post_same_offsets),
+                "opposite_after_reentry": bool(post_opposite_offsets),
+            })
+            print(
+                "VALUE_PERSISTENCE",
+                event["candle_open_time_utc"],
+                "reentry_at=", reentry_at,
+                "first_same_active=", active_same_offsets[0] if active_same_offsets else None,
+                "first_opposite_active=", active_opposite_offsets[0] if active_opposite_offsets else None,
+                "same_after_reentry=", post_same_offsets[0] if post_same_offsets else None,
+                "opposite_after_reentry=", post_opposite_offsets[0] if post_opposite_offsets else None,
+                "same_first_four_after=", same_in_first_four_after,
+            )
             if event["value_state"] in aligned_states:
                 aligned_at_confirmation += 1
             if alignment_at is not None:
@@ -307,6 +354,18 @@ class IndependentAMTTests(unittest.TestCase):
                               if snapshots[k]["session_date_ist"] != event["session_date_ist"]
                               or snapshots[k]["discovery_event_start"]), len(snapshots))]
         )
+        for cohort_name, cohort in (
+            ("RAPID_REENTRY", [x for x in persistence_rows if x["rapid"]]),
+            ("LONGER_OR_NO_REENTRY", [x for x in persistence_rows if not x["rapid"]]),
+        ):
+            print("VALUE_PERSISTENCE_COHORT", cohort_name, "n=", len(cohort),
+                  "same_at_confirmation=", sum(x["same_at_confirmation"] for x in cohort),
+                  "same_first_four_after=", sum(x["same_first_four_after"] for x in cohort),
+                  "same_while_active=", sum(x["same_while_active"] for x in cohort),
+                  "opposite_while_active=", sum(x["opposite_while_active"] for x in cohort),
+                  "active_same_to_opposite_reversals=", sum(x["active_reversal"] for x in cohort),
+                  "same_after_reentry=", sum(x["same_after_reentry"] for x in cohort),
+                  "opposite_after_reentry=", sum(x["opposite_after_reentry"] for x in cohort))
         print("EPISODE_SUMMARY", "rapid_reentries_within_4_bars=", rapid_reentries,
               "no_reentry_by_session_end_or_next_episode=", no_reentry_by_session_end,
               "episodes_with_same_side_value_separation=", separated_after_confirmation,
