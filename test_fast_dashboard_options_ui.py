@@ -160,8 +160,8 @@ def test_balanced_strike_window_selects_ten_each_side_and_counts_atm_below():
     strikes = [90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190,
                200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300]
     selected = helpers._select_balanced_strikes(strikes, 200, per_side=10)
-    assert selected == [100, 110, 120, 130, 140, 150, 160, 170, 180, 190,
-                        200, 210, 220, 230, 240, 250, 260, 270, 280, 290]
+    assert selected == [110, 120, 130, 140, 150, 160, 170, 180, 190, 200,
+                        210, 220, 230, 240, 250, 260, 270, 280, 290, 300]
     assert len(selected) == 20
     assert selected.count(200.0) == 1
 
