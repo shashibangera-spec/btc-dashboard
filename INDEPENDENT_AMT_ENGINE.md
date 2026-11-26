@@ -137,6 +137,23 @@ By re-entry cohort:
 
 Interpretation: broad three-level migration is often present early, but it is **not merely an early-session profile response** in this sample. It remained aligned well beyond the first four subsequent candles in 21 episodes, and most eligible active candles after that point retained the alignment. Persistence was strongest in the slower-re-entry cohort. The rapid-re-entry cohort cannot be judged on later persistence because its active interval ended before the measurement window began.
 
+### Price behaviour during broad migration
+
+A separate descriptive audit compared each completed candle's close-to-close movement with the discovery direction, splitting active candles into (a) broad-alignment states (all three levels displaced in the discovery direction: `BROAD_MIGRATION_*` or `VALUE_SEPARATED_*`) and (b) the other active value states. For each episode, signed close changes were summed separately within each subset. Positive means price moved in the discovery direction; negative means it moved against it. This is a filtered set of candle-to-candle steps, not the full continuous price path.
+
+Results:
+- Broad-alignment subset: **502 candles**; 243 moved with discovery, 259 against. Summed signed close change across these selected steps was **+1,336.47**.
+- Other active value states: **77 candles**; 43 moved with discovery, 34 against. Summed signed close change was **+4,581.80**.
+- At the episode level, broad-alignment steps had a positive net in **11/28** episodes and a negative net in **17/28**; median episode net was **−301.85**.
+- The other-state subset existed in only **7 episodes**; 6 had a positive net and 1 negative, median **+703.24**. This small, selected comparison group is not a fair standalone control.
+
+Interpretation: persistent broad value alignment did **not** reliably coincide with continued close-to-close price progress in the discovery direction. Despite alignment on 502 active candles, its signed candle-step direction was nearly balanced (243 versus 259), and the episode-level net was negative in more episodes than positive. The aggregate positive sum is sensitive to a few large moves and should not override the episode-level distribution. This supports a careful distinction: the profile can remain broadly displaced while price pauses, retraces, or rotates. Broad migration describes the location of the developing distribution relative to prior value; it is not evidence by itself that price is continuing in that direction.
+
+Important limitations:
+- The selected broad-alignment candles are not necessarily consecutive; intervening candles in other value states are excluded from that subset.
+- Close-to-close signed steps are not trade returns, do not include execution costs, and do not measure the full excursion or maximum adverse movement.
+- The 30 episodes are a small historical sample from the available archive. No predictive or causal claim is justified.
+
 This is descriptive evidence from 30 historical episodes, not a predictive result, profitability test, or reason to alter AMT state logic. The timing and cohort counts are asserted in the historical replay test. GitHub Actions Run #128: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775650880 (**19 tests passed**). Session OHLC Writer Run #101: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775650744 and Binance OHLC Archive Run #93: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775650889 also passed.
 
 The direction-signature counts, active-interval shape counts, and the exact episode lists are asserted in the historical replay test. GitHub Actions Run #123: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775143458 (**19 tests passed**). Session OHLC Writer Run #98: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775143544 and Binance OHLC Archive Run #90: https://github.com/shashibangera-spec/btc-dashboard/actions/runs/45775143543 also passed.
