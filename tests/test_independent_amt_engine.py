@@ -304,13 +304,22 @@ class IndependentAMTTests(unittest.TestCase):
                 return tuple(level_move(row, key) for key in ("vah", "poc", "val"))
 
             confirmation_signature = level_signature(event)
+            def relative_signature(signature):
+                return tuple(
+                    "WITH" if move == value_direction else
+                    "AGAINST" if move != "FLAT" else "FLAT"
+                    for move in signature
+                )
             first_same_row = (
                 active_segment[active_same_offsets[0]] if active_same_offsets else None
             )
             first_same_signature = level_signature(first_same_row) if first_same_row else None
             persistence_rows.append({
                 "confirmation_signature": confirmation_signature,
+                "confirmation_relative_signature": relative_signature(confirmation_signature),
                 "first_same_signature": first_same_signature,
+                "first_same_relative_signature": relative_signature(first_same_signature)
+                    if first_same_signature else None,
                 "reentry_at": reentry_at,
                 "rapid": reentry_at is not None and reentry_at <= 4,
                 "slow_reentry": reentry_at is not None and reentry_at > 4,
@@ -402,8 +411,13 @@ class IndependentAMTTests(unittest.TestCase):
         confirmation_signatures = Counter(x["confirmation_signature"] for x in persistence_rows)
         first_same_signatures = Counter(x["first_same_signature"] for x in persistence_rows
                                         if x["first_same_signature"] is not None)
+        confirmation_relative = Counter(x["confirmation_relative_signature"] for x in persistence_rows)
+        first_same_relative = Counter(x["first_same_relative_signature"] for x in persistence_rows
+                                      if x["first_same_relative_signature"] is not None)
         print("LEVEL_DIRECTION_AT_CONFIRMATION", sorted(confirmation_signatures.items()))
+        print("LEVEL_DIRECTION_RELATIVE_TO_DISCOVERY_AT_CONFIRMATION", sorted(confirmation_relative.items()))
         print("LEVEL_DIRECTION_AT_FIRST_SAME_MIGRATION", sorted(first_same_signatures.items()))
+        print("LEVEL_DIRECTION_RELATIVE_TO_DISCOVERY_AT_FIRST_SAME_MIGRATION", sorted(first_same_relative.items()))
         for cohort_name, cohort in (
             ("RAPID_REENTRY", [x for x in persistence_rows if x["rapid"]]),
             ("SLOW_REENTRY", [x for x in persistence_rows if x["slow_reentry"]]),
@@ -442,14 +456,16 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(sum(x["active_opposite_to_same_recovery"] for x in persistence_rows), 1)
         self.assertEqual(sum(x["same_after_reentry"] for x in persistence_rows), 17)
         self.assertEqual(sum(x["opposite_after_reentry"] for x in persistence_rows), 1)
-        self.assertEqual(sum(x["confirmation_signature"] == ("UP", "UP", "UP")
-                             for x in persistence_rows), 6)
-        self.assertEqual(sum(x["confirmation_signature"] == ("DOWN", "DOWN", "DOWN")
-                             for x in persistence_rows), 7)
-        self.assertEqual(sum(x["confirmation_signature"] == ("UP", "UP", "FLAT")
-                             for x in persistence_rows), 4)
-        self.assertEqual(sum(x["confirmation_signature"] == ("DOWN", "DOWN", "FLAT")
-                             for x in persistence_rows), 5)
+        self.assertEqual(confirmation_signatures[("DOWN", "DOWN", "DOWN")], 20)
+        self.assertEqual(confirmation_signatures[("DOWN", "DOWN", "FLAT")], 1)
+        self.assertEqual(confirmation_signatures[("DOWN", "DOWN", "UP")], 2)
+        self.assertEqual(confirmation_signatures[("FLAT", "UP", "DOWN")], 1)
+        self.assertEqual(confirmation_signatures[("UP", "UP", "FLAT")], 1)
+        self.assertEqual(confirmation_signatures[("UP", "UP", "UP")], 5)
+        self.assertEqual(sum(x["confirmation_relative_signature"][1] == "WITH"
+                             and x["confirmation_relative_signature"][0] != "WITH"
+                             and x["confirmation_relative_signature"][2] != "WITH"
+                             for x in persistence_rows), 1)
         rapid_cohort = [x for x in persistence_rows if x["rapid"]]
         slow_cohort = [x for x in persistence_rows if x["slow_reentry"]]
         no_reentry_cohort = [x for x in persistence_rows if x["no_reentry"]]
