@@ -328,6 +328,9 @@ class IndependentAMTTests(unittest.TestCase):
                 k for k, sig in enumerate(active_relative_signatures)
                 if sig == ("WITH", "WITH", "WITH")
             ]
+            full_first_four_offsets = [k for k in active_poc_full_offsets if 1 <= k <= 4]
+            full_after_first_four_offsets = [k for k in active_poc_full_offsets if k >= 5]
+            active_bars_after_first_four = max(0, len(active_segment) - 5)
             active_edges_with_poc_not_offsets = [
                 k for k, sig in enumerate(active_relative_signatures)
                 if sig[1] != "WITH" and (sig[0] == "WITH" or sig[2] == "WITH")
@@ -345,6 +348,17 @@ class IndependentAMTTests(unittest.TestCase):
                 "active_poc_only": active_poc_only,
                 "active_poc_one_edge": active_poc_one_edge,
                 "active_poc_full": active_poc_full,
+                "full_at_confirmation": 0 in active_poc_full_offsets,
+                "full_within_first_four_after": bool(full_first_four_offsets),
+                "full_after_first_four": bool(full_after_first_four_offsets),
+                "full_first_offset": active_poc_full_offsets[0]
+                    if active_poc_full_offsets else None,
+                "full_first_offset_after_four": full_after_first_four_offsets[0]
+                    if full_after_first_four_offsets else None,
+                "active_full_bar_count": len(active_poc_full_offsets),
+                "active_bar_count": len(active_segment),
+                "active_bars_after_first_four": active_bars_after_first_four,
+                "active_full_bars_after_first_four": len(full_after_first_four_offsets),
                 "active_edges_with_poc_not": active_edges_with_poc_not,
                 "active_poc_one_edge_first": active_poc_one_edge_offsets[0]
                     if active_poc_one_edge_offsets else None,
@@ -450,6 +464,22 @@ class IndependentAMTTests(unittest.TestCase):
         print("LEVEL_DIRECTION_RELATIVE_TO_DISCOVERY_AT_CONFIRMATION", sorted(confirmation_relative.items()))
         print("LEVEL_DIRECTION_AT_FIRST_SAME_MIGRATION", sorted(first_same_signatures.items()))
         print("LEVEL_DIRECTION_RELATIVE_TO_DISCOVERY_AT_FIRST_SAME_MIGRATION", sorted(first_same_relative.items()))
+        print("BROAD_MIGRATION_TIMING",
+              "full_at_confirmation=", sum(x["full_at_confirmation"] for x in persistence_rows),
+              "full_within_first_four_after=", sum(x["full_within_first_four_after"] for x in persistence_rows),
+              "full_after_first_four=", sum(x["full_after_first_four"] for x in persistence_rows),
+              "full_any_active=", sum(x["active_poc_full"] for x in persistence_rows))
+        print("BROAD_MIGRATION_AFTER_FOUR_DETAILS", [
+            (x["event_time"], x["full_first_offset"], x["full_first_offset_after_four"],
+             x["active_full_bar_count"], x["active_bar_count"],
+             x["active_full_bars_after_first_four"], x["active_bars_after_first_four"])
+            for x in persistence_rows if x["full_after_first_four"]
+        ])
+        print("BROAD_MIGRATION_ACTIVE_BAR_TOTALS",
+              "full_active_bars=", sum(x["active_full_bar_count"] for x in persistence_rows),
+              "all_active_bars=", sum(x["active_bar_count"] for x in persistence_rows),
+              "full_after_four_bars=", sum(x["active_full_bars_after_first_four"] for x in persistence_rows),
+              "bars_after_four=", sum(x["active_bars_after_first_four"] for x in persistence_rows))
         print("ACTIVE_PROFILE_SHAPE_COUNTS",
               "poc_only=", sum(x["active_poc_only"] for x in persistence_rows),
               "poc_plus_one_edge=", sum(x["active_poc_one_edge"] for x in persistence_rows),
