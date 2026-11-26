@@ -527,6 +527,21 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(sum(x["active_opposite_to_same_recovery"] for x in persistence_rows), 1)
         self.assertEqual(sum(x["same_after_reentry"] for x in persistence_rows), 17)
         self.assertEqual(sum(x["opposite_after_reentry"] for x in persistence_rows), 1)
+        self.assertEqual(sum(x["active_poc_only"] for x in persistence_rows), 0)
+        self.assertEqual(sum(x["active_poc_one_edge"] for x in persistence_rows), 5)
+        self.assertEqual(sum(x["active_poc_full"] for x in persistence_rows), 28)
+        self.assertEqual(sum(x["active_edges_with_poc_not"] for x in persistence_rows), 3)
+        self.assertEqual(
+            sorted(x["event_time"] for x in persistence_rows if x["active_poc_one_edge"]),
+            ["2026-11-04T06:30:00+00:00", "2026-11-12T11:30:00+00:00",
+             "2026-11-16T12:30:00+00:00", "2026-11-17T16:00:00+00:00",
+             "2026-11-18T14:00:00+00:00"],
+        )
+        self.assertEqual(
+            sorted(x["event_time"] for x in persistence_rows if x["active_edges_with_poc_not"]),
+            ["2026-11-02T16:00:00+00:00", "2026-11-04T06:30:00+00:00",
+             "2026-11-08T21:30:00+00:00"],
+        )
         self.assertEqual(confirmation_signatures[("DOWN", "DOWN", "DOWN")], 20)
         self.assertEqual(confirmation_signatures[("DOWN", "DOWN", "FLAT")], 1)
         self.assertEqual(confirmation_signatures[("DOWN", "DOWN", "UP")], 2)
