@@ -24,6 +24,7 @@ A read-only research replay that reads raw Binance BTCUSDT spot 30-minute OHLCV 
 ## Price behaviour
 - Discovery candidate: one completed close beyond prior VAH/VAL by the buffer.
 - Discovery confirmed: two consecutive completed closes beyond the buffered boundary.
+- `discovery_event_start=true` only on the candle where the internal confirmed side changes from unset to confirmed. Repeated `DISCOVERY_CONFIRMED_*` labels after a temporary re-entry candidate do not count as a new episode.
 - Buffer: max($50, 0.5 x Wilder ATR(21)).
 - A non-qualifying close resets the candidate sequence.
 - Re-entry candidate: first completed close back inside frozen prior value after confirmed discovery.
