@@ -463,6 +463,25 @@ class IndependentAMTTests(unittest.TestCase):
             (x["event_time"], x["event_direction"], x["active_edges_without_poc_first"])
             for x in persistence_rows if x["active_edges_with_poc_not"]
         ])
+        for x in persistence_rows:
+            for label, offset in (
+                ("POC_PLUS_ONE_EDGE", x["active_poc_one_edge_first"]),
+                ("EDGES_WITHOUT_POC", x["active_edges_without_poc_first"]),
+            ):
+                if offset is not None:
+                    row = snapshots[next(i for i, candidate in enumerate(snapshots)
+                                          if candidate["candle_open_time_utc"] == x["event_time"])]
+                    event_index = snapshots.index(row)
+                    trace = snapshots[event_index + offset]
+                    print("ACTIVE_PROFILE_SHAPE_DETAIL", label, x["event_time"],
+                          "offset=", offset, "time=", trace["candle_open_time_utc"],
+                          "state=", trace["value_state"],
+                          "relative=", relative_signature(level_signature(trace)),
+                          "prior=", (trace["prior_value"]["vah"], trace["prior_value"]["poc"],
+                                     trace["prior_value"]["val"]),
+                          "developing=", (trace["developing_value"]["vah"],
+                                          trace["developing_value"]["poc"],
+                                          trace["developing_value"]["val"]))
         for cohort_name, cohort in (
             ("RAPID_REENTRY", [x for x in persistence_rows if x["rapid"]]),
             ("SLOW_REENTRY", [x for x in persistence_rows if x["slow_reentry"]]),
