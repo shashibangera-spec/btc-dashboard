@@ -223,8 +223,12 @@ class IndependentAMTTests(unittest.TestCase):
                 "DISCOVERY_CONFIRMED_BELOW" if event["price_state"].endswith("_ABOVE")
                 else "DISCOVERY_CONFIRMED_ABOVE"
             )]
+            direction = "ABOVE" if event["price_state"].endswith("_ABOVE") else "BELOW"
+            separation_offsets = [k for k, x in enumerate(segment)
+                                  if x["value_state"] == f"VALUE_SEPARATED_{direction}"]
             reentry_at = reentry_offsets[0] if reentry_offsets else None
             opposite_at = opposite[0] if opposite else None
+            separation_at = separation_offsets[0] if separation_offsets else None
             if reentry_at is not None and reentry_at <= 4:
                 rapid_reentries += 1
             if reentry_at is None:
@@ -239,11 +243,23 @@ class IndependentAMTTests(unittest.TestCase):
                 "value_state=", event["value_state"],
                 "bars_until_reentry=", reentry_at,
                 "bars_until_opposite_discovery=", opposite_at,
+                "bars_until_value_separation=", separation_at,
+                "final_value_state=", segment[-1]["value_state"],
                 "bars_in_episode_window=", len(segment),
                 "last_state=", segment[-1]["price_state"],
             )
+        separated_after_confirmation = sum(
+            any(x["value_state"] == ("VALUE_SEPARATED_ABOVE" if event["price_state"].endswith("_ABOVE")
+                                     else "VALUE_SEPARATED_BELOW")
+                for x in snapshots[i:end])
+            for i, event in episode_rows
+            for end in [next((k for k in range(i+1, len(snapshots))
+                              if snapshots[k]["session_date_ist"] != event["session_date_ist"]
+                              or snapshots[k]["discovery_event_start"]), len(snapshots))]
+        )
         print("EPISODE_SUMMARY", "rapid_reentries_within_4_bars=", rapid_reentries,
-              "no_reentry_by_session_end_or_next_episode=", no_reentry_by_session_end)
+              "no_reentry_by_session_end_or_next_episode=", no_reentry_by_session_end,
+              "episodes_with_same_side_value_separation=", separated_after_confirmation)
         events = [x for x in snapshots if x["discovery_event_start"]]
         self.assertEqual(len(events), 30)
         self.assertEqual(sum(x["price_state"].endswith("_ABOVE") for x in events), 6)
