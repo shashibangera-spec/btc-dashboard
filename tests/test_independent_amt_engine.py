@@ -848,5 +848,75 @@ class HistoricalPricePathAuditTests(unittest.TestCase):
         self.assertEqual(positive_net + negative_net, 30)
         self.assertEqual(total_active_bars, 579)
 
+
+
+class HistoricalTpoSensitivityAuditTests(unittest.TestCase):
+    def test_discovery_episode_sensitivity_to_tpo_parameters(self):
+        fixture_path = Path(__file__).parent / "fixtures" / "btcusdt_spot_30m_2026-11-01_2026-11-26.json"
+        fixture = json.loads(fixture_path.read_text())
+        candles = normalize_candles(
+            fixture["candles"],
+            datetime(2026, 11, 27, 0, 0, tzinfo=UTC),
+        )
+        configurations = [
+            (row, area)
+            for row in (25.0, 50.0, 75.0, 100.0)
+            for area in (0.65, 0.70, 0.75)
+        ]
+        results = []
+        baseline_keys = None
+        for row_size, value_area in configurations:
+            snapshots = build_session_snapshots(
+                candles, row_size=row_size, value_area_percent=value_area
+            )
+            events = [x for x in snapshots if x["discovery_event_start"]]
+            keys = {
+                (x["session_date_ist"], x["candle_open_time_utc"],
+                 x["price_state"].rsplit("_", 1)[-1])
+                for x in events
+            }
+            if row_size == 50.0 and value_area == 0.70:
+                baseline_keys = keys
+            reentries = sum(
+                x["price_state"] == "REENTRY_CONFIRMED" for x in snapshots
+            )
+            broad_at_confirmation = sum(
+                x["value_state"] in {"VALUE_SEPARATED_ABOVE", "VALUE_SEPARATED_BELOW"}
+                for x in events
+            )
+            results.append({
+                "row_size": row_size,
+                "value_area": value_area,
+                "episode_count": len(events),
+                "up_events": sum(x["price_state"].endswith("_ABOVE") for x in events),
+                "down_events": sum(x["price_state"].endswith("_BELOW") for x in events),
+                "confirmed_reentry_candles": reentries,
+                "broad_value_separation_at_confirmation": broad_at_confirmation,
+                "baseline_event_overlap": None,
+                "event_keys": keys,
+            })
+        self.assertIsNotNone(baseline_keys)
+        for result in results:
+            result["baseline_event_overlap"] = len(
+                result["event_keys"] & baseline_keys
+            )
+            result["baseline_event_recall"] = (
+                result["baseline_event_overlap"] / len(baseline_keys)
+                if baseline_keys else 0.0
+            )
+            result.pop("event_keys")
+        print("HISTORICAL_TPO_SENSITIVITY_AUDIT", {
+            "raw_candles": len(candles),
+            "baseline": "50 USD rows / 70% value area",
+            "configurations": results,
+        })
+        baseline = next(
+            x for x in results
+            if x["row_size"] == 50.0 and x["value_area"] == 0.70
+        )
+        self.assertEqual(baseline["episode_count"], 30)
+        self.assertEqual(baseline["baseline_event_overlap"], 30)
+        self.assertEqual(len(results), 12)
+
 if __name__=="__main__":
     unittest.main()
