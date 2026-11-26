@@ -146,7 +146,7 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
           and prev[-1].open_time.astimezone(IST).time().replace(tzinfo=None)==time(5,0)
           and all(b.open_time-a.open_time==timedelta(minutes=30) for a,b in zip(prev,prev[1:])))
         prior=calculate_tpo_profile(prev,row_size,value_area_percent) if complete else None
-        cur=sessions[day]; confirmed=candidate=None; count=reentry=0; last_open=None
+        cur=sessions[day]; confirmed=candidate=None; count=reentry=0; last_open=None; last_close=None
         last_poc_side=None; poc_crossings=[]; outside_side=None; outside_streak=0
         for j,(gi,c) in enumerate(cur):
             gap=last_open is not None and c.open_time-last_open>timedelta(minutes=30,seconds=1)
@@ -166,8 +166,10 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
                 elif raw_side==outside_side: outside_streak+=1
                 else: outside_side,outside_streak=raw_side,1
                 boundary_retest=(
-                    "RETEST_RECLAIM_ABOVE" if raw_side=="ABOVE" and c.low<=prior.vah else
-                    "RETEST_REJECTION_BELOW" if raw_side=="BELOW" and c.high>=prior.val else None
+                    "RETEST_RECLAIM_ABOVE" if (not gap and last_close is not None
+                        and last_close>prior.vah and c.low<=prior.vah and c.close>prior.vah) else
+                    "RETEST_REJECTION_BELOW" if (not gap and last_close is not None
+                        and last_close<prior.val and c.high>=prior.val and c.close<prior.val) else None
                 )
                 poc_side="ABOVE" if dev.poc>prior.poc else "BELOW" if dev.poc<prior.poc else None
                 if poc_side is not None:
@@ -194,7 +196,7 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
               "boundary_retest":boundary_retest if prior else None,
               "poc_side_crossings_in_5":len(poc_crossings) if prior else 0,
               "balance_evidence":balance_evidence if prior else False})
-            last_open=c.open_time
+            last_open=c.open_time; last_close=c.close
     return out
 
 def fetch_supabase_candles(page_size:int=1000):
