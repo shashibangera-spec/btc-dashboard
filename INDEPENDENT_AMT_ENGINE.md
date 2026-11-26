@@ -215,7 +215,24 @@ The historical replay was repeated over the same 1,212 completed raw Binance spo
 | $100 | 70% | 29 | 7 / 22 | 19/30 (63.3%) |
 | $100 | 75% | 30 | 7 / 23 | 18/30 (60.0%) |
 
-Across the 12 configurations, discovery counts range from **25 to 32**, and exact event overlap with the baseline ranges from **50.0% to 73.3%** outside the baseline configuration. The baseline's 100% overlap is expected because it is being compared with itself. The number of broad value-separation labels at the confirmation candle also changes: **4 to 10** across the alternatives, versus **7** at baseline. Confirmed re-entry candle counts range from **12 to 17**.
+Across the 12 configurations, discovery counts range from **25 to 32**, and exact event overlap with the baseline ranges from **50.0% to 73.3%** outside the baseline configuration. Episode price-path outcomes were also recalculated independently for every configuration, using the same boundary convention (stop before the first confirmed re-entry, next discovery event, or session end):
+
+| TPO row | Value area | Net-positive episodes | Net-negative episodes | Median signed episode-end move |
+|---:|---:|---:|---:|---:|
+| $25 | 65% | 11/28 | 17/28 | −$342.17 |
+| $25 | 70% | 11/26 | 15/26 | −$283.81 |
+| $25 | 75% | 9/25 | 16/25 | −$299.62 |
+| $50 | 65% | 12/29 | 17/29 | −$331.99 |
+| **$50** | **70%** | **11/30** | **19/30** | **−$312.31** |
+| $50 | 75% | 9/27 | 18/27 | −$305.72 |
+| $75 | 65% | 12/28 | 16/28 | −$325.27 |
+| $75 | 70% | 12/27 | 15/27 | −$267.99 |
+| $75 | 75% | 9/26 | 17/26 | −$270.50 |
+| $100 | 65% | 13/32 | 19/32 | −$230.84 |
+| $100 | 70% | 11/29 | 18/29 | −$331.99 |
+| $100 | 75% | 9/30 | 21/30 | −$386.68 |
+
+Across all 12 parameter combinations, the median episode-end signed move remains negative and net-negative episodes outnumber net-positive episodes. This directional summary is more stable than the exact event identities or counts, although it is still conditional on this short sample and the shared price-state definition. It is not evidence of a profitable contrarian strategy or a reason to reverse discovery signals. The baseline's 100% overlap is expected because it is being compared with itself. The number of broad value-separation labels at the confirmation candle also changes: **4 to 10** across the alternatives, versus **7** at baseline. Confirmed re-entry candle counts range from **12 to 17**.
 
 Interpretation: the broad conceptual distinction remains valid—price-state confirmation and developing-value migration are separate classifications—but the identity and count of individual discovery episodes are materially sensitive to the TPO row and value-area settings. Consequently, the earlier 30-episode price-path statistics are conditional on the $50 / 70% construction, not parameter-invariant market facts. We should not promote their exact proportions, episode timestamps, or re-entry frequencies as robust until a longer sample and independent tick/trade-level profile comparison are available.
 
