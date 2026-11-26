@@ -176,13 +176,31 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertTrue(all(x["prior_profile_quality"] == "COMPLETE" for x in snapshots))
         self.assertFalse(any(x["gap_before"] for x in snapshots))
 
-        # Emit a compact, reproducible episode ledger in CI logs for manual review.
-        for event in (x for x in snapshots if x["discovery_event_start"]):
-            i = index_by_time.get(event["candle_open_time_utc"]) if "index_by_time" in locals() else None
-            if i is None:
-                i = next(k for k, item in enumerate(snapshots)
-                         if item["candle_open_time_utc"] == event["candle_open_time_utc"])
-            window = snapshots[i:i+9]
+        # Emit a reproducible episode ledger with same-session outcome timing.
+        episode_rows = [(i, x) for i, x in enumerate(snapshots) if x["discovery_event_start"]]
+        rapid_reentries = 0
+        no_reentry_by_session_end = 0
+        for event_number, (i, event) in enumerate(episode_rows):
+            end = len(snapshots)
+            for k in range(i + 1, len(snapshots)):
+                if snapshots[k]["session_date_ist"] != event["session_date_ist"]:
+                    end = k
+                    break
+                if snapshots[k]["discovery_event_start"]:
+                    end = k
+                    break
+            segment = snapshots[i:end]
+            reentry_offsets = [k for k, x in enumerate(segment) if k > 0 and x["price_state"] == "REENTRY_CONFIRMED"]
+            opposite = [k for k, x in enumerate(segment) if k > 0 and x["price_state"] == (
+                "DISCOVERY_CONFIRMED_BELOW" if event["price_state"].endswith("_ABOVE")
+                else "DISCOVERY_CONFIRMED_ABOVE"
+            )]
+            reentry_at = reentry_offsets[0] if reentry_offsets else None
+            opposite_at = opposite[0] if opposite else None
+            if reentry_at is not None and reentry_at <= 4:
+                rapid_reentries += 1
+            if reentry_at is None:
+                no_reentry_by_session_end += 1
             print(
                 "EPISODE",
                 event["candle_open_time_utc"],
@@ -191,9 +209,13 @@ class IndependentAMTTests(unittest.TestCase):
                 "prior=", (event["prior_value"]["vah"], event["prior_value"]["poc"], event["prior_value"]["val"]),
                 "developing=", (event["developing_value"]["vah"], event["developing_value"]["poc"], event["developing_value"]["val"]),
                 "value_state=", event["value_state"],
-                "next_states=", [x["price_state"] for x in window[1:]],
-                "next_closes=", [x["close"] for x in window[1:]],
+                "bars_until_reentry=", reentry_at,
+                "bars_until_opposite_discovery=", opposite_at,
+                "bars_in_episode_window=", len(segment),
+                "last_state=", segment[-1]["price_state"],
             )
+        print("EPISODE_SUMMARY", "rapid_reentries_within_4_bars=", rapid_reentries,
+              "no_reentry_by_session_end_or_next_episode=", no_reentry_by_session_end)
         events = [x for x in snapshots if x["discovery_event_start"]]
         self.assertEqual(len(events), 30)
         self.assertEqual(sum(x["price_state"].endswith("_ABOVE") for x in events), 6)
