@@ -155,11 +155,13 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
                 last_poc_side=None; poc_crossings=[]; outside_side=None; outside_streak=0
             dev=calculate_tpo_profile([x for _,x in cur[:j+1]],row_size,value_area_percent)
             atr=atrs[gi]; buf=max(minimum_buffer,atr*atr_multiplier) if atr is not None else None
-            raw_side=None; boundary_retest=None; balance_evidence=False
+            raw_side=None; boundary_retest=None; balance_evidence=False; discovery_event_start=False
             if prior is None: ps,vs,read="PRIOR_PROFILE_INCOMPLETE","NOT_CALCULATED","NO_VALID_PRIOR_SESSION_PROFILE"
             elif buf is None: ps,vs,read="WARMUP",classify_value(prior,dev),"INSUFFICIENT_ATR_WARMUP"
             else:
+                ps,confirmed,candidate,count,reentry=previously_confirmed=confirmed
                 ps,confirmed,candidate,count,reentry=_price_state(c.close,prior,buf,confirmed,candidate,count,reentry)
+                discovery_event_start=previously_confirmed is None and confirmed is not None
                 vs=classify_value(prior,dev)
                 raw_side="ABOVE" if c.close>prior.vah else "BELOW" if c.close<prior.val else None
                 if raw_side is None: outside_side,outside_streak=None,0
@@ -190,7 +192,7 @@ def build_session_snapshots(candles:list[Candle],row_size=50.0,value_area_percen
               "low":c.low,"close":c.close,"volume":c.volume,"atr":atr,"discovery_buffer":buf,
               "prior_profile_quality":"COMPLETE" if complete else "INCOMPLETE",
               "prior_value":prior.as_dict() if prior else None,"developing_value":dev.as_dict(),
-              "price_state":ps,"value_state":vs,"auction_read":read,"gap_before":gap,
+              "price_state":ps,"discovery_event_start":discovery_event_start,"value_state":vs,"auction_read":read,"gap_before":gap,
               "outside_prior_value_side":raw_side if prior else None,
               "outside_value_close_streak":outside_streak if prior else 0,
               "boundary_retest":boundary_retest if prior else None,
