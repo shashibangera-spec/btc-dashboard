@@ -381,6 +381,8 @@ class IndependentAMTTests(unittest.TestCase):
                 "active_full_bars_after_first_four": len(full_after_first_four_offsets),
                 "aligned_price_steps": aligned_price_steps,
                 "other_price_steps": other_price_steps,
+                "aligned_price_net": round(sum(aligned_price_steps), 2),
+                "other_price_net": round(sum(other_price_steps), 2),
                 "active_edges_with_poc_not": active_edges_with_poc_not,
                 "active_poc_one_edge_first": active_poc_one_edge_offsets[0]
                     if active_poc_one_edge_offsets else None,
@@ -514,6 +516,27 @@ class IndependentAMTTests(unittest.TestCase):
             print("PRICE_PROGRESS_BY_VALUE_STATE", label,
                   "broad_aligned=", step_summary(aligned_steps),
                   "other_active_states=", step_summary(other_steps))
+        broad_episode_nets = [x["aligned_price_net"] for x in persistence_rows
+                              if x["aligned_price_steps"]]
+        other_episode_nets = [x["other_price_net"] for x in persistence_rows
+                              if x["other_price_steps"]]
+        print("PRICE_PROGRESS_EPISODE_NETS",
+              "broad_aligned=", {
+                  "episodes": len(broad_episode_nets),
+                  "positive": sum(v > 0 for v in broad_episode_nets),
+                  "negative": sum(v < 0 for v in broad_episode_nets),
+                  "zero": sum(v == 0 for v in broad_episode_nets),
+                  "median": sorted(broad_episode_nets)[len(broad_episode_nets)//2]
+                      if broad_episode_nets else None,
+              },
+              "other_active_states=", {
+                  "episodes": len(other_episode_nets),
+                  "positive": sum(v > 0 for v in other_episode_nets),
+                  "negative": sum(v < 0 for v in other_episode_nets),
+                  "zero": sum(v == 0 for v in other_episode_nets),
+                  "median": sorted(other_episode_nets)[len(other_episode_nets)//2]
+                      if other_episode_nets else None,
+              })
         print("BROAD_MIGRATION_ACTIVE_BAR_TOTALS",
               "full_active_bars=", sum(x["active_full_bar_count"] for x in persistence_rows),
               "all_active_bars=", sum(x["active_bar_count"] for x in persistence_rows),
