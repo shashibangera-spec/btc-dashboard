@@ -742,5 +742,111 @@ class IndependentAMTTests(unittest.TestCase):
         nov26 = "2026-11-26T00:30:00+00:00"
         self.assertEqual(state_at(nov26, 8), "DISCOVERY_CONFIRMED_ABOVE")
 
+
+
+class HistoricalPricePathAuditTests(unittest.TestCase):
+    def test_all_discovery_episodes_price_path_and_acceptance(self):
+        fixture_path = Path(__file__).parent / "fixtures" / "btcusdt_spot_30m_2026-11-01_2026-11-26.json"
+        fixture = json.loads(fixture_path.read_text())
+        candles = normalize_candles(
+            fixture["candles"],
+            datetime(2026, 11, 27, 0, 0, tzinfo=UTC),
+        )
+        snapshots = build_session_snapshots(candles)
+        events = [(i, row) for i, row in enumerate(snapshots)
+                  if row["discovery_event_start"]]
+        self.assertEqual(len(candles), 1212)
+        self.assertEqual(len(snapshots), 1164)
+        self.assertEqual(len(events), 30)
+
+        episode_rows = []
+        for event_number, (start, event) in enumerate(events):
+            next_event = events[event_number + 1][0] if event_number + 1 < len(events) else len(snapshots)
+            session_end = next(
+                (i for i in range(start + 1, len(snapshots))
+                 if snapshots[i]["session_date_ist"] != event["session_date_ist"]),
+                len(snapshots),
+            )
+            boundary = min(next_event, session_end)
+            reentry_index = next(
+                (i for i in range(start + 1, boundary)
+                 if snapshots[i]["price_state"] == "REENTRY_CONFIRMED"),
+                None,
+            )
+            end = reentry_index if reentry_index is not None else boundary
+            path = snapshots[start:end]
+            direction = 1 if event["price_state"].endswith("_ABOVE") else -1
+            anchor = event["close"]
+            prior = event["prior_value"]
+            signed_closes = [(row["close"] - anchor) * direction for row in path]
+            favourable_close = max(0.0, max(signed_closes))
+            adverse_close = max(0.0, max(-x for x in signed_closes))
+            if direction > 0:
+                favourable_wick = max(0.0, max(row["high"] - anchor for row in path))
+                adverse_wick = max(0.0, max(anchor - row["low"] for row in path))
+                outside = [row["close"] > prior["vah"] for row in path]
+                beyond_buffer = [
+                    row["close"] > prior["vah"] + row["discovery_buffer"] for row in path
+                ]
+            else:
+                favourable_wick = max(0.0, max(anchor - row["low"] for row in path))
+                adverse_wick = max(0.0, max(row["high"] - anchor for row in path))
+                outside = [row["close"] < prior["val"] for row in path]
+                beyond_buffer = [
+                    row["close"] < prior["val"] - row["discovery_buffer"] for row in path
+                ]
+            directional_steps = [
+                (path[i]["close"] - path[i - 1]["close"]) * direction
+                for i in range(1, len(path))
+            ]
+            first_inside = next(
+                (i for i, row in enumerate(path)
+                 if prior["val"] <= row["close"] <= prior["vah"]),
+                None,
+            )
+            net_close = signed_closes[-1]
+            episode_rows.append({
+                "time": event["candle_open_time_utc"],
+                "direction": "UP" if direction > 0 else "DOWN",
+                "bars": len(path),
+                "net_close": net_close,
+                "favourable_close": favourable_close,
+                "adverse_close": adverse_close,
+                "favourable_wick": favourable_wick,
+                "adverse_wick": adverse_wick,
+                "outside_closes": sum(outside),
+                "beyond_buffer_closes": sum(beyond_buffer),
+                "first_inside_offset": first_inside,
+                "reentry_confirmed": reentry_index is not None,
+                "with_steps": sum(x > 0 for x in directional_steps),
+                "against_steps": sum(x < 0 for x in directional_steps),
+            })
+
+        rapid_reentries = sum(
+            row["reentry_confirmed"] and row["bars"] <= 4 for row in episode_rows
+        )
+        confirmed_reentries = sum(row["reentry_confirmed"] for row in episode_rows)
+        positive_net = sum(row["net_close"] > 0 for row in episode_rows)
+        negative_net = sum(row["net_close"] < 0 for row in episode_rows)
+        total_active_bars = sum(row["bars"] for row in episode_rows)
+        total_outside_closes = sum(row["outside_closes"] for row in episode_rows)
+        total_beyond_buffer = sum(row["beyond_buffer_closes"] for row in episode_rows)
+        print("HISTORICAL_PRICE_PATH_AUDIT", {
+            "episodes": len(episode_rows),
+            "active_bars": total_active_bars,
+            "confirmed_reentries": confirmed_reentries,
+            "rapid_reentries_within_four_bars": rapid_reentries,
+            "positive_episode_net": positive_net,
+            "negative_episode_net": negative_net,
+            "zero_episode_net": len(episode_rows) - positive_net - negative_net,
+            "outside_prior_value_closes": total_outside_closes,
+            "beyond_buffer_closes": total_beyond_buffer,
+            "episode_rows": episode_rows,
+        })
+        self.assertEqual(confirmed_reentries, 17)
+        self.assertEqual(rapid_reentries, 5)
+        self.assertEqual(positive_net + negative_net, 30)
+        self.assertEqual(total_active_bars, 576)
+
 if __name__=="__main__":
     unittest.main()
