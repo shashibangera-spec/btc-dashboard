@@ -38,6 +38,12 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(len(got),2)
         self.assertEqual(got[0].open_time.minute,0)
 
+    def test_zero_duration_candle_rejected(self):
+        row={"open_time":"2026-01-01T00:00:00Z","close_time":"2026-01-01T00:00:00Z",
+             "open_price":100,"high_price":110,"low_price":90,"close_price":105}
+        with self.assertRaises(AMTInputError):
+            Candle.from_record(row)
+
     def test_duplicate_rejected(self):
         row={"open_time":"2026-01-01T00:00:00Z","close_time":"2026-01-01T00:29:59Z","open_price":100,"high_price":110,"low_price":90,"close_price":105}
         with self.assertRaises(AMTInputError):
