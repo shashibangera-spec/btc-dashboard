@@ -62,7 +62,7 @@ Read-only checks against Supabase were repeated using the current archive:
 These results establish profile arithmetic parity for the comparable rows only. They do not establish state-machine accuracy, predictive value, profitability, or tick-level Market Profile equivalence. The historical archive contained no missing 30-minute intervals, so gap-reset behaviour is covered by synthetic tests rather than a naturally occurring historical gap.
 
 ## State-machine validation still required
-- Count distinct discovery episodes (not repeated per-candle confirmed-state labels).
+- Count distinct discovery episodes using `discovery_event_start` (not repeated per-candle confirmed-state labels); manually review the resulting episodes against completed candles.
 - Review candidate cancellation, opposite-side transitions, re-entry, and session rollover manually against completed candles.
 - Validate balance evidence and boundary retests against actual auction sequences.
 - Measure false confirmations and cases where price discovery is not accompanied by value development.
