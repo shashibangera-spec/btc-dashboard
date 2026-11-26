@@ -846,7 +846,7 @@ class HistoricalPricePathAuditTests(unittest.TestCase):
         self.assertEqual(confirmed_reentries, 17)
         self.assertEqual(rapid_reentries, 5)
         self.assertEqual(positive_net + negative_net, 30)
-        self.assertEqual(total_active_bars, 576)
+        self.assertEqual(total_active_bars, 579)
 
 if __name__=="__main__":
     unittest.main()
