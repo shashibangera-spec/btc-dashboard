@@ -252,13 +252,15 @@ class IndependentAMTTests(unittest.TestCase):
             )
             if opposite_at is not None:
                 opposite_discovery_transitions += 1
+            value_direction = "UP" if direction == "ABOVE" else "DOWN"
+            opposite_value_direction = "DOWN" if value_direction == "UP" else "UP"
             aligned_states = {
-                f"BROAD_MIGRATION_{direction}", f"POC_MIGRATION_{direction}",
-                f"PARTIAL_MIGRATION_{direction}", f"VALUE_SEPARATED_{direction}",
+                f"BROAD_MIGRATION_{value_direction}", f"POC_MIGRATION_{value_direction}",
+                f"PARTIAL_MIGRATION_{value_direction}", f"VALUE_SEPARATED_{direction}",
             }
             opposite_states = {
-                f"BROAD_MIGRATION_{opposite_direction}", f"POC_MIGRATION_{opposite_direction}",
-                f"PARTIAL_MIGRATION_{opposite_direction}", f"VALUE_SEPARATED_{opposite_direction}",
+                f"BROAD_MIGRATION_{opposite_value_direction}", f"POC_MIGRATION_{opposite_value_direction}",
+                f"PARTIAL_MIGRATION_{opposite_value_direction}", f"VALUE_SEPARATED_{opposite_direction}",
             }
             alignment_offsets = [k for k, x in enumerate(segment) if x["value_state"] in aligned_states]
             opposite_value_offsets = [k for k, x in enumerate(segment) if x["value_state"] in opposite_states]
