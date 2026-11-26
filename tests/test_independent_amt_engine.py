@@ -533,7 +533,10 @@ class IndependentAMTTests(unittest.TestCase):
                   "active_same_to_opposite_reversals=", sum(x["active_reversal"] for x in cohort),
                   "active_opposite_to_same_recoveries=", sum(x["active_opposite_to_same_recovery"] for x in cohort),
                   "same_after_reentry=", sum(x["same_after_reentry"] for x in cohort),
-                  "opposite_after_reentry=", sum(x["opposite_after_reentry"] for x in cohort))
+                  "opposite_after_reentry=", sum(x["opposite_after_reentry"] for x in cohort),
+                  "broad_after_first_four_episodes=", sum(x["full_after_first_four"] for x in cohort),
+                  "broad_active_bars_after_four=", sum(x["active_full_bars_after_first_four"] for x in cohort),
+                  "eligible_active_bars_after_four=", sum(x["active_bars_after_first_four"] for x in cohort))
         print("EPISODE_SUMMARY", "rapid_reentries_within_4_bars=", rapid_reentries,
               "no_reentry_by_session_end_or_next_episode=", no_reentry_by_session_end,
               "episodes_with_same_side_value_separation=", separated_after_confirmation,
@@ -558,6 +561,13 @@ class IndependentAMTTests(unittest.TestCase):
         self.assertEqual(sum(x["same_after_reentry"] for x in persistence_rows), 17)
         self.assertEqual(sum(x["opposite_after_reentry"] for x in persistence_rows), 1)
         self.assertEqual(sum(x["active_poc_only"] for x in persistence_rows), 0)
+        self.assertEqual(sum(x["full_at_confirmation"] for x in persistence_rows), 24)
+        self.assertEqual(sum(x["full_within_first_four_after"] for x in persistence_rows), 27)
+        self.assertEqual(sum(x["full_after_first_four"] for x in persistence_rows), 21)
+        self.assertEqual(sum(x["active_full_bar_count"] for x in persistence_rows), 502)
+        self.assertEqual(sum(x["active_bar_count"] for x in persistence_rows), 579)
+        self.assertEqual(sum(x["active_full_bars_after_first_four"] for x in persistence_rows), 385)
+        self.assertEqual(sum(x["active_bars_after_first_four"] for x in persistence_rows), 440)
         self.assertEqual(sum(x["active_poc_one_edge"] for x in persistence_rows), 5)
         self.assertEqual(sum(x["active_poc_full"] for x in persistence_rows), 28)
         self.assertEqual(sum(x["active_edges_with_poc_not"] for x in persistence_rows), 3)
