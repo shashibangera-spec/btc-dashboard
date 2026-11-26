@@ -576,6 +576,24 @@ def _run_contract_export_validation_tests():
     assert fetched_frame.loc[0, "OI_BTC_Source"] == huge_integer
     print("PASS: validator safeguards; fetch-chain object source preservation; mixed int/string/Decimal/missing OI; exact production TSV export; float calculation columns unchanged")
 
+def _select_balanced_strikes(strikes, latest_price, per_side=10):
+    """Select up to per_side unique strikes at/below and above the current spot."""
+    try:
+        spot = float(latest_price)
+        count = int(per_side)
+    except (TypeError, ValueError, OverflowError):
+        return []
+    if not np.isfinite(spot) or count < 1:
+        return []
+
+    values = pd.to_numeric(pd.Series(list(strikes)), errors="coerce")
+    values = values[np.isfinite(values.to_numpy(dtype=float))]
+    unique_strikes = sorted(set(float(value) for value in values))
+    below_or_at = [strike for strike in unique_strikes if strike <= spot][-count:]
+    above = [strike for strike in unique_strikes if strike > spot][:count]
+    return sorted(below_or_at + above)
+
+
 def _sum_if_complete(series):
     """Return a sum only when every expected observation is present and valid."""
     values = pd.to_numeric(series, errors="coerce")
@@ -2236,18 +2254,16 @@ def _render_market_dashboard():
     ctx_left, ctx_right = st.columns([1.6, 1])
     
     with ctx_left:
-        # Visual map of the ten strikes nearest to spot, using the existing
-        # nearest-expiry chain and USD open interest only.
+        # Balanced local window: up to ten available strikes at/below spot and
+        # ten above. Keep rows with missing OI so missing observations are not
+        # silently converted into zero bars.
         if raw_chain_df is not None and not raw_chain_df.empty and latest_price > 0:
             gex_view = raw_chain_df.copy()
             gex_view["Strike"] = pd.to_numeric(gex_view["Strike"], errors="coerce")
             gex_view["OI_USD"] = pd.to_numeric(gex_view["OI_USD"], errors="coerce")
-            gex_view = gex_view.dropna(subset=["Strike", "OI_USD"])
-            nearest_strikes = (
-                gex_view[["Strike"]].drop_duplicates()
-                .assign(Distance=lambda frame: (frame["Strike"] - latest_price).abs())
-                .nsmallest(10, "Distance")["Strike"]
-                .tolist()
+            gex_view = gex_view.dropna(subset=["Strike"])
+            nearest_strikes = _select_balanced_strikes(
+                gex_view["Strike"], latest_price, per_side=10
             )
             chart_data = gex_view[gex_view["Strike"].isin(nearest_strikes)].copy()
             if not chart_data.empty:
@@ -2258,7 +2274,7 @@ def _render_market_dashboard():
                 fig.add_trace(go.Bar(
                     name="Call OI",
                     y=strikes_for_chart,
-                    x=[float(call_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
+                    x=[float(call_data.get(strike, np.nan)) / 1e6 if pd.notna(call_data.get(strike, np.nan)) else np.nan for strike in strikes_for_chart],
                     orientation="h",
                     marker=dict(color="#00E676", line=dict(width=0)),
                     hovertemplate="Strike: $%{y:,.0f}<br>Call OI: $%{x:.2f}M<extra></extra>",
@@ -2266,7 +2282,7 @@ def _render_market_dashboard():
                 fig.add_trace(go.Bar(
                     name="Put OI",
                     y=strikes_for_chart,
-                    x=[float(put_data.get(strike, 0.0)) / 1e6 for strike in strikes_for_chart],
+                    x=[float(put_data.get(strike, np.nan)) / 1e6 if pd.notna(put_data.get(strike, np.nan)) else np.nan for strike in strikes_for_chart],
                     orientation="h",
                     marker=dict(color="#FF5252", line=dict(width=0)),
                     hovertemplate="Strike: $%{y:,.0f}<br>Put OI: $%{x:.2f}M<extra></extra>",
@@ -2287,12 +2303,12 @@ def _render_market_dashboard():
                     barmode="group",
                     bargap=0.28,
                     bargroupgap=0.06,
-                    height=400,
+                    height=620,
                     margin=dict(l=10, r=20, t=40, b=10),
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
                     font=dict(color="#C9D1D9", family="Inter, -apple-system, Segoe UI, sans-serif", size=12),
-                    title=dict(text="OPEN INTEREST BY STRIKE · NEAREST 10", x=0.0, xanchor="left",
+                    title=dict(text="OPEN INTEREST BY STRIKE · 10 BELOW / 10 ABOVE CMP", x=0.0, xanchor="left",
                                font=dict(size=11, color="#8B96A5")),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
                                 font=dict(size=11), bgcolor="rgba(0,0,0,0)"),
@@ -2306,8 +2322,9 @@ def _render_market_dashboard():
                                tickfont=dict(family="JetBrains Mono, Menlo, Consolas, monospace", size=11)),
                 )
                 st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+                st.caption("Window: up to 10 strikes at/below CMP and 10 above. Missing OI observations are left blank, not treated as zero.")
             else:
-                st.caption("No valid strike / open-interest rows available for the chart.")
+                st.caption("No strike rows available for the selected options expiry.")
         else:
             st.caption("Options chain unavailable; nearest-strike OI chart cannot be displayed.")
     
