@@ -61,6 +61,17 @@ Read-only checks against Supabase were repeated using the current archive:
 
 These results establish profile arithmetic parity for the comparable rows only. They do not establish state-machine accuracy, predictive value, profitability, or tick-level Market Profile equivalence. The historical archive contained no missing 30-minute intervals, so gap-reset behaviour is covered by synthetic tests rather than a naturally occurring historical gap.
 
+## Historical state-machine screening — source-equivalent replay
+A separate JavaScript replay of the current Python state-machine rules was run against the 1,212 raw OHLC candles (1–26 Nov). This is **not yet a direct execution of the Python module against Supabase**; it is a screening replay and must not be represented as Python-engine historical verification.
+
+- 1,164 output bars were evaluated across 25 complete prior sessions plus the partial 26 Nov session; no natural data gaps were found.
+- The replay identified **30 distinct discovery-confirmation episodes**: 6 upside and 24 downside. Episode counting used the transition from no confirmed side to a confirmed side, not repeated per-candle confirmed labels.
+- At confirmation, **7/30** episodes had fully separated developing value. The other **23/30** had value migration/POC migration classifications but had not yet achieved full value separation.
+- There were 17 confirmed re-entry transitions and 53 boundary-retest-labelled candles. The latter is a candle count, not a count of unique retest sequences.
+- The balance heuristic did not trigger on any evaluated candle. This does not prove the market was never balanced; it means the current two-POC-side-crossings-in-five-bars condition was not met in this sample and requires further review.
+- These are descriptive state counts only. They do not establish false-confirmation rates, predictive value, or profitability. Several episodes show price-state weakening within the next few bars and require manual sequence review.
+
+
 ## State-machine validation still required
 - Count distinct discovery episodes using `discovery_event_start` (not repeated per-candle confirmed-state labels); manually review the resulting episodes against completed candles.
 - Review candidate cancellation, opposite-side transitions, re-entry, and session rollover manually against completed candles.
